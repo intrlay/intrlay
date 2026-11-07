@@ -4,6 +4,16 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      publish_runtime:
+        description: Runtime registry to publish without creating a GitHub release
+        type: choice
+        default: none
+        options:
+          - none
+          - pypi
+          - nuget
+          - pypi-and-nuget
 
 permissions:
   contents: read
@@ -45,6 +55,7 @@ jobs:
     uses: ./.github/workflows/check.yml
 
   binaries:
+    if: github.event_name == 'push' || inputs.publish_runtime == 'none'
     needs: metadata
     strategy:
       fail-fast: false
@@ -146,14 +157,19 @@ jobs:
     needs: draft
     runs-on: ubuntu-24.04
     environment: release
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.95.0'
+      - uses: rust-lang/crates-io-auth-action@v1.0.6
+        id: auth
       - name: Publish unpublished workspace crates
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo xtask publish crates
 
   npm:
@@ -179,7 +195,12 @@ jobs:
         run: cargo xtask publish npm
 
   pypi:
-    needs: draft
+    if: >-
+      !cancelled() && needs.packages.result == 'success' &&
+      ((github.event_name == 'push' && needs.draft.result == 'success') ||
+       (github.event_name == 'workflow_dispatch' &&
+        (inputs.publish_runtime == 'pypi' || inputs.publish_runtime == 'pypi-and-nuget')))
+    needs: [packages, draft]
     runs-on: ubuntu-24.04
     environment: release
     permissions:
@@ -201,9 +222,17 @@ jobs:
           skip-existing: true
 
   nuget:
-    needs: draft
+    if: >-
+      !cancelled() && needs.packages.result == 'success' &&
+      ((github.event_name == 'push' && needs.draft.result == 'success') ||
+       (github.event_name == 'workflow_dispatch' &&
+        (inputs.publish_runtime == 'nuget' || inputs.publish_runtime == 'pypi-and-nuget')))
+    needs: [packages, draft]
     runs-on: ubuntu-24.04
     environment: release
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/setup-dotnet@v6
         with:
@@ -212,9 +241,13 @@ jobs:
         with:
           name: packages
           path: artifacts
+      - uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ vars.NUGET_USER }}
       - name: Publish the verified NuGet package
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
         run: dotnet nuget push 'artifacts/*.nupkg' --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
 
   pubdev:
