@@ -71,8 +71,11 @@ struct RecordCodec {
     static void measure(const V& value, detail::Cursor& cursor) {
         (Fields::measure(value, cursor), ...);
     }
+    // Empty records have no field writes and do not consume these coordinates.
     template<class V>
-    static void write(std::span<std::byte> bytes, std::size_t offset, const V& INTRLAY_RESTRICT value, detail::Cursor& cursor) {
+    static void write([[maybe_unused]] std::span<std::byte> bytes,
+                      [[maybe_unused]] std::size_t offset,
+                      const V& INTRLAY_RESTRICT value, detail::Cursor& cursor) {
         (Fields::write(bytes, offset, value, cursor), ...);
     }
 };

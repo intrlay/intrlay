@@ -20,6 +20,12 @@ struct Child {
 }
 
 #[derive(Intrlay)]
+struct Peer {
+    value: u32,
+    marker: u32,
+}
+
+#[derive(Intrlay)]
 #[intrlay(cpp(name = "V"))]
 struct SourceV {
     #[intrlay(cpp(name = "renamed"))]
@@ -181,6 +187,24 @@ fn generate_cpp_metadata_regressions(fixtures: &mut Fixtures) -> Result<(), Box<
     Ok(())
 }
 
+fn generate_cpp_metadata_peer(fixtures: &mut Fixtures) -> Result<(), Box<dyn Error>> {
+    // Independent headers in one namespace may reuse native field spellings.
+    let mut registry = Registry::new();
+    registry.export::<Peer>("Peer");
+    fixtures.insert(
+        "cpp-metadata/peer.hpp",
+        generate_with_options(
+            &registry.finish(),
+            Language::Cpp,
+            GenerateOptions {
+                cpp_namespace: Some("cpp_metadata".into()),
+                ..GenerateOptions::default()
+            },
+        )?,
+    )?;
+    Ok(())
+}
+
 fn generate_cpp_custom_metadata_names(fixtures: &mut Fixtures) -> Result<(), Box<dyn Error>> {
     let mut naming = NamingPolicy::for_language(Language::Cpp);
     for (kind, visibility, prefix, case, require) in [
@@ -255,6 +279,7 @@ fn generate_cpp_custom_metadata_names(fixtures: &mut Fixtures) -> Result<(), Box
 
 pub(super) fn collect(fixtures: &mut Fixtures) -> Result<(), Box<dyn std::error::Error>> {
     generate_cpp_metadata_regressions(fixtures)?;
+    generate_cpp_metadata_peer(fixtures)?;
     generate_cpp_custom_metadata_names(fixtures)?;
     Ok(())
 }

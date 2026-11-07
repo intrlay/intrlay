@@ -1,6 +1,6 @@
 //! Compile-time field metadata shared by construction and borrowed access.
 
-use std::fmt::Write;
+use std::{collections::BTreeSet, fmt::Write};
 
 use crate::{
     GenerateError, SymbolKind, Visibility,
@@ -50,15 +50,17 @@ pub fn generate(output: &mut String, plan: &TypeGraph) -> Result<(), GenerateErr
         output,
         "\n// Resolved wire layouts and native member mappings.\nnamespace detail {{"
     )?;
+    member_accessors(output, plan)?;
     for id in descriptors(plan) {
         let node = &plan.nodes[id];
+        let members = format!("members::{}", name(plan, id));
         writeln!(output)?;
         write!(output, "struct {} : ", name(plan, id))?;
         let view = super::qualified(plan, &format!("Basic{}", plan.view_name(id)));
         match &node.kind {
             Kind::Record(fields) => {
                 write!(output, "::intrlay::Record<{view}, {}", node.layout.size())?;
-                fields_metadata(output, plan, fields, &node.name, false, "    ")?;
+                fields_metadata(output, plan, fields, &node.name, &members, false, "    ")?;
                 if !fields.is_empty() {
                     writeln!(output)?;
                 }
@@ -73,6 +75,7 @@ pub fn generate(output: &mut String, plan: &TypeGraph) -> Result<(), GenerateErr
                         plan,
                         &variant.fields,
                         &format!("{}{}", node.name, variant.name),
+                        &members,
                         variant.synthetic_payload,
                         "        ",
                     )?;
@@ -125,11 +128,59 @@ pub fn generate(output: &mut String, plan: &TypeGraph) -> Result<(), GenerateErr
     Ok(())
 }
 
+/// Inline variables give accessor closure types one identity across translation
+/// units. Lambdas directly in a descriptor's base list lack that named context.
+fn member_accessors(output: &mut String, plan: &TypeGraph) -> Result<(), GenerateError> {
+    for id in descriptors(plan) {
+        let mut members = BTreeSet::new();
+        match &plan.nodes[id].kind {
+            Kind::Record(fields) => members.extend(fields.iter().map(source_member)),
+            Kind::Enum(variants) => {
+                for variant in variants {
+                    if !variant.synthetic_payload {
+                        members.extend(variant.fields.iter().map(source_member));
+                    }
+                }
+            }
+            _ => {}
+        }
+        if members.is_empty() {
+            continue;
+        }
+        // Independent headers may use the same C++ namespace and field names.
+        // Scope accessors by descriptor so their definitions do not collide.
+        let scope = format!("members::{}", name(plan, id));
+        writeln!(output, "\nnamespace {scope} {{")?;
+        for member in members {
+            writeln!(
+                output,
+                "inline constexpr auto {member} = INTRLAY_MEMBER({member});"
+            )?;
+        }
+        writeln!(output, "}} // namespace {scope}")?;
+    }
+    Ok(())
+}
+
+fn source_member(field: &Field) -> &str {
+    if super::names::KEYWORDS
+        .split_whitespace()
+        .any(|keyword| keyword == field.source_name)
+    {
+        // A source-language keyword (e.g. Rust's r#class) cannot name a C++
+        // member. Only the explicitly renamed API is usable in that case.
+        &field.name
+    } else {
+        &field.source_name
+    }
+}
+
 fn fields_metadata(
     output: &mut String,
     plan: &TypeGraph,
     fields: &[Field],
     native: &str,
+    members: &str,
     synthetic_payload: bool,
     indent: &str,
 ) -> Result<(), GenerateError> {
@@ -142,22 +193,16 @@ fn fields_metadata(
             reference(plan, field.ty, false)
         )?;
         let member = format!("&{}::{}", super::qualified(plan, native), field.name);
+        let source = source_member(field);
         if synthetic_payload {
             write!(output, "::intrlay::AlternativeValue{{}}")?;
-        } else if field.name != field.source_name
-            && !super::names::KEYWORDS
-                .split_whitespace()
-                .any(|keyword| keyword == field.source_name)
-        {
+        } else if field.name != source {
             write!(
                 output,
-                "::intrlay::MappedMember<{member}, INTRLAY_MEMBER({})>{{}}",
-                field.source_name
+                "::intrlay::MappedMember<{member}, {members}::{source}>{{}}"
             )?;
         } else {
-            // A source-language keyword (e.g. Rust's r#class) cannot name a C++
-            // member. In that case only the explicitly renamed API is usable.
-            write!(output, "INTRLAY_MEMBER({})", field.name)?;
+            write!(output, "{members}::{source}")?;
         }
         write!(output, ">")?;
     }

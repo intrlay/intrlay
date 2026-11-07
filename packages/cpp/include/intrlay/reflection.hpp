@@ -3,6 +3,8 @@
 
 // C++20 cannot form a member expression from a string. This small accessor is
 // the only token-level operation; field names, layouts, and traversal are types.
+// Initialize a named inline constexpr variable so the closure types have one
+// identity when descriptors are included from multiple translation units.
 #define INTRLAY_MEMBER(name) ::intrlay::MemberAccessor{ \
     [](const auto& object) -> decltype(auto) { return (object.name); }, \
     []<class T>() consteval { return offsetof(T, name); } }

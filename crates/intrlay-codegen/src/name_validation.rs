@@ -140,6 +140,7 @@ fn validate_helpers(
         }
         Language::Cpp => {
             let mut helpers = BTreeMap::new();
+            helpers.insert("members".into(), "native member accessor namespace".into());
             for (id, node) in views.nodes.iter().enumerate() {
                 if !matches!(node.kind, Kind::Scalar(_) | Kind::Unit | Kind::String) {
                     claim(

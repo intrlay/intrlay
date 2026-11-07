@@ -3,11 +3,17 @@
 #endif
 #include "bindings.hpp"
 #include "custom.hpp"
+#include "peer.hpp"
 #include <cassert>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory_resource>
+
+#ifdef INTRLAY_CHECK_LINKAGE
+auto child_value_reader_from_peer()
+    -> decltype(&cpp_metadata::ChildView::Metadata::Field<0>::read<const std::byte>);
+#endif
 
 namespace native {
 struct CharacterTraits : std::char_traits<char> {};
@@ -124,6 +130,16 @@ concept CanSetFactory = requires(T view) { view.set_Factory(1); };
 int main(int argc, char** argv) {
     namespace generated = cpp_metadata;
     const std::filesystem::path directory = argc > 1 ? argv[1] : "target/cpp-metadata";
+
+    auto peer = generated::PeerView::create(generated::Peer{173, 179});
+    assert(peer.view().value() == 173 && peer.view().marker() == 179);
+
+#ifdef INTRLAY_CHECK_LINKAGE
+    // The CMake consumer includes the same generated metadata in another TU.
+    // Its field specialization must denote the same function in both files.
+    assert(child_value_reader_from_peer() ==
+        &generated::ChildView::Metadata::Field<0>::read<const std::byte>);
+#endif
 
     volatile native::Child volatile_root{41, 43};
     auto root = generated::ChildView::create(volatile_root);
