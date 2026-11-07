@@ -1,10 +1,11 @@
 //! Build and verify distribution artifacts without uploading them.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, ensure};
 use clap::Args;
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::process::{CommandExt, Workspace, sources};
@@ -41,6 +42,40 @@ fn check_repository(workspace: &Workspace, repository: &str) -> Result<()> {
     Ok(())
 }
 
+fn copy_workspace_crates(workspace: &Workspace, output: &Path) -> Result<()> {
+    #[derive(Deserialize)]
+    struct Package {
+        name: String,
+        version: String,
+        publish: Option<Vec<String>>,
+    }
+    #[derive(Deserialize)]
+    struct Metadata {
+        packages: Vec<Package>,
+    }
+    let metadata: Metadata = serde_json::from_str(
+        &workspace
+            .command("cargo")?
+            .args(["metadata", "--no-deps", "--format-version", "1"])
+            .read()?,
+    )?;
+    for package in metadata.packages {
+        if package
+            .publish
+            .is_some_and(|registries| registries.is_empty())
+        {
+            continue;
+        }
+        // Ignore archives left by earlier versions or renamed crates.
+        let name = format!("{}-{}.crate", package.name, package.version);
+        fs::copy(
+            workspace.path("target/package").join(&name),
+            output.join(name),
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) fn run(workspace: &Workspace, options: &Options) -> Result<()> {
     let output = workspace.path(&options.output);
     fs::create_dir_all(&output)?;
@@ -72,11 +107,7 @@ pub(crate) fn run(workspace: &Workspace, options: &Options) -> Result<()> {
             "--allow-dirty",
         ])
         .run()?;
-    for file in sources(&workspace.path("target/package"), &["*.crate"])? {
-        if let Some(name) = file.file_name() {
-            fs::copy(&file, output.join(name))?;
-        }
-    }
+    copy_workspace_crates(workspace, &output)?;
     workspace
         .command("npm")?
         .arg("ci")
