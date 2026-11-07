@@ -55,6 +55,7 @@ pub(crate) fn run(workspace: &Workspace, options: &Options) -> Result<()> {
         check_repository(workspace, repository)?;
     }
     release::package_sources(workspace)?;
+    release::require_clean_worktree(workspace)?;
 
     // Development-only members must never enter a published package set.
     workspace
@@ -67,6 +68,8 @@ pub(crate) fn run(workspace: &Workspace, options: &Options) -> Result<()> {
             "--exclude",
             "xtask",
             "--locked",
+            // package_sources creates ignored license files intentionally.
+            "--allow-dirty",
         ])
         .run()?;
     for file in sources(&workspace.path("target/package"), &["*.crate"])? {

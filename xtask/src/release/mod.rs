@@ -156,6 +156,20 @@ pub(crate) fn package_sources(workspace: &Workspace) -> Result<()> {
     Ok(())
 }
 
+/// Generated license copies are ignored by Git but included in Cargo packages.
+/// Check source changes before allowing Cargo to include those generated files.
+pub(crate) fn require_clean_worktree(workspace: &Workspace) -> Result<()> {
+    let changes = workspace
+        .command("git")?
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .read()?;
+    ensure!(
+        changes.is_empty(),
+        "commit or remove source changes before packaging a release:\n{changes}"
+    );
+    Ok(())
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum DraftAction {
     Create,
@@ -228,6 +242,43 @@ fn draft(workspace: &Workspace, metadata: &Path, artifacts: &Path) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packaging_allows_generated_licenses_but_rejects_source_changes() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let workspace = Workspace {
+            root: temporary.path().to_path_buf(),
+        };
+        fs::create_dir_all(workspace.path("packages/runtime"))?;
+        fs::write(workspace.path(".gitignore"), "/packages/*/LICENSE*\n")?;
+        fs::write(workspace.path("packages/runtime/source"), "original\n")?;
+        workspace.command("git")?.args(["init", "--quiet"]).run()?;
+        workspace.command("git")?.args(["add", "."]).run()?;
+        workspace
+            .command("git")?
+            .args([
+                "-c",
+                "user.name=Intrlay tests",
+                "-c",
+                "user.email=tests@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            ])
+            .run()?;
+
+        fs::write(workspace.path("packages/runtime/LICENSE"), "generated\n")?;
+        require_clean_worktree(&workspace)?;
+        fs::write(workspace.path("packages/runtime/source"), "modified\n")?;
+        assert!(require_clean_worktree(&workspace).is_err());
+        fs::write(workspace.path("packages/runtime/source"), "original\n")?;
+        fs::write(workspace.path("packages/runtime/new-source"), "new\n")?;
+        assert!(require_clean_worktree(&workspace).is_err());
+        Ok(())
+    }
 
     #[test]
     fn prepare_copies_notes_and_appends_workflow_outputs_after_validating_the_tag() -> Result<()> {

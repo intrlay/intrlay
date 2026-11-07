@@ -121,8 +121,10 @@ fn crates(workspace: &Workspace, registry: &RegistryClient) -> Result<()> {
         }
     }
     if pending {
+        release::require_clean_worktree(workspace)?;
         let mut command = workspace.command("cargo")?;
-        command.args(["publish", "--workspace", "--locked"]);
+        // Source changes were checked above; only generated copies are ignored.
+        command.args(["publish", "--workspace", "--locked", "--allow-dirty"]);
         for name in excluded {
             command.args(["--exclude", &name]);
         }
