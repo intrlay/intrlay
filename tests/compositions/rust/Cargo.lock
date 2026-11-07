@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "intrlay"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "intrlay-derive",
  "intrlay-layout",
@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "intrlay-derive"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "heck",
  "intrlay-schema",
@@ -60,11 +60,11 @@ dependencies = [
 
 [[package]]
 name = "intrlay-layout"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "intrlay-schema"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "heck",
  "intrlay-layout",
