@@ -1,0 +1,157 @@
+# Generated names
+
+Intrlay applies target-language naming conventions by default. Use a generation
+options file to change conventions for a whole module, or an annotation to rename
+one declaration. Neither changes the encoded layout.
+
+## Defaults
+
+For the tutorial's `selected_point` field:
+
+| Target | Native field / view accessor |
+| --- | --- |
+| Rust | `selected_point` / `selected_point()` |
+| C++ | `selected_point` / `selected_point()` |
+| TypeScript | `selectedPoint` |
+| C# | `SelectedPoint` |
+| Python | `selected_point` |
+| Dart | `selectedPoint` |
+
+Type names normally use `PascalCase`. Generated operation names follow the same
+language's style: `create_in_place`, `createInPlace`, or `CreateInPlace`.
+
+## Configure a whole generation unit
+
+Save this as `naming.json`. It keeps type and variant names in PascalCase, uses
+snake_case for public view properties, and PascalCase for public static methods:
+
+```json title="naming.json"
+{
+  "module_name": "drawing",
+  "naming": {
+    "fallback": { "case": "camelCase" },
+    "rules": [
+      {
+        "selector": { "kind": "type" },
+        "style": { "case": "PascalCase" }
+      },
+      {
+        "selector": { "kind": "variant" },
+        "style": { "case": "PascalCase" }
+      },
+      {
+        "selector": { "kind": "property", "visibility": "public" },
+        "style": { "case": "snake_case" }
+      },
+      {
+        "selector": {
+          "kind": "method",
+          "visibility": "public",
+          "require": ["static"]
+        },
+        "style": { "case": "PascalCase" }
+      },
+      {
+        "selector": { "kind": "field", "visibility": "private" },
+        "style": { "case": "camelCase", "prefix": "_" }
+      }
+    ]
+  }
+}
+```
+
+Apply it to the [tutorial schema](../tutorial.mdx#1-define-the-message):
+
+```sh
+intrlay generate --manifest-path protocol/Cargo.toml --language typescript --options naming.json --output generated/drawing.ts
+```
+
+The resulting API changes are:
+
+| Default TypeScript | With this policy |
+| --- | --- |
+| `DrawingView.create(value)` | `DrawingView.Create(value)` |
+| `DrawingView.createInPlace(bytes, value)` | `DrawingView.CreateInPlace(bytes, value)` |
+| `view.selectedPoint` | `view.selected_point` |
+| Input field `value.selectedPoint` | Still `value.selectedPoint`: it is a field, not a view property. |
+
+Each rule replaces the complete style for matching symbols. **The last matching
+rule wins**; `fallback` handles symbols that match no rule. Supplying `naming`
+replaces the default policy rather than appending to it. When using the Rust
+generation API, `NamingPolicy::for_language` supplies defaults that you can extend
+before passing the policy to the generator.
+
+## Rule fields
+
+All selector conditions must match. Omitted conditions match any value.
+
+| Selector | Accepted values / meaning |
+| --- | --- |
+| `kind` | `type`, `field`, `property`, `method`, `function`, `variant`, `parameter`, `local` |
+| `visibility` | `public`, `protected`, `internal`, `private` |
+| `require` | Every listed modifier must be present. |
+| `exclude` | None of the listed modifiers may be present. |
+
+Modifiers are `static`, `readonly`, `const`, `async`, `abstract`, `virtual`,
+`override`, and `final`. A `const` symbol also matches `readonly`. Selectors
+describe generated symbols; a target that does not emit such a symbol has
+nothing for that rule to change. Parameters and local variables have no member
+visibility.
+
+`style.case` accepts `preserve`, `snake_case`, `camelCase`, `PascalCase`, or
+`SCREAMING_SNAKE_CASE`. Optional `prefix` and `suffix` strings are applied after
+casing. There are no user-supplied conversion callbacks.
+
+`property` includes buffer accessors even when a target spells them as methods,
+such as C++'s `selected_point()`. `method` covers operations such as construction
+and replacement. The shared runtime package's own API names remain unchanged.
+
+## Rename one declaration
+
+An explicit annotation name bypasses the policy, including its affixes:
+
+```rust title="Rust"
+#[derive(intrlay::Intrlay)]
+struct Reading {
+    #[intrlay(typescript(name = "amount"))]
+    sample_value: f32,
+}
+```
+
+```cpp title="C++"
+#include <intrlay/annotations.hpp>
+
+struct INTRLAY() Reading {
+    float sample_value INTRLAY(typescript.name = "amount");
+};
+```
+
+TypeScript receives `amount`, while the source-language field remains
+`sample_value`. Other targets keep their default names. A common `name = "..."`
+applies to all targets unless overridden for one target; choose a literal spelling
+valid in each affected language.
+
+Invalid identifiers and collisions are errors. The generator does not silently
+rename colliding declarations. See [Schema annotations](annotations.mdx#target-options-and-names)
+for declaration scopes and target overrides.
+
+## Modules and namespaces
+
+`module_name` identifies the generation unit. `--module-name` overrides it from
+the command line. C++ derives `intrlay_generated::<snake_case_name>` and C#
+derives `IntrlayGenerated.<PascalCaseName>`; other targets use their file/module
+system. The default module name is `Schema`.
+
+Use `cpp_namespace` or `csharp_namespace` for an explicit namespace, independently
+of symbol casing:
+
+```json
+{
+  "module_name": "drawing",
+  "cpp_namespace": "app::drawing",
+  "csharp_namespace": "App.Drawing"
+}
+```
+
+Namespace segments must be ASCII identifiers. Their literal spelling is preserved.
+Namespaces do not deduplicate types across separately generated files.

@@ -1,0 +1,89 @@
+# Python
+
+Install `intrlay` with `python -m pip install intrlay`. Python 3.12 or later is
+required. Generate bindings with `--language python` and import them as an
+ordinary Python module.
+
+## Construct and read a drawing
+
+Generate the [tutorial schema](../tutorial.mdx#1-define-the-message) with
+`--language python --output generated/drawing.py`:
+
+```python
+from generated.drawing import Drawing, DrawingView
+
+value: Drawing = {
+    "title": "Sketch",
+    "points": [{"x": 1.0, "y": 2.0, "z": 3.0}],
+    "selected_point": None,
+    "command": {
+        "kind": "DrawPoint",
+        "position": {"x": 7.0, "y": 8.0, "z": 9.0},
+        "size": 0.5,
+    },
+}
+drawing = DrawingView.create(value)
+
+assert drawing.title == "Sketch"
+assert drawing.points[0].x == 1.0
+assert drawing.selected_point is None
+position = drawing.command.draw_point_position
+if position is not None:
+    assert position.x == 7.0
+
+drawing.points[0].x = 10.0
+drawing.selected_point = 0
+drawing.command.replace({"kind": "Clear"})
+
+received = DrawingView(drawing.buffer)
+assert received.points[0].x == 10.0
+assert received.command.draw_point_position is None
+```
+
+Generated native inputs use type hints, including `TypedDict` for records.
+Enum inputs use a `kind` literal. Variant-specific getters return `None` when
+inactive; `tag` exposes the encoded number. Properties read and write
+memoryview-backed storage. `drawing.buffer` is a
+memoryview; borrowing it does not copy its contents.
+
+`bytes`, `bytearray`, and compatible buffer-protocol objects can back a view.
+Mutation requires writable storage. The runtime uses native numeric memoryview
+formats and requires a little-endian host with the supported scalar widths.
+
+## Caller-provided buffers
+
+```python
+import intrlay
+
+size = DrawingView.compute_byte_length(value)
+buffer = intrlay.allocate(size, DrawingView.ALIGNMENT)
+in_place = DrawingView.create_in_place(buffer, value)
+assert in_place.title == "Sketch"
+```
+
+`allocate` returns an aligned writable memoryview backed by a Python allocation.
+An externally allocated region must satisfy the same storage requirements.
+Inputs must not overlap the bytes being written. Keep the external owner alive
+even when Python still holds a memoryview of it.
+
+## Collections and optional values
+
+Numeric fixed arrays and explicit numeric projections expose memoryviews.
+Record collections also offer indexed field helpers to avoid making an element
+view for every access. Those helpers require indices within the logical
+collection bounds; ordinary Python collection access retains its own bounds
+behavior.
+
+```python
+points = drawing.points
+total_x = sum(points.get_x(index) for index in range(len(points)))
+```
+
+Composite properties cache child views. Nullable values normally use `None`;
+nested optional states use a `Some` wrapper where a second presence level is
+necessary. Enum and optional getters reread active state after replacement.
+
+Strings are decoded when read, so direct access to an encoded value does not
+imply that every Python result is allocation-free. Use the
+[projection and accessor options](../reference/annotations.mdx) when an API needs
+to minimize wrapper construction or generated code size.

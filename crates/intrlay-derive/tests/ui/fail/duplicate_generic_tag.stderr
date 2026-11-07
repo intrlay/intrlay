@@ -1,0 +1,11 @@
+error[E0080]: evaluation panicked: duplicate Intrlay enum tag
+ --> tests/ui/fail/duplicate_generic_tag.rs:3:10
+  |
+3 | #[derive(Intrlay)]
+  |          ^^^^^^^ evaluation of `<Choice<7> as intrlay::Intrlay>::LAYOUT` failed here
+
+note: erroneous constant encountered
+  --> tests/ui/fail/duplicate_generic_tag.rs:11:33
+   |
+11 | const _: wire::layout::Layout = <Choice<7> as Intrlay>::LAYOUT;
+   |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

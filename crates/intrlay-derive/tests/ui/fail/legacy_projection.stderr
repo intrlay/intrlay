@@ -1,0 +1,29 @@
+error: expected name, generate_getters, generate_setters, or create
+ --> tests/ui/fail/legacy_projection.rs:2:22
+  |
+2 | #[intrlay(typescript(typed_array = "f32"))]
+  |                      ^^^^^^^^^^^
+
+error: expected name, generate_getters, generate_setters, or create
+ --> tests/ui/fail/legacy_projection.rs:6:18
+  |
+6 | #[intrlay(python(typed_array = "f32"))]
+  |                  ^^^^^^^^^^^
+
+error: expected name, generate_getters, generate_setters, or create
+  --> tests/ui/fail/legacy_projection.rs:10:16
+   |
+10 | #[intrlay(dart(typed_array = "f32"))]
+   |                ^^^^^^^^^^^
+
+error: expected name, generate_getters, generate_setters, or create
+  --> tests/ui/fail/legacy_projection.rs:14:22
+   |
+14 | #[intrlay(typescript(fields))]
+   |                      ^^^^^^
+
+error: expected name, generate_getters, generate_setters, or create
+  --> tests/ui/fail/legacy_projection.rs:19:22
+   |
+19 |     #[intrlay(python(indexed))]
+   |                      ^^^^^^^

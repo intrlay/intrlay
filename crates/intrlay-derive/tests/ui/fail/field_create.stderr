@@ -1,0 +1,5 @@
+error: create is not supported at this annotation location
+ --> tests/ui/fail/field_create.rs:2:26
+  |
+2 | struct Value { #[intrlay(create=false)] value: u32 }
+  |                          ^^^^^^

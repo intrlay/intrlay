@@ -1,0 +1,13 @@
+{
+    "extends": "@docusaurus/tsconfig",
+    "compilerOptions": {
+        "strict": true,
+        "noUncheckedIndexedAccess": true,
+        "baseUrl": null,
+        "paths": {
+            "@site/*": ["./*"]
+        }
+    },
+    "include": ["*.ts", "src/**/*.ts", "src/**/*.tsx"],
+    "exclude": ["node_modules", "build", ".docusaurus"]
+}

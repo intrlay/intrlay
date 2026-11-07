@@ -1,0 +1,5 @@
+error: transparent requires exactly one field
+ --> tests/ui/fail/invalid_transparent.rs:3:13
+  |
+3 | struct Value(u32,u32);
+  |             ^^^^^^^^^

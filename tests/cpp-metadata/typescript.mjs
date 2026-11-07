@@ -1,0 +1,21 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { WholeChoiceView } from "../../target/cpp-metadata/alternatives.ts";
+
+const view = WholeChoiceView.create({ kind: "Value", payload: { value: 31, marker: 37 } });
+assert.deepEqual([...view.bytes], [...readFileSync("target/cpp-metadata/whole.bin")]);
+const alias = new WholeChoiceView(view.bytes);
+assert.equal(alias.value.value, 31);
+assert.equal(alias.value, alias.value);
+view.setValue({ value: 41, marker: 43 });
+assert.equal(alias.value.marker, 43);
+view.replace({ kind: "Nested", payload: [41, null] });
+assert.equal(alias.value, undefined);
+assert.deepEqual([alias.nested.get(0), alias.nested.get(1)], [41, null]);
+assert.deepEqual([...view.bytes], [...readFileSync("target/cpp-metadata/nested.bin")]);
+view.replace({ kind: "Empty", payload: null });
+assert.equal(alias.nested, undefined);
+assert.equal(alias.empty, null);
+view.replace({ kind: "Value", payload: { value: 47, marker: 53 } });
+assert.equal(alias.empty, undefined);
+assert.equal(alias.value.marker, 53);

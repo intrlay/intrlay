@@ -1,0 +1,11 @@
+[package]
+name = "intrlay-composition-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+intrlay = { path = "../../../packages/rust" }
+

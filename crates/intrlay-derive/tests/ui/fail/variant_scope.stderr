@@ -1,0 +1,5 @@
+error: project is not supported at this annotation location
+ --> tests/ui/fail/variant_scope.rs:2:24
+  |
+2 | enum Value { #[intrlay(project = "indexed")] A }
+  |                        ^^^^^^^

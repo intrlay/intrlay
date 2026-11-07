@@ -1,0 +1,165 @@
+# Feature comparison
+
+Intrlay is designed for cooperating programs that exchange structured data
+across FFI, WebAssembly, and IPC boundaries. Its main combination is a schema
+defined in Rust or C++, direct access to encoded buffers, and APIs that use each
+target language's storage and type facilities.
+
+This page describes Intrlay's current capabilities and compares the approaches
+documented by the projects below. External documentation was reviewed on
+November 7, 2026. Features and generated APIs can differ between language
+implementations; check the linked documentation for your target.
+
+## Feature matrix
+
+**Direct access** means reading the encoded representation without first
+reconstructing the complete native value. **Schema evolution** means that readers
+and writers using different schema revisions can interoperate under documented
+rules; it does not make arbitrary schema changes compatible.
+
+| Project | Schema definition | Reading model | Schema evolution |
+| --- | --- | --- | --- |
+| **Intrlay** | Rust derives or C++ annotations | Direct views over fixed headers and relative payload offsets | Requires [agreement on the encoded layout](reference/binary-layout.mdx#compatibility); no built-in evolution mechanism |
+| [FlatBuffers](https://flatbuffers.dev/) | `.fbs` IDL | Direct table accessors and inline structs | [Tables can evolve; structs have a fixed layout](https://flatbuffers.dev/evolution/) |
+| [Cap'n Proto](https://capnproto.org/) | `.capnp` IDL | Direct readers over unpacked structs and lists | Compatible changes follow field-number and layout rules |
+| [rkyv](https://rkyv.org/feature-comparison.html) | Rust derives and traits | Direct access to archived Rust types | Requires agreement on the archive layout; no built-in schema evolution |
+| [serde-reflection / serde-generate](https://github.com/zefchain/serde-reflection) | Formats traced from Rust Serde types | Generated types and Bincode or BCS serialization/deserialization | Compatibility depends on the encoding and type changes |
+| [SBE](https://github.com/aeron-io/simple-binary-encoding/wiki/Design-Principles) | XML schema | Direct buffer access; groups and variable data use ordered traversal | [Versioned extensions under defined rules](https://github.com/aeron-io/simple-binary-encoding/wiki/Message-Versioning) |
+| [Protocol Buffers](https://protobuf.dev/overview/) | `.proto` IDL | Parse into message APIs, then access fields | [Compatible field changes under defined rules](https://protobuf.dev/programming-guides/proto3/#updating) |
+
+Intrlay generates Rust, C++, TypeScript/JavaScript, C#, Python, and Dart APIs.
+rkyv focuses on Rust. The other projects offer multiple language implementations,
+but a format's capabilities do not imply identical APIs or feature coverage in
+every target. For example, serde-generate documents TypeScript as partial support
+alongside its fully supported targets. See its
+[language and encoding support](https://github.com/zefchain/serde-reflection/blob/main/serde-generate/README.md#supported-languages).
+
+## Where Intrlay fits
+
+Intrlay is a useful fit when you control the participants and want to share a
+binary representation while keeping application types in Rust or C++:
+
+- **Use source-language declarations.** Records, payload-bearing enums, optional
+  values, fixed arrays, sequences, strings, and owned trees become a common
+  schema. Export concrete generic instantiations and use adapters for supported
+  external Rust types. There is no separate IDL to keep aligned with those
+  declarations. See [Schema annotations](reference/annotations.mdx).
+- **Read only what you need.** Fixed headers and element strides let views reach
+  a field or sequence element without decoding earlier elements, including when
+  elements contain dynamic payloads. See [Binary layout](reference/binary-layout.mdx).
+- **Choose who allocates.** Measure the complete encoding, allocate a buffer, and
+  write it once, or construct directly in caller-owned storage. Buffer ownership
+  and lifetime remain explicit. See [Storage](concepts/storage.mdx).
+- **Use the target language's facilities.** C++ uses value-type views, C# has
+  memory-backed structs and scoped span views, and Rust uses borrows.
+  TypeScript, Python, and Dart can expose numeric projections and indexed
+  accessors to avoid temporary wrappers. Follow the
+  [language guides](index.mdx#language-guides) for concrete APIs.
+- **Update existing storage.** Scalars, sequence elements, and complete fixed
+  values can change in place. A fixed enum can switch alternatives when every
+  alternative fits its reserved representation. See [Mutation](concepts/mutation.mdx).
+
+These capabilities are not all unique to Intrlay. FlatBuffers, Cap'n Proto, and
+rkyv also support direct reads, and SBE also emphasizes direct writes and reduced
+allocation. Intrlay combines these goals with Rust/C++ schema frontends and
+control over the generated API in its six targets.
+
+## Constraints to consider
+
+| Requirement | Intrlay's current contract |
+| --- | --- |
+| Independently upgrade readers and writers | Coordinate layout changes in the application; buffers do not negotiate schemas or preserve unknown fields. |
+| Read bytes from an untrusted producer | Establish a valid encoding before opening views. Intrlay has no general input validator. |
+| Grow a string or collection through a view | Construct a new encoding, optionally reusing storage. Views do not relocate payloads or resize collections. |
+| Preserve shared object identity | Owned trees are supported; shared references and arbitrary object graphs are outside the data model. |
+| Minimize transmitted bytes | Fixed-width values, reserved inline storage, and alignment padding take space. There is no built-in compression or omission of default-valued fields. |
+| Encode a value beyond the supported `u32` address space | Split the data at the schema or application level. Intrlay does not segment an oversized encoding. |
+| Generate for another language | The current targets are Rust, C++, TypeScript, C#, Python, and Dart. |
+
+Source-language declarations do not make every source-language type portable.
+Intrlay supports a defined data model; it does not export arbitrary Rust traits,
+C++ behavior, native container layouts, or executable code.
+
+## When another solution fits better
+
+### FlatBuffers
+
+Consider FlatBuffers when independently deployed producers and consumers need
+schema evolution while retaining direct buffer access. Its distinction between
+tables and structs is important: tables support optional fields and evolution,
+while structs provide a fixed inline layout. Dense numeric data can use structs
+and vectors.
+See [Schemas](https://flatbuffers.dev/schema/) and
+[Evolution](https://flatbuffers.dev/evolution/).
+
+Intrlay is a closer fit when Rust or C++ declarations should define the schema
+and coordinated layout changes are acceptable. FlatBuffers also provides tools
+such as the C++ buffer verifier that Intrlay does not provide.
+[C++ validation](https://flatbuffers.dev/languages/cpp/#access-of-untrusted-buffers)
+is an optional pass before direct reads, not a cost incurred by every accessor.
+
+### Cap'n Proto
+
+Consider Cap'n Proto when you need direct access together with compatible schema
+changes, segmented message construction, or its capability-based RPC system.
+Its encoding can span multiple memory segments. Intrlay uses one contiguous
+encoded region and leaves RPC and transport to the application.
+See the [introduction](https://capnproto.org/) and
+[encoding specification](https://capnproto.org/encoding.html).
+
+Cap'n Proto readers check pointers as they are traversed. Its optional packed
+wire representation must be unpacked before ordinary direct access. See
+[Packing](https://capnproto.org/encoding.html#packing).
+
+### rkyv
+
+Consider rkyv when the participants are Rust programs and you want a broader
+archiving model. Its extensible traits support types such as maps, sets, and
+shared pointers, and its optional bytecheck integration can validate an archive
+before exposing a checked reference. See its
+[collections](https://docs.rs/rkyv/latest/rkyv/collections/index.html),
+[feature comparison](https://rkyv.org/feature-comparison.html), and
+[validation model](https://rkyv.org/validation.html).
+
+Intrlay's distinction is generating a shared representation and APIs for other
+languages, including schemas originating in C++. rkyv does not need to restrict
+its public type model to what those target APIs can represent.
+
+### serde-reflection / serde-generate
+
+Consider this pair when existing Serde types and Bincode or BCS compatibility are
+the starting point. serde-reflection records Serde formats; serde-generate uses
+them to generate native types and serialization methods in other languages.
+The recorded format can also be checked into version control to detect protocol
+changes. See the [project overview](https://github.com/zefchain/serde-reflection).
+
+Intrlay is useful when consumers should work directly on encoded storage. The
+serde-generate path instead provides values that consumers can manipulate and
+serialize again. Both approaches start from language-native declarations; they
+provide different reading and mutation models.
+
+### SBE
+
+Consider SBE when messages are processed in schema order and low, predictable
+latency is central. Its flyweights access the underlying buffer directly, and
+the format supports versioned extensions. Fixed fields can be addressed directly;
+repeating groups and variable data follow a sequential access contract.
+See the [design principles](https://github.com/aeron-io/simple-binary-encoding/wiki/Design-Principles)
+and [access model](https://github.com/aeron-io/simple-binary-encoding/wiki/Java-Users-Guide).
+
+Intrlay's relative offsets and fixed element headers are useful when consumers
+need to revisit nested values in arbitrary order.
+
+### Protocol Buffers
+
+Consider Protocol Buffers when independently versioned services, persistent
+messages, or an existing Protobuf toolchain determine the interface. Its format
+uses field numbers and supports defined compatible changes. Generated APIs
+normally parse bytes into message representations before field access.
+See the [overview](https://protobuf.dev/overview/) and
+[schema evolution rules](https://protobuf.dev/programming-guides/proto3/#updating).
+
+Intrlay is useful when participants share a layout and direct access to an
+existing buffer matters more than compatibility between schema revisions.
+Protobuf's [zero-copy stream API](https://protobuf.dev/reference/cpp/api-docs/google.protobuf.io.zero_copy_stream/)
+reduces I/O copying; parsing the message remains a separate operation.

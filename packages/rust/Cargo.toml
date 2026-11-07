@@ -1,0 +1,23 @@
+[package]
+name = "intrlay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+readme = "README.md"
+license.workspace = true
+repository.workspace = true
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE*"]
+description = "Typed views and direct construction for trusted byte-oriented object exchange"
+
+[features]
+default = ["derive"]
+derive = ["dep:intrlay-derive"]
+
+[dependencies]
+intrlay-layout.workspace = true
+intrlay-schema.workspace = true
+intrlay-derive = { workspace = true, optional = true }
+
+[lints]
+workspace = true

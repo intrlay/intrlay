@@ -1,0 +1,23 @@
+[package]
+name = "intrlay-frontend-cpp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+readme.workspace = true
+license.workspace = true
+repository.workspace = true
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE*"]
+description = "Clang-backed C++20 source frontend for Intrlay"
+
+[dependencies]
+intrlay-schema.workspace = true
+clang = { version = "2.1", features = ["runtime", "clang_10_0"] }
+
+[dev-dependencies]
+intrlay.workspace = true
+serde_json.workspace = true
+tempfile = "3.23"
+
+[lints]
+workspace = true

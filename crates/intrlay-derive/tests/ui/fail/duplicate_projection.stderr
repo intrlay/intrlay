@@ -1,0 +1,5 @@
+error: duplicate or conflicting project option
+ --> tests/ui/fail/duplicate_projection.rs:2:46
+  |
+2 | struct Value { #[intrlay(project = "fields", project = "indexed")] values: Vec<u32> }
+  |                                              ^^^^^^^

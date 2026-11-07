@@ -1,0 +1,56 @@
+[workspace]
+members = ["crates/*", "packages/rust", "xtask"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.2"
+edition = "2024"
+rust-version = "1.95"
+publish = true
+readme = "README.md"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/intrlay/intrlay"
+
+[workspace.dependencies]
+intrlay-layout = { path = "crates/intrlay-layout", version = "0.1.2" }
+intrlay-schema = { path = "crates/intrlay-schema", version = "0.1.2" }
+intrlay = { path = "packages/rust", version = "0.1.2" }
+intrlay-derive = { path = "crates/intrlay-derive", version = "0.1.2" }
+intrlay-codegen = { path = "crates/intrlay-codegen", version = "0.1.2" }
+intrlay-frontend-cpp = { path = "crates/intrlay-frontend-cpp", version = "0.1.2" }
+intrlay-frontend-rust = { path = "crates/intrlay-frontend-rust", version = "0.1.2" }
+proc-macro2 = "1.0"
+proc-macro-crate = "3.5"
+trybuild = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+heck = "0.5"
+
+[workspace.lints.rust]
+missing_docs = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+allow_attributes_without_reason = "deny"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

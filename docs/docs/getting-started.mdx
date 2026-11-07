@@ -1,0 +1,118 @@
+# Getting started
+
+This example defines a Rust schema and generates TypeScript views. The same
+schema can generate all six target languages. C++ source declarations are
+covered in the [C++ guide](languages/cpp.mdx).
+
+## Install the generator
+
+With Rust 1.95 or later:
+
+```sh
+cargo install intrlay-cli
+```
+
+With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) installed, use
+the prebuilt generator instead:
+
+```sh
+cargo binstall intrlay-cli
+```
+
+Prebuilt executables support Windows, Linux, and macOS on x64 and ARM64. Linux
+binaries require glibc 2.39 or later. You can also download the archives directly
+from [GitHub Releases](https://github.com/intrlay/intrlay/releases).
+Rust schema collection still needs Cargo and rustc installed. Generating from an
+existing schema JSON does not.
+
+From an Intrlay source checkout, install the local CLI instead:
+
+```sh
+cargo install --path crates/intrlay-cli
+```
+
+When developing Intrlay itself, use the checkout's runtime packages as local
+dependencies. For Rust, replace the registry dependency below with
+`intrlay = { path = "/path/to/intrlay/packages/rust" }`. For TypeScript, install
+`/path/to/intrlay/packages/typescript` in place of `@intrlay/runtime`, after
+running `npm ci` and `npm run build` in that runtime directory.
+
+## Define a schema
+
+In your own project directory, create a library:
+
+```sh
+cargo new --lib protocol
+cargo add --manifest-path protocol/Cargo.toml intrlay
+```
+
+Replace `protocol/src/lib.rs` with:
+
+```rust
+use intrlay::Intrlay;
+
+#[derive(Intrlay)]
+pub struct Point {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+intrlay::export_types!(Point);
+```
+
+The derive supplies Rust views. `export_types!` declares the types to expose to
+the code generator.
+
+## Generate a target API
+
+From the directory containing `protocol`:
+
+```sh
+intrlay generate --manifest-path protocol/Cargo.toml --language typescript --output generated/point.ts --module-name example
+```
+
+The CLI uses Cargo to collect the schema and writes `generated/point.ts`. See
+[Code generation](reference/code-generation.mdx) for workspace and feature options.
+
+## Use the generated view
+
+For a small Node.js consumer, initialize an ES-module project:
+
+```sh
+npm init -y
+npm pkg set type=module
+npm install @intrlay/runtime
+npm install --save-dev typescript
+```
+
+Create `example.ts` next to `protocol` and `generated`:
+
+```typescript
+import { PointView } from "./generated/point.js";
+
+const point = PointView.create({ x: 1, y: 2, z: 3 });
+point.x = 4;
+
+const received = new PointView(point.bytes);
+console.log(received.x); // 4
+```
+
+Compile and run:
+
+```sh
+npx tsc --strict --target ES2022 --module NodeNext --outDir dist example.ts
+node dist/example.js
+```
+
+Both views access the same `Uint8Array`. In an application, pass that byte region
+through your FFI or transport, then construct a view on the receiving side. A
+transport may copy or transfer the bytes; Intrlay does not prescribe that step.
+
+## Next steps
+
+Continue with [Tutorial: a drawing message](tutorial.mdx) to combine strings,
+arrays, optional values, and enum payloads. The [C++ guide](languages/cpp.mdx)
+defines the same drawing using standard C++ containers. If you already have a
+schema, open your [language guide](index.mdx#language-guides)
+for its construction and view APIs.

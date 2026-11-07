@@ -1,0 +1,5 @@
+error: tag is not supported at this annotation location
+ --> tests/ui/fail/container_scope.rs:2:11
+  |
+2 | #[intrlay(tag=7)]
+  |           ^^^

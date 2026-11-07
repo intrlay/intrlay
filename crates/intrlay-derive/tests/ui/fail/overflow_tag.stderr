@@ -1,0 +1,7 @@
+error[E0080]: attempt to compute `u32::MAX + 1_u32`, which would overflow
+ --> tests/ui/fail/overflow_tag.rs:1:10
+  |
+1 | #[derive(wire::Intrlay)]
+  |          ^^^^^^^^^^^^^ evaluation of `_` failed here
+  |
+  = note: this error originates in the derive macro `wire::Intrlay` (in Nightly builds, run with -Z macro-backtrace for more info)

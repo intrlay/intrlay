@@ -1,0 +1,20 @@
+[package]
+name = "intrlay-frontend-rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+readme.workspace = true
+license.workspace = true
+repository.workspace = true
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE*"]
+description = "Cargo-backed Rust schema extraction for Intrlay"
+
+[dependencies]
+intrlay-schema.workspace = true
+cargo_metadata = "0.23"
+tempfile = "3.23"
+toml_edit = "0.25"
+
+[lints]
+workspace = true

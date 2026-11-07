@@ -1,0 +1,180 @@
+# Tutorial: a drawing message
+
+This tutorial builds on [Getting started](getting-started.mdx). It sends a drawing
+with a title, a collection of points, an optional selection, and a command with
+its own payload. The consumer reads and changes that data through views.
+
+The walkthrough uses a Rust schema and a TypeScript consumer. The
+[language guides](index.mdx#language-guides) use the same drawing in every target.
+The [C++ guide](languages/cpp.mdx#define-a-c-schema) also shows how to define the
+message with standard C++ containers. Either source language can generate all
+six targets; you only maintain one source definition.
+
+## 1. Define the message
+
+Replace `protocol/src/lib.rs` from the quick start with:
+
+```rust title="Rust — protocol/src/lib.rs"
+use intrlay::Intrlay;
+
+#[derive(Intrlay)]
+pub struct Point {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+#[derive(Intrlay)]
+pub enum DrawingCommand {
+    Clear,
+    DrawPoint { position: Point, size: f32 },
+}
+
+#[derive(Intrlay)]
+pub struct Drawing {
+    pub title: String,
+    pub points: Vec<Point>,
+    pub selected_point: Option<u32>,
+    pub command: DrawingCommand,
+}
+
+intrlay::export_types!(Drawing);
+```
+
+Only `Drawing` needs to be exported. Its fields bring `Point` and
+`DrawingCommand` into the schema automatically. `selected_point` is an index
+chosen by the application; Intrlay does not give it a special reference meaning.
+
+## 2. Generate the views
+
+For the Rust library:
+
+```sh
+intrlay generate --manifest-path protocol/Cargo.toml --language typescript --module-name drawing --output generated/drawing.ts
+```
+
+The generated file contains input types and buffer views. For example, the
+TypeScript input for `command` is a discriminated union:
+
+```typescript
+type DrawingCommand =
+    | { readonly kind: "Clear" }
+    | { readonly kind: "DrawPoint"; readonly position: Point; readonly size: number };
+```
+
+This is an excerpt from the generated API, not another declaration to add to
+your application. The native input describes what to encode; `DrawingCommandView`
+reads the encoded tag and payload.
+
+## 3. Construct a buffer
+
+Create `drawing-example.ts` beside `generated/`:
+
+```typescript title="drawing-example.ts"
+import { DrawingView } from "./generated/drawing.js";
+import type { Drawing } from "./generated/drawing.js";
+
+const value: Drawing = {
+    title: "Sketch",
+    points: [
+        { x: 1, y: 2, z: 3 },
+        { x: 4, y: 5, z: 6 }
+    ],
+    selectedPoint: null,
+    command: {
+        kind: "DrawPoint",
+        position: { x: 7, y: 8, z: 9 },
+        size: 0.5
+    }
+};
+
+const drawing = DrawingView.create(value);
+console.log(drawing.title);         // Sketch
+console.log(drawing.points.length); // 2
+```
+
+`create` measures the title and point collection, allocates one encoded buffer,
+and writes the fields. It does not keep a live connection to `value`.
+
+Compile and run using the TypeScript setup from Getting started:
+
+```sh
+npx tsc --strict --target ES2022 --module NodeNext --outDir dist drawing-example.ts
+node dist/drawing-example.js
+```
+
+The remaining snippets can be appended to this file.
+
+## 4. Read a received message
+
+```typescript
+const received = new DrawingView(drawing.bytes);
+
+console.log(received.points.get(1).x); // 4
+console.log(received.selectedPoint);  // null
+
+const position = received.command.drawPointPosition;
+if (position !== undefined) {
+    console.log(position.x);                    // 7
+    console.log(received.command.drawPointSize); // 0.5
+}
+```
+
+The constructor wraps existing bytes without decoding the entire message. A
+collection returns element views. A variant-specific getter returns `undefined`
+when that variant is inactive; `tag` also exposes the numeric tag when needed.
+
+Here `received` shares the producer's buffer. An IPC transport might instead
+deliver a copy, while an FFI call might lend the original memory. In either case,
+the receiving view expects the complete encoding of the agreed schema.
+
+## 5. Update existing values
+
+```typescript
+drawing.points.get(0).x = 10;
+drawing.selectedPoint = 0;
+drawing.command.replace({ kind: "Clear" });
+
+console.log(received.points.get(0).x);           // 10
+console.log(received.selectedPoint);            // 0
+console.log(received.command.drawPointPosition); // undefined
+```
+
+The first three reads reflect the changed bytes. The original input points still
+contain `1` and `4`. Replacing the command works because every variant has a
+fixed encoding. Do not keep using `position` from the previous step after its
+variant becomes inactive; obtain the active payload again.
+
+The title and collection length were fixed during construction. To change the
+title or add points, construct another message:
+
+```typescript
+const renamed = DrawingView.create({ ...value, title: "Another sketch" });
+console.log(renamed.title); // Another sketch
+```
+
+This encodes `value` again, including its original points and command. It is not
+a copy of mutations made through `drawing`. See [Mutation](concepts/mutation.mdx)
+for the distinction between replacing a fixed field and rebuilding a message.
+
+## 6. Choose who allocates
+
+If the caller supplies storage, measure first and initialize that region:
+
+```typescript
+const bytes = new Uint8Array(DrawingView.computeByteLength(value));
+const inPlace = DrawingView.createInPlace(bytes, value);
+console.log(inPlace.title); // Sketch
+```
+
+The allocating and in-place forms produce the same representation. FFI buffers
+also need the correct alignment and lifetime; [Storage and ownership](concepts/storage.mdx)
+shows how to use an aligned slice of a larger allocation.
+
+## Continue
+
+Read [Values, buffers, and views](concepts/buffers-and-views.mdx) to understand what
+each operation owns or copies, or open a [language guide](index.mdx#language-guides)
+for the same message's Rust, C++, C#, Python, and Dart APIs. Custom projections and
+names belong in [Schema annotations](reference/annotations.mdx) and
+[Generated names](reference/naming.mdx).

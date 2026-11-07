@@ -1,0 +1,42 @@
+[package]
+name = "intrlay-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+readme.workspace = true
+license.workspace = true
+repository.workspace = true
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE*"]
+description = "Intrlay schema extraction and typed buffer view generator"
+
+[[bin]]
+name = "intrlay"
+path = "src/main.rs"
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/intrlay-{ version }-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "intrlay-{ version }-{ target }/bin/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/intrlay-{ version }-{ target }.zip"
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/intrlay-{ version }-{ target }.zip"
+pkg-fmt = "zip"
+
+[dependencies]
+intrlay-schema.workspace = true
+intrlay-codegen.workspace = true
+intrlay-frontend-cpp.workspace = true
+intrlay-frontend-rust.workspace = true
+serde_json.workspace = true
+clap = { version = "4.5", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3.23"
+
+[lints]
+workspace = true

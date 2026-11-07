@@ -1,0 +1,28 @@
+error[E0616]: field `offset` of struct `ValueView` is private
+  --> tests/ui/fail/view_storage_private.rs:15:20
+   |
+15 |     packet.storage.offset = 8;
+   |                    ^^^^^^ private field
+
+error[E0616]: field `buffer` of struct `ValueView` is private
+  --> tests/ui/fail/view_storage_private.rs:16:20
+   |
+16 |     packet.storage.buffer.as_mut()[0] = 2;
+   |                    ^^^^^^ private field
+
+error[E0616]: field `offset` of struct `ValueView` is private
+  --> tests/ui/fail/view_storage_private.rs:20:20
+   |
+20 |     choice.storage.offset = 8;
+   |                    ^^^^^^ private field
+
+error[E0308]: mismatched types
+  --> tests/ui/fail/view_storage_private.rs:21:22
+   |
+21 |     choice.storage = wire::ValueView::<u64, _>::create(&42).unwrap();
+   |     --------------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `ValueView<Choice, OwnedBuffer>`, found `ValueView<u64, OwnedBuffer>`
+   |     |
+   |     expected due to the type of this binding
+   |
+   = note: expected struct `ValueView<Choice, OwnedBuffer>`
+              found struct `ValueView<u64, OwnedBuffer>`

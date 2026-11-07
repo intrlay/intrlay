@@ -1,0 +1,29 @@
+[package]
+name = "intrlay-derive"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+readme.workspace = true
+license.workspace = true
+repository.workspace = true
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE*"]
+description = "Derive native views and compiler-resolved Intrlay metadata"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+intrlay-schema.workspace = true
+proc-macro2.workspace = true
+proc-macro-crate.workspace = true
+quote.workspace = true
+syn = { workspace = true, features = ["visit-mut"] }
+heck.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+wire = { package = "intrlay", path = "../../packages/rust" }
+trybuild.workspace = true

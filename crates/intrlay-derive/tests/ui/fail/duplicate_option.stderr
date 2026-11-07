@@ -1,0 +1,5 @@
+error: duplicate or conflicting generate_setters option
+ --> tests/ui/fail/duplicate_option.rs:2:35
+  |
+2 | #[intrlay(generate_setters=false, generate_setters=true)]
+  |                                   ^^^^^^^^^^^^^^^^

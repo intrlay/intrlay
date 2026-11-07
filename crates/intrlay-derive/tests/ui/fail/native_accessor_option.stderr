@@ -1,0 +1,17 @@
+error: accessor generation options apply only to typescript, python, and dart
+ --> tests/ui/fail/native_accessor_option.rs:2:16
+  |
+2 | #[intrlay(rust(generate_getters = false))]
+  |                ^^^^^^^^^^^^^^^^
+
+error: accessor generation options apply only to typescript, python, and dart
+ --> tests/ui/fail/native_accessor_option.rs:6:15
+  |
+6 | #[intrlay(cpp(generate_setters = false))]
+  |               ^^^^^^^^^^^^^^^^
+
+error: accessor generation options apply only to typescript, python, and dart
+  --> tests/ui/fail/native_accessor_option.rs:10:18
+   |
+10 | #[intrlay(csharp(generate_setters = false))]
+   |                  ^^^^^^^^^^^^^^^^
