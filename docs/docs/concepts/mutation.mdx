@@ -1,0 +1,96 @@
+# Mutation
+
+A view can update values within the space established during construction. It
+does not grow a collection or relocate a string to make room for a new value.
+
+## Change elements without changing the collection
+
+For the [tutorial's drawing](../tutorial.mdx):
+
+```typescript
+drawing.points.get(0).x = 10;
+drawing.selectedPoint = 0;
+drawing.selectedPoint = null;
+```
+
+The point already has space for `x`. The optional integer has space for both its
+presence marker and its value, so it can switch between present and absent.
+Neither operation changes the buffer's shape.
+
+There is no setter for `drawing.title` or `drawing.points.length`. To change
+those, supply a new native value to `create` or `createInPlace`. Reusing an
+allocation is allowed, but its previous views then refer to a replaced encoding;
+open new views for the new message.
+
+## Replace a complete fixed value
+
+Both variants of `DrawingCommand` fit entirely in their fixed encoding. This
+allows replacement, including a change of tag:
+
+```typescript
+drawing.command.replace({
+    kind: "DrawPoint",
+    position: { x: 7, y: 8, z: 9 },
+    size: 0.5
+});
+console.log(drawing.command.drawPointSize); // 0.5
+
+drawing.command.replace({ kind: "Clear" });
+console.log(drawing.command.drawPointSize); // undefined
+```
+
+The parent also exposes `drawing.setCommand(value)`. Composite replacement is a
+method because it accepts a native input, while the corresponding getter returns
+a view. Scalars and nullable scalars use property setters where the language
+supports them.
+
+A fixed **header** is not the same as a fixed **encoding**:
+
+| Field type | Can replace the whole field in its current storage? |
+| --- | --- |
+| `Point`, `[f32; 3]` | Yes: the complete value is inline. |
+| `Option<u32>` | Yes: presence and value are inline. |
+| `DrawingCommand` from the tutorial | Yes: every variant has a fixed payload. |
+| `String`, `Vec<Point>` | No: payload size is determined during construction. |
+| An enum with a `String` payload | No: its fixed tag/header does not reserve every possible string. |
+
+`Box` and dynamic optional wrappers can still expose setters for existing fixed
+children. For example, an existing `Option<Box<u32>>` can update the contained
+integer; a setter cannot allocate a missing box or change that wrapper's shape.
+
+## Obtain active children again
+
+After an enum tag or optional presence changes, obtain its child view again.
+For example, starting with `DrawPoint` active:
+
+```typescript
+const oldPosition = drawing.command.drawPointPosition;
+drawing.command.replace({ kind: "Clear" });
+const currentPosition = drawing.command.drawPointPosition; // undefined
+```
+
+Do not use `oldPosition` after this replacement. Its bytes no longer represent an
+active point. Getters reread tags and presence bits, including changes made
+through another view. Rust's safe mutation borrows prevent retaining an active
+shared borrow across the mutation.
+
+## Supply independent replacement inputs
+
+Construction and replacement inputs must not overlap their destination, including
+through a nested view or array. Reading from bytes while the same operation
+overwrites them is outside the writer contract. Disjoint regions of one allocation
+are fine. There is no runtime overlap check on every write.
+
+Keep the native input stable throughout measurement and writing. Coordinate any
+concurrent readers and writers in the application; Intrlay does not add locks.
+
+## Omitting setters only reduces generated code
+
+The `generate_getters`, `generate_setters`, and `create` annotations choose which
+APIs are emitted. They do not create a new readonly storage model. A returned
+TypedArray still has its normal mutation operations, and a child view keeps the
+API defined for its own type.
+
+These options do not override Rust borrows, C++ const storage, C# readonly views,
+or Python immutable buffers. See [Schema annotations](../reference/annotations.mdx#accessor-generation-and-construction)
+for their target-specific scope.

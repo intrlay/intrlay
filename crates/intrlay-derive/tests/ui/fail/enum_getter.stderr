@@ -1,0 +1,5 @@
+error: getter requires a remote struct adapter
+ --> tests/ui/fail/enum_getter.rs:6:28
+  |
+6 |         #[intrlay(getter = extract)]
+  |                            ^^^^^^^

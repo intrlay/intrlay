@@ -1,0 +1,12 @@
+{
+  "name": "intrlay-typescript-conformance",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --strict --noEmit --target ES2022 --module ESNext --moduleResolution Bundler ../../target/conformance/bindings.ts annotations.ts",
+    "test": "node conformance.mjs ../../target/conformance"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="intrlay-logo-title intrlay-logo-description">
+  <title id="intrlay-logo-title">Intrlay</title>
+  <desc id="intrlay-logo-description">A continuous data bar crosses an open boundary.</desc>
+  <path fill="currentColor" d="M28 44V28L46 10H82L100 28V44H84V35L75 26H53L44 35V44ZM28 84V100L46 118H82L100 100V84H84V93L75 102H53L44 93V84Z"/>
+  <path fill="currentColor" d="M12 56H116L120 60V68L116 72H12L8 68V60Z"/>
+</svg>

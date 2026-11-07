@@ -1,0 +1,113 @@
+---
+title: "C#"
+---
+
+# C#
+
+Install `Intrlay` with `dotnet add package Intrlay`. The package targets .NET 8
+and uses C# 12 features. It includes both the runtime and a Roslyn incremental
+source generator; no separate analyzer package is needed.
+
+## Generation and compilation
+
+Generate the [tutorial schema](../tutorial.mdx#1-define-the-message) with
+`--language csharp --module-name drawing`, then include the resulting
+`.cs` file in your project. It contains native partial types and resolved wire
+metadata. The Roslyn generator supplies their members, constructors, views, and
+codecs during compilation and IDE analysis.
+
+The shared Rust implementation computes offsets, alignment, and strides. The C#
+generator consumes those values rather than deriving a wire format from CLR
+layout. Schema attributes are omitted from the final assembly unless
+`INTRLAY_INCLUDE_SCHEMA` is defined.
+
+The default namespace is `IntrlayGenerated.Drawing` for this module. Set
+`csharp_namespace` in the CLI options file to override it.
+
+## Memory-backed views
+
+```csharp
+using System;
+using IntrlayGenerated.Drawing;
+
+var command = DrawingCommand.FromDrawPoint(new Point(7, 8, 9), 0.5f);
+var value = new Drawing("Sketch", new Point[] { new(1, 2, 3) }, null, command);
+var drawing = DrawingView.Create(in value);
+
+Console.WriteLine(drawing.Title);       // Sketch
+Console.WriteLine(drawing.Points[0].X); // 1
+Console.WriteLine(drawing.SelectedPoint is null); // True
+if (drawing.Command.DrawPointPosition is { } position)
+{
+    Console.WriteLine(position.X); // 7
+}
+
+drawing.Points[0].SetX(10);
+drawing.SetSelectedPoint(0);
+var clear = DrawingCommand.FromClear();
+drawing.Command.Replace(in clear);
+
+var received = new DrawingViewReadOnly(drawing.Bytes);
+Console.WriteLine(received.Points[0].X); // 10
+Console.WriteLine(received.Command.DrawPointPosition is null); // True
+```
+
+`Drawing` is a native input struct. `DrawingView` is a value-type view backed by
+`Memory<byte>`; it can be stored in an ordinary object without allocating a
+wrapper for each access. `DrawingViewReadOnly` uses read-only storage.
+
+Enum inputs use typed factories. Variant-specific getters return nullable results
+when the alternative is inactive; `Tag` exposes the numeric tag. The input
+collection is `ReadOnlyMemory<Point>`, supplied here by a `Point[]`. The view's
+collection indexes encoded elements without reconstructing that array.
+
+Construction allocates the encoded buffer unless `CreateInPlace` is used.
+Reading through a view does not reconstruct the native value's object tree.
+
+## Scoped span views
+
+Use `drawing.AsSpan()` for scoped access to an existing memory-backed view. The
+same message can also be encoded directly into a stack buffer. With `value` above:
+
+```csharp
+Span<byte> bytes = stackalloc byte[DrawingView.ComputeByteLength(in value)];
+var scoped = DrawingSpanView.CreateInPlace(bytes, in value);
+scoped.Points[0].SetX(20);
+Console.WriteLine(scoped.Points[0].X); // 20
+```
+
+Keep stack allocations small and bounded. The fixed `ByteSize` is only the
+header size; measuring includes the title and point payloads. For caller-owned
+heap memory, `DrawingView.CreateInPlace(memory, in value)` provides the same
+construction operation on `Memory<byte>`.
+
+Span views are `ref struct` APIs. They can avoid repeatedly resolving a memory
+owner during traversal and can refer to storage that cannot be held by
+`Memory<byte>`. Normal generated API use does not require the consuming project
+to enable unsafe code.
+
+For eligible native-layout collections, `TryGetNativeSpan` exposes native
+elements when its alignment and representation preconditions hold. Typed view
+access remains available when those preconditions are not met. Native layout
+is an optimization, not an assumption applied to every generated record.
+
+## Native collections and variants
+
+Native fixed arrays use generic `FixedArrayN<T>` inline-array structs, one per
+length in the module. Variable-length inputs use memory-backed representations
+such as `ReadOnlyMemory<T>`; they cannot retain stack storage. Span views concern
+encoded storage and do not change that native input model.
+
+Optional value types use `Nullable<T>` where it represents all states. Nested
+optional states use additional presence wrappers when needed.
+
+Native enums use typed factories and shared struct storage. Unmanaged payload
+fields can overlap in explicit-layout storage; managed references and collection
+owners occupy separate GC-visible slots reused across mutually exclusive
+variants. Nested enums reuse their own storage plans, avoiding expansion of
+every combination of alternatives. This native storage plan is distinct from
+the encoded layout.
+
+C# retains typed value APIs regardless of getter/setter omission or numeric
+projection options for reference-type targets. `create` still controls standalone
+construction APIs. See [Schema annotations](../reference/annotations.mdx).

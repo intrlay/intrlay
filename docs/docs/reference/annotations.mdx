@@ -1,0 +1,460 @@
+# Schema annotations
+
+Annotations describe the generated API independently of the encoded layout.
+Both source frontends produce the same schema metadata. Invalid scopes,
+conflicting options, unsupported projections, duplicate tags, and generated-name
+collisions are reported during derive, extraction, or generation.
+
+For a complete first schema, start with the [drawing tutorial](../tutorial.mdx).
+This page describes individual controls and their effects:
+
+| Goal | Annotation / reference |
+| --- | --- |
+| Avoid a wrapper object around one value | [`transparent`](#transparent-wrappers) |
+| Omit unused construction or accessors | [`create`, `generate_getters`, `generate_setters`](#accessor-generation-and-construction) |
+| Expose numeric lanes or indexed fields | [`project`](#numeric-and-indexed-projections) |
+| Rename a declaration | [`name` and target overrides](#target-options-and-names) |
+| Change naming conventions across a module | [Generation naming policy](naming.mdx) |
+| Assign an enum's encoded tag | [Enum tags](#enum-tags) |
+| Configure a Rust derive or external type | [Trait bounds](#rust-trait-bounds-and-runtime-paths), [adapters](#external-rust-types) |
+
+## Transparent wrappers
+
+Mark a record with exactly one field when its wrapper should disappear from APIs
+that would otherwise allocate an object for it:
+
+```rust title="Rust"
+#[derive(intrlay::Intrlay)]
+#[intrlay(transparent)]
+struct UserId {
+    value: u32,
+}
+```
+
+The C++ equivalent is:
+
+```cpp title="C++"
+#include <intrlay/annotations.hpp>
+#include <cstdint>
+
+struct INTRLAY(transparent) UserId {
+    std::uint32_t value;
+};
+```
+
+| Target | Nested field and collection element API |
+| --- | --- |
+| TypeScript | The inner value, such as `number` |
+| Python | The inner value, such as `int` |
+| Dart | The inner value, such as `int` |
+| Rust | The typed wrapper and its view |
+| C++ | The typed wrapper and its value-type view |
+| C# | The typed wrapper and its value-type view |
+
+This is one common policy, without per-language folding annotations. It also
+applies to wrappers around strings, optional values, and composite values.
+The standalone `UserIdView` construction and borrowing entry point remains
+available, so callers do not need a separate root-buffer API for scalar wrappers.
+
+For a parent field `user_id: UserId` (or C++ `UserId user_id`), the default
+TypeScript consumer changes as follows:
+
+```typescript title="Without transparent"
+const id = message.userId.value; // Access through the wrapper view.
+```
+
+```typescript title="With transparent"
+const id = message.userId; // number
+```
+
+`transparent` does not change offsets, alignment, padding, or stride. For example,
+`#[repr(C, align(16))] struct UserId(u32)` still occupies 16 bytes per element
+when its TypeScript API exposes a number. It is independent of Rust's native
+`#[repr(transparent)]` layout attribute.
+
+A recursive cycle consisting only of transparent wrappers and container aliases
+cannot be projected to reference-type targets. Keep a non-transparent record or
+enum in that cycle. Ordinary recursive trees with records and `Box` or sequences
+remain supported.
+
+## Accessor generation and construction
+
+`generate_getters`, `generate_setters`, and `create` default to `true`:
+
+```rust title="Rust"
+#[derive(intrlay::Intrlay)]
+#[intrlay(generate_setters = false, create = false)]
+struct IncomingFrame {
+    timestamp: u64,
+    positions: Vec<[f32; 3]>,
+}
+
+#[derive(intrlay::Intrlay)]
+struct Command {
+    #[intrlay(generate_setters = false)]
+    request_id: u32,
+    value: f32,
+}
+```
+
+```cpp title="C++"
+#include <intrlay/annotations.hpp>
+#include <array>
+#include <cstdint>
+#include <vector>
+
+struct INTRLAY(generate_setters = false, create = false) IncomingFrame {
+    std::uint64_t timestamp;
+    std::vector<std::array<float, 3>> positions;
+};
+
+struct INTRLAY() Command {
+    std::uint32_t request_id INTRLAY(generate_setters = false);
+    float value;
+};
+```
+
+- `generate_getters = false` omits value getters and read helpers that would
+  require generated code in TypeScript, Python, and Dart.
+- `generate_setters = false` omits setters and mutation helpers that would
+  require generated code in those same three targets.
+- `create = false` omits public size calculation and construction factories in
+  every target. It is a container option, not a field or variant option.
+
+Getter/setter options reduce emitted code; they do not define access permissions.
+Rust, C++, and C# always generate their complete accessor APIs, regardless of
+common getter/setter options. Explicit getter/setter options scoped to these
+three languages are rejected. `create` is independent of this distinction.
+
+A returned numeric array retains its normal mutation API. No readonly TypedArray
+facade, read-only Python memoryview, or unmodifiable Dart list is introduced by
+these options. Similarly, a returned child view keeps the accessors generated
+for that child's declaration. Parent options do not produce restricted copies
+of child views. A navigation getter may still be emitted when it is needed to
+reach writable contents; its result remains an ordinary view.
+
+Each type can independently omit its own setters. A parent does not regenerate
+setters that the child's declaration omitted. An explicit flattened numeric
+projection deliberately bypasses the structural field API and keeps the native
+array's existing operations.
+
+Rust shared borrows, C++ const storage, C# readonly views, and Python immutable
+backing buffers still obey their language's storage rules. Accessor generation
+does not alter buffer ownership or mutability.
+
+Setters can replace a value when its complete encoding fits its fixed inline
+storage. This includes records, fixed arrays, nullable presence, and enum variants
+whose payloads contain no strings, variable-length arrays, or indirect allocation.
+A fixed-size header alone does not establish this property. Scalar and nullable
+scalar fields use property setters where the language supports them; composite
+values use replacement methods because their native input and borrowed view types
+differ.
+
+Construction and mutation inputs, including nested arrays and views, must not
+reference bytes that the operation may write. Partial overlap is also unsupported;
+disjoint regions of one allocation are allowed. This is a caller precondition,
+not a runtime check or a request to copy inputs before every write. Rust enforces
+it through safe borrows; callers crossing an unsafe or FFI boundary must preserve
+it. Multiple read views of the same encoding remain supported.
+
+Strings, array lengths, and relative offsets remain fixed after construction.
+Through `Box` and dynamically sized `Option` wrappers, setters follow the existing
+references and replace only a fixed inline payload. They do nothing if a required
+optional wrapper is absent; they do not allocate that missing payload. For example,
+`Option<u32>` can switch between `None` and `Some`, while `Option<Box<u32>>` can
+update an existing integer without adding or removing the box.
+
+Types can expose replacement methods even with `create = false`. Construction
+can initialize every field, and a constructible parent can initialize a child
+that has no standalone construction factory. Replacing an entire parent value
+does not require generating setters on each of its children's fields.
+
+## Target options and names
+
+Common options supply defaults. A target-specific option overrides that default
+on the same declaration, independently of annotation order:
+
+```rust title="Rust"
+#[derive(intrlay::Intrlay)]
+#[intrlay(generate_setters = false, typescript(generate_setters = true))]
+struct Reading {
+    #[intrlay(name = "sample_value", csharp(name = "SampleValue"))]
+    value: f32,
+}
+```
+
+C++ uses dotted target options:
+
+```cpp title="C++"
+#include <intrlay/annotations.hpp>
+
+struct INTRLAY(generate_setters = false, typescript.generate_setters = true) Reading {
+    float value INTRLAY(name = "sample_value", csharp.name = "SampleValue");
+};
+```
+
+The target names are `rust`, `cpp`, `typescript`, `csharp`, `python`, and `dart`.
+`name = "..."` can rename a type, field, or enum variant. An explicit target name
+is used literally; it bypasses the module's casing policy. The original Rust or
+C++ field name is retained for encoding source-language objects.
+
+Explicit names also retain the target language's accessibility semantics. For
+example, a Dart name beginning with `_` is allowed and remains library-private.
+Intrlay does not rewrite or diagnose a name merely because it changes
+accessibility; ordinary compiler and analyzer diagnostics still apply. Invalid
+identifiers and collisions with generated declarations or import aliases remain
+generation errors.
+
+Module-wide naming rules belong in `GenerateOptions`, supplied through
+[`intrlay generate --options naming.json`](naming.mdx#configure-a-whole-generation-unit).
+That reference includes the JSON format and resulting generated names. Explicit
+annotation names remain exceptions to the module-wide policy.
+
+C++ `using` and `typedef` annotations export concrete types. They support an
+optional common `name` for the export; definition-level API policies belong on
+the underlying record or enum. An alias does not create a separately configurable
+type identity.
+
+## Numeric and indexed projections
+
+`project` is a common field/type option for languages without value types:
+TypeScript, Python, and Dart. It reduces reference-object creation without
+changing the encoded layout. Rust, C++, and C# keep their structural APIs and
+ignore this option.
+
+| Option | API |
+| --- | --- |
+| `project = "fields"` | Structural views with named fields and typed elements |
+| `project = "indexed"` | Collection accessors, including field access by element index |
+| `project = "f32"` | One native numeric view over all scalar lanes and padding |
+
+For example:
+
+```rust title="Rust"
+#[derive(intrlay::Intrlay)]
+#[repr(C, align(16))]
+struct Position {
+    x: f32,
+    y: f32,
+    z: f32,
+}
+
+#[derive(intrlay::Intrlay)]
+struct Frame {
+    #[intrlay(project = "f32")]
+    positions: Vec<Position>,
+}
+```
+
+```cpp title="C++"
+#include <intrlay/annotations.hpp>
+#include <vector>
+
+struct alignas(16) INTRLAY() Position {
+    float x;
+    float y;
+    float z;
+};
+
+struct INTRLAY() Frame {
+    std::vector<Position> positions INTRLAY(project = "f32");
+};
+```
+
+The declaration above produces this TypeScript access pattern:
+
+```typescript title="With project = f32"
+const lanes: Float32Array = frame.positions;
+const x = lanes[index * 4]; // Three coordinates plus one padding lane per element.
+```
+
+Without the field annotation, the same collection uses structural access:
+
+```typescript title="Default structural access"
+const x = frame.positions.get(index).x;
+```
+
+Python receives a numeric `memoryview` and Dart a `Float32List` for the projected
+field. The projected region contains four `f32` lanes per element, including padding.
+The caller deliberately takes responsibility for the representation. Projection
+requires homogeneous numeric fields; it cannot expose strings, relative pointers,
+enum tags, or presence bits as arbitrary numeric contents. Supported lane types
+are `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`, `f32`, and `f64`.
+
+Homogeneous numeric fixed arrays use numeric views by default in these three
+targets; `project = "fields"` or `project = "indexed"` requests a structural
+collection view instead.
+
+Rust, C++, and C# retain typed elements and fixed-array structure. Their
+borrowing/value-type views provide indexed access without per-element
+reference-object allocation. Projection options are not scoped by language;
+`typescript(project = "f32")` is rejected. Use the common `project` option.
+
+An explicit numeric projection takes precedence over `transparent` folding
+in TypeScript, Python, and Dart. The same representation is retained inside
+options, boxes, and collection elements, including its padding and stride.
+Optional presence is still represented by the language's optional API rather
+than by numeric lanes.
+
+### Indexed field access
+
+TypeScript, Python, and Dart record collections provide helpers such as
+`getX(index)` and `setX(index, value)` to avoid constructing an element view.
+Rust, C++, and C# use typed element views and do not generate these field helpers.
+
+Indexed field helpers are unchecked. The caller must supply an integer index
+with `0 <= index < count`, normally in a loop bounded by the collection length.
+They do not add a logical collection bounds check; an invalid index can access
+another region of the backing buffer. Checks performed by the language runtime
+on its array/storage type do not establish the bounds of the logical collection.
+Ordinary collection indexing retains its language-specific behavior, including
+Python's `IndexError` for an invalid index.
+
+## Enum tags
+
+Rust enum tags start at zero and increment in declaration order. A source
+discriminant or `#[intrlay(tag = ...)]` selects a value explicitly; the following
+implicit tag increments from it. Tags must fit `u32` and be unique, including
+constant expressions. These checks happen at compile time, not per message.
+
+```rust title="Rust"
+#[derive(intrlay::Intrlay)]
+enum Mode {
+    #[intrlay(tag = 10)]
+    Off,
+    On, // tag 11
+}
+```
+
+C++ enum constants provide their own values:
+
+```cpp title="C++"
+#include <intrlay/annotations.hpp>
+#include <cstdint>
+
+enum class INTRLAY() Mode : std::uint32_t {
+    Off = 10,
+    On // tag 11
+};
+```
+
+For variants with payloads, Rust uses enum fields and C++ uses `std::variant`.
+These examples assign tags 0 and 1:
+
+```rust title="Rust"
+#[derive(intrlay::Intrlay)]
+enum DrawingCommand {
+    Clear,
+    DrawPoint { position: [f32; 3] },
+}
+```
+
+```cpp title="C++"
+#include <intrlay/annotations.hpp>
+#include <array>
+#include <variant>
+
+struct Clear {};
+struct DrawPoint {
+    std::array<float, 3> position;
+};
+
+using DrawingCommand INTRLAY() = std::variant<Clear, DrawPoint>;
+```
+
+`std::variant` tags follow the alternative indices; they cannot be overridden
+with `INTRLAY(tag = ...)`. Rust enums can assign explicit tags to variants with
+payloads as well as unit variants.
+
+The C++ frontend names alternatives after their payload types: `Clear` and
+`DrawPoint` here. A named payload retains its own layout, alignment, and type
+annotations. The generated C++ value stores `std::variant<Clear, DrawPoint>`
+directly, and `as_draw_point()` returns the active payload's view. TypeScript
+exposes `view.drawPoint`, C# `view.DrawPoint`, Python `view.draw_point`, and Dart
+`view.drawPoint`. Generated Rust uses tuple variants such as `DrawPoint(DrawPoint)`.
+
+Name repeated types or ambiguous alternatives explicitly on the C++ alias:
+
+```cpp
+using Range INTRLAY(
+    alternative(0, name = "Start"),
+    alternative(1, name = "End")
+) = std::variant<std::uint32_t, std::uint32_t>;
+```
+
+Indices are zero-based and must address an existing alternative. Names can be
+overridden independently; unspecified names are inferred from the payload type.
+Container payloads receive structural names such as `Array4OfF32` or `BoxOfNode`.
+Duplicate names and conflicting annotations on aliases of the same canonical
+type are errors. The alias may appear before or after uses of that type.
+
+Rust enums with named fields keep their variant and field names, so their
+accessors differ from C++ whole-payload alternatives. The
+[C++ guide](../languages/cpp.mdx#use-generated-views) shows both forms. API names
+do not participate in the byte layout, and renaming an alternative keeps its tag.
+
+Variant `generate_getters`/`generate_setters` options control emitted payload
+accessors in TypeScript, Python, and Dart. Variant names can be customized
+without changing tags.
+
+## Rust trait bounds and runtime paths
+
+These options configure Rust derive expansion; they do not apply to C++ schema
+extraction.
+
+Derives infer `Intrlay` bounds for generic field codecs. Use `bound` to replace
+those inferred predicates while retaining the source type's existing bounds:
+
+```rust
+trait Family { type Value; }
+
+#[derive(intrlay::Intrlay)]
+#[intrlay(bound = "T::Value: intrlay::Intrlay<Value = T::Value>")]
+struct Envelope<T: Family> {
+    value: T::Value,
+}
+```
+
+`#[intrlay(no_field_bounds)]` leaves field bounds entirely to the declaration.
+This is useful for recursive generic definitions with explicit constraints.
+It cannot be combined with `bound`; an empty `bound = ""` also replaces inference
+with no additional predicates. Type parameters still require `'static` because
+schema values own their data.
+
+Cargo dependency renames are detected automatically. A runtime reexport can be
+selected explicitly:
+
+```rust
+#[derive(my_facade::wire::Intrlay)]
+#[intrlay(crate = "my_facade::wire")]
+struct Message {
+    value: u32,
+}
+```
+
+## External Rust types
+
+A mirror adapter describes a type that cannot receive a derive directly:
+
+```rust
+#[derive(intrlay::Intrlay)]
+#[intrlay(remote = ExternalPosition, from = make_position)]
+struct PositionAdapter {
+    #[intrlay(getter = read_x)]
+    x: f32,
+    #[intrlay(getter = read_y)]
+    y: f32,
+}
+
+#[derive(intrlay::Intrlay)]
+struct Message {
+    #[intrlay(with = PositionAdapter)]
+    position: ExternalPosition,
+}
+```
+
+Here `read_x(&ExternalPosition)` and `read_y(&ExternalPosition)` return `f32`, and
+`make_position(PositionAdapter)` returns `ExternalPosition`. Public fields can be
+read directly instead of providing getters. `from` and `getter` require a remote
+struct adapter; `with` selects that adapter for a field. The adapter can carry the
+same transparent, alignment, and target API annotations as other records.

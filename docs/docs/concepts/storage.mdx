@@ -1,0 +1,92 @@
+# Storage and ownership
+
+Start with the allocating `create` API unless your caller needs to own the
+allocation. The resulting view retains an encoded buffer, and its child views
+refer into that buffer. In Rust and C++, explicit owned and borrowed types make
+that distinction visible in the API.
+
+## Initialize caller storage
+
+Using `value` from the [tutorial](../tutorial.mdx#3-construct-a-buffer):
+
+```typescript
+const byteLength = DrawingView.computeByteLength(value);
+const bytes = new Uint8Array(byteLength);
+const drawing = DrawingView.createInPlace(bytes, value);
+```
+
+This form encodes the same message as `create(value)`, but the caller supplies
+the destination. An FFI allocator can supply the region instead. Its owner must
+keep the memory alive throughout construction and every subsequent access.
+
+Measurement includes variable payloads. The fixed `byteSize` constant describes
+the header and is not enough storage for a drawing's title and point collection.
+For an already encoded message, use the length supplied with that byte region;
+you do not need to reconstruct a native value just to measure it again.
+
+## Align a region inside a larger buffer
+
+Each generated target view exposes its storage alignment. For example, when an
+application reserves a prefix before the message:
+
+```typescript
+const prefixLength = 3;
+const alignment = DrawingView.alignment;
+const offset = Math.ceil(prefixLength / alignment) * alignment;
+const byteLength = DrawingView.computeByteLength(value);
+const allocation = new Uint8Array(offset + byteLength);
+const region = allocation.subarray(offset, offset + byteLength);
+
+const written = DrawingView.createInPlace(region, value);
+const received = new DrawingView(region);
+console.log(received.title); // Sketch
+```
+
+Here the allocation starts at byte offset zero, and rounding the prefix gives
+an aligned region. When working with a slice of another TypedArray, include that
+slice's `byteOffset` in the alignment calculation. A region starting at offset
+`3` would not satisfy this schema's four-byte alignment.
+
+Use the complete message region when constructing a receiving view. Every
+referenced payload must be inside it. Moving or copying that whole region
+preserves relative offsets; copying only its header does not.
+
+## Find the layout in each API
+
+These names use the default naming policy:
+
+| Language | Measure a native value | Required alignment |
+| --- | --- | --- |
+| Rust | `DrawingView::compute_layout(&value)?` | The returned `BufferLayout::alignment()` |
+| C++ | `DrawingView::compute_byte_length(value)` | `DrawingView::alignment` |
+| TypeScript | `DrawingView.computeByteLength(value)` | `DrawingView.alignment` |
+| C# | `DrawingView.ComputeByteLength(in value)` | `DrawingView.Alignment` |
+| Python | `DrawingView.compute_byte_length(value)` | `DrawingView.ALIGNMENT` |
+| Dart | `DrawingView.computeByteLength(value)` | `DrawingView.alignment` |
+
+Rust's `View::LAYOUT` is the fixed **header** layout. For allocating a complete
+message, use `compute_layout`, which also accounts for payload alignment. A native
+receiving boundary must arrange suitable storage for the agreed schema; a plain
+`Vec<u8>` allocation does not promise every possible schema alignment. The
+[Rust guide](../languages/rust.mdx#caller-storage-and-received-bytes) demonstrates
+`OwnedBuffer` and a borrowed receiving view. Python also provides
+`intrlay.allocate(size, alignment)` for aligned writable storage.
+
+## Keep the owner alive
+
+| Storage | What keeps it usable? |
+| --- | --- |
+| Rust owned view | The owned buffer; borrowed views are constrained by Rust lifetimes. |
+| C++ owned view | The owner must outlive its views and byte spans. |
+| C# memory view | The memory owner must remain valid; scoped span views follow `ref struct` lifetime rules. |
+| Managed buffer in TypeScript, Python, or Dart | The language's buffer references retain the allocation. |
+| Foreign allocation exposed to any language | The application's FFI ownership contract. A wrapper alone cannot stop the foreign allocator from freeing it. |
+
+Do not retain views after a buffer has been freed, returned to a pool, transferred
+away, or detached. When reusing a larger allocation, send the current encoded
+region, not its spare capacity.
+
+Opening a received view assumes valid bytes for the agreed schema. It is not a
+validation operation. Multiple read views can share storage; mutation requires
+appropriate exclusive access or application-level synchronization. See
+[Mutation](mutation.mdx) for replacement and aliasing rules.

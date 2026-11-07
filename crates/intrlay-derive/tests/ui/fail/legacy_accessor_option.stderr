@@ -1,0 +1,11 @@
+error: unknown intrlay attribute
+ --> tests/ui/fail/legacy_accessor_option.rs:2:11
+  |
+2 | #[intrlay(read = false)]
+  |           ^^^^
+
+error: unknown intrlay attribute
+ --> tests/ui/fail/legacy_accessor_option.rs:6:11
+  |
+6 | #[intrlay(write = false)]
+  |           ^^^^^

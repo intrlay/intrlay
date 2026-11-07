@@ -1,0 +1,88 @@
+# Dart
+
+Install with `dart pub add intrlay`, or `flutter pub add intrlay` in a Flutter
+project. The runtime supports Dart 3.3 and later. Generate bindings with
+`--language dart` and include them in your Dart package.
+
+## Construct and read a drawing
+
+Generate the [tutorial schema](../tutorial.mdx#1-define-the-message) with
+`--language dart --output generated/drawing.dart`:
+
+```dart
+import 'generated/drawing.dart';
+
+void main() {
+  const value = Drawing(
+    title: 'Sketch',
+    points: [Point(x: 1, y: 2, z: 3)],
+    selectedPoint: null,
+    command: DrawingCommandDrawPoint(
+      position: Point(x: 7, y: 8, z: 9),
+      size: 0.5,
+    ),
+  );
+  final drawing = DrawingView.create(value);
+
+  assert(drawing.title == 'Sketch');
+  assert(drawing.points[0].x == 1);
+  assert(drawing.selectedPoint == null);
+  final position = drawing.command.drawPointPosition;
+  if (position != null) {
+    assert(position.x == 7);
+  }
+
+  drawing.points[0].x = 10;
+  drawing.selectedPoint = 0;
+  drawing.command.replace(const DrawingCommandClear());
+
+  final received = DrawingView(drawing.bytes);
+  assert(received.points[0].x == 10);
+  assert(received.command.drawPointPosition == null);
+}
+```
+
+Generated classes provide typed input values and separate buffer views.
+Enum inputs are a sealed class with a concrete class for each variant.
+Variant-specific getters return `null` when inactive; `tag` exposes the encoded
+number. `drawing.bytes` is a `Uint8List`. Borrowing it does not copy the payload.
+The runtime shares buffer initialization and UTF-8 size calculation; generated
+code keeps explicit typed accessors.
+
+## Caller-provided buffers
+
+With `value` from the example and an import of `dart:typed_data`:
+
+```dart
+final bytes = Uint8List(DrawingView.computeByteLength(value));
+final inPlace = DrawingView.createInPlace(bytes, value);
+assert(inPlace.title == 'Sketch');
+```
+
+Use `DrawingView.alignment` when selecting a region within another buffer, and
+keep its owner alive. Native FFI integrations can use a region exposed as a `Uint8List`;
+web integrations can pass the same byte-oriented representation through their
+chosen JavaScript bridge.
+
+## Composite values
+
+Scalar fields use Dart's numeric types. Numeric projections use typed lists such
+as `Float32List`; structural collections retain typed child views. Common
+`project` annotations can choose the desired API without changing the encoding.
+
+Optional values use nullable types. Nested states such as an absent optional and
+a present optional containing `null` remain distinct through `Some` wrappers.
+Composite getters cache child views and reread optional/variant state after
+replacement. Obtain the active child again when that state changes.
+
+## Native and web execution
+
+The same schema and byte layout work in Dart native and JavaScript builds.
+JavaScript-target integer precision limits still apply: the generated `int` API
+does not guarantee exact representation of every 64-bit integer in that target.
+Choose values within the target's exact range when the application needs exact
+IDs or counters, or define an explicit representation for wider values.
+
+Storage requirements and mutation rules are described in
+[Storage and ownership](../concepts/storage.mdx). Getter/setter generation and
+numeric projection controls are in the [annotation reference](../reference/annotations.mdx).

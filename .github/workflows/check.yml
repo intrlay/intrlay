@@ -1,0 +1,35 @@
+name: Check
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - uses: dart-lang/setup-dart@v1
+      - name: Install C++ frontend dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake
+      - name: Check Rust and every generated language
+        run: cargo xtask check
+

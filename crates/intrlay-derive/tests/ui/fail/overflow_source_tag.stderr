@@ -1,0 +1,31 @@
+error[E0080]: evaluation panicked: Intrlay enum tag must fit u32
+ --> tests/ui/fail/overflow_source_tag.rs:2:10
+  |
+2 | #[derive(wire::Intrlay)]
+  |          ^^^^^^^^^^^^^ evaluation of `_::{constant#0}` failed here
+
+note: erroneous constant encountered
+ --> tests/ui/fail/overflow_source_tag.rs:2:10
+  |
+2 | #[derive(wire::Intrlay)]
+  |          ^^^^^^^^^^^^^
+  |
+  = note: this note originates in the derive macro `wire::Intrlay` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0080]: evaluation panicked: Intrlay enum tag must fit u32
+ --> tests/ui/fail/overflow_source_tag.rs:2:10
+  |
+2 | #[derive(wire::Intrlay)]
+  |          ^^^^^^^^^^^^^ evaluation of `<Value as intrlay::intrlay_schema::Describe>::describe::{closure#0}::{constant#0}` failed here
+
+error[E0080]: evaluation panicked: Intrlay enum tag must fit u32
+ --> tests/ui/fail/overflow_source_tag.rs:2:10
+  |
+2 | #[derive(wire::Intrlay)]
+  |          ^^^^^^^^^^^^^ evaluation of `<Value as intrlay::Intrlay>::write::{constant#0}` failed here
+
+error[E0080]: evaluation panicked: Intrlay enum tag must fit u32
+ --> tests/ui/fail/overflow_source_tag.rs:2:10
+  |
+2 | #[derive(wire::Intrlay)]
+  |          ^^^^^^^^^^^^^ evaluation of `<Value as intrlay::Intrlay>::decode::{constant#0}` failed here

@@ -1,0 +1,35 @@
+error: project is a common option; place it outside the language scope
+ --> tests/ui/fail/unsupported_projections.rs:4:16
+  |
+4 | #[intrlay(rust(project = "f32"))]
+  |                ^^^^^^^
+
+error: project is a common option; place it outside the language scope
+ --> tests/ui/fail/unsupported_projections.rs:8:15
+  |
+8 | #[intrlay(cpp(project = "f32"))]
+  |               ^^^^^^^
+
+error: project is a common option; place it outside the language scope
+  --> tests/ui/fail/unsupported_projections.rs:12:18
+   |
+12 | #[intrlay(csharp(project = "f32"))]
+   |                  ^^^^^^^
+
+error: project is a common option; place it outside the language scope
+  --> tests/ui/fail/unsupported_projections.rs:17:26
+   |
+17 |     #[intrlay(typescript(project = "indexed"))]
+   |                          ^^^^^^^
+
+error: project is a common option; place it outside the language scope
+  --> tests/ui/fail/unsupported_projections.rs:23:22
+   |
+23 |     #[intrlay(python(project = "indexed"))]
+   |                      ^^^^^^^
+
+error: project is a common option; place it outside the language scope
+  --> tests/ui/fail/unsupported_projections.rs:29:20
+   |
+29 |     #[intrlay(dart(project = "indexed"))]
+   |                    ^^^^^^^

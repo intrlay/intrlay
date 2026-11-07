@@ -1,0 +1,108 @@
+# Rust
+
+The `intrlay` crate supplies derives, schema metadata, owned buffers, and
+borrowed views. It requires Rust 1.95 or later. Add it with `cargo add intrlay`;
+the `derive` feature is enabled by default.
+
+## Generate views from the schema
+
+Use the Rust declarations from the [drawing tutorial](../tutorial.mdx#1-define-the-message).
+`#[derive(Intrlay)]` introduces `DrawingView`, `PointView`, and
+`DrawingCommandView` alongside the source types. No separate CLI step is needed
+to use those Rust views.
+
+The same derive supports tuples, newtypes, arrays, optional values, strings,
+sequences, and `Box` trees. `export_types!` is only needed when the CLI collects
+that library's schema for generation. Declare it once at the crate root; list
+export roots and concrete generic specializations as described in
+[Code generation](../reference/code-generation.mdx#rust-input).
+
+For a C++ schema, generate a Rust module with `--language rust`. Its native
+declarations use the same derive mechanism.
+
+## Construct and read a drawing
+
+The following code uses the tutorial declarations in the same module:
+
+```rust
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let value = Drawing {
+        title: "Sketch".into(),
+        points: vec![Point { x: 1.0, y: 2.0, z: 3.0 }],
+        selected_point: None,
+        command: DrawingCommand::DrawPoint {
+            position: Point { x: 7.0, y: 8.0, z: 9.0 },
+            size: 0.5,
+        },
+    };
+    let mut drawing = DrawingView::create(&value)?;
+
+    assert_eq!(drawing.title(), "Sketch");
+    assert_eq!(drawing.points().get(0).ok_or("missing point")?.x(), 1.0);
+    assert_eq!(drawing.selected_point(), None);
+
+    match drawing.command().variant() {
+        DrawingCommandVariantView::Clear => {}
+        DrawingCommandVariantView::DrawPoint { position, size } => {
+            assert_eq!(position.x(), 7.0);
+            assert_eq!(size, 0.5);
+        }
+    }
+
+    drawing.points_mut().get_mut(0).ok_or("missing point")?.x_mut().set(10.0);
+    drawing.replace_selected_point(&Some(0))?;
+    drawing.command_mut().replace(&DrawingCommand::Clear)?;
+
+    let borrowed = drawing.as_view();
+    assert_eq!(borrowed.selected_point(), Some(0));
+    assert!(matches!(borrowed.command().variant(), DrawingCommandVariantView::Clear));
+    Ok(())
+}
+```
+
+`variant()` returns an enum of borrowed payloads, so ordinary pattern matching
+handles the active alternative. Optional fields return `Option`; `get` returns
+an optional element view. Mutation uses exclusive borrows. A field's `_mut`
+accessor borrows its current contents, while `replace_selected_point` can also
+change presence because this optional integer has a fixed encoding.
+
+`create` owns an aligned allocation. `as_view()` borrows it and `as_bytes()` exposes
+the complete backing region. Converting a view into an owned native `Drawing`
+reconstructs its strings and collections; borrowing does not.
+
+## Caller storage and received bytes
+
+Given `value` from the example, measure and encode into caller-owned storage:
+
+```rust
+let layout = DrawingView::compute_layout(&value)?;
+let mut storage = intrlay::OwnedBuffer::new(layout)?;
+let written = DrawingView::create_in_place(&value, storage.as_mut())?;
+
+// SAFETY: These are the complete bytes just initialized by DrawingView;
+// their aligned owner stays alive and they are only shared for reading.
+let received = unsafe { DrawingView::from_bytes_unchecked(written.as_bytes()) };
+assert_eq!(received.title(), "Sketch");
+```
+
+`layout.byte_length()` and `layout.alignment()` describe the whole encoding.
+`OwnedBuffer` satisfies both. A foreign allocator can provide the region instead
+if it preserves those requirements and the allocation's lifetime. The native
+input must not alias the destination.
+
+`from_bytes_unchecked` and `from_parts_unchecked` borrow an existing encoding.
+They are unsafe because the caller must establish a valid representation,
+alignment, and the necessary lifetime and aliasing guarantees. Intrlay does not
+validate an arbitrary received packet as part of view construction.
+
+For an actual FFI receive, the caller must establish the same conditions rather
+than relying on the local writer used in this example. See
+[Storage and ownership](../concepts/storage.mdx) for the boundary contract.
+
+Fixed values support replacement in their existing storage. Rust rejects
+unsupported dynamic replacement at compile time. Native-layout copying is used
+only when the codec establishes the required layout and initialization proofs;
+ordinary Rust structs do not need `repr(C)` merely to be schemas.
+
+See [Schema annotations](../reference/annotations.mdx) for generic bounds, runtime
+crate paths, external-type adapters, and transparent wrappers.

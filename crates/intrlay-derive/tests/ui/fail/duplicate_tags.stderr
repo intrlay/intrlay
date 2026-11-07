@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: duplicate Intrlay enum tag
+ --> tests/ui/fail/duplicate_tags.rs:2:10
+  |
+2 | #[derive(wire::Intrlay)]
+  |          ^^^^^^^^^^^^^ evaluation of `_` failed here

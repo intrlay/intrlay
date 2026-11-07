@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <PackageId>Intrlay</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Typed storage for generated Intrlay memory views</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>Apache-2.0 OR MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/intrlay/intrlay</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/intrlay/intrlay</PackageProjectUrl>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="generator/**/*.cs" />
+    <ProjectReference Include="generator/Intrlay.Generator.csproj" ReferenceOutputAssembly="false" />
+    <None Include="generator/bin/$(Configuration)/netstandard2.0/Intrlay.Generator.dll"
+          Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="README.md" Pack="true" PackagePath="/" />
+    <None Include="CHANGELOG.md" Pack="true" PackagePath="/" Condition="Exists('CHANGELOG.md')" />
+    <None Include="LICENSE*" Pack="true" PackagePath="/" />
+  </ItemGroup>
+</Project>

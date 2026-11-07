@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(TestInvalidSchema)' == 'true'">
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../packages/csharp/Intrlay.csproj" />
+    <ProjectReference Include="../../packages/csharp/generator/Intrlay.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <Compile Include="../../target/csharp-recursive-storage/bindings.cs" Condition="'$(TestInvalidSchema)' != 'true'" />
+    <Compile Include="../../target/csharp-recursive-storage/collision.cs" Condition="'$(TestInvalidSchema)' == 'true'" />
+    <Compile Remove="Program.cs" Condition="'$(TestInvalidSchema)' == 'true'" />
+  </ItemGroup>
+</Project>

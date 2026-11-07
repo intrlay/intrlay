@@ -1,0 +1,85 @@
+---
+title: Intrlay
+slug: /
+hide_title: true
+---
+
+import IntrlayLogo from "@site/static/img/logo-wordmark.svg";
+
+<h1>
+    <IntrlayLogo className="intrlay-wordmark" width={360} height={109} />
+</h1>
+
+Intrlay generates typed views over binary buffers from Rust and C++ type
+definitions. It lets cooperating programs exchange structured data across FFI,
+WebAssembly, and IPC boundaries without rebuilding an object tree just to read
+a field.
+
+Define a schema in **Rust or C++**, then generate APIs for **Rust, C++,
+TypeScript, C#, Python, and Dart**.
+
+## From a value to a view
+
+```text
+Rust / C++ declarations ── generate ──> typed APIs in six languages
+
+Native value ── encode ──> buffer ── borrow ──> view.field
+```
+
+Declare records, payload-bearing enums, optional values, arrays, strings, and
+owned trees in a source language. The generator gives each target a typed way
+to construct the shared representation and access its bytes.
+
+Views follow each language's conventions: Rust borrows, C++ value types, C#
+structs and spans, TypeScript TypedArrays, Python memoryviews, and Dart typed
+data. The binary representation stays consistent across those APIs.
+
+See [Feature comparison](feature-comparison.mdx) for the differences from
+FlatBuffers, Cap'n Proto, rkyv, serde-generate, SBE, and Protocol Buffers, including
+when another approach is a better fit.
+
+## Start here
+
+1. **[Getting started](getting-started.mdx)** — install, define a point, generate,
+   and read it in a working program.
+2. **[Tutorial: a drawing message](tutorial.mdx)** — build a message containing
+   strings, points, an optional selection, and an enum; read and change it.
+3. **[Values, buffers, and views](concepts/buffers-and-views.mdx)** — see what is
+   copied or shared, then learn [mutation](concepts/mutation.mdx) and
+   [storage ownership](concepts/storage.mdx).
+
+The tutorial starts from Rust; the C++ guide also declares the message in C++.
+The drawing is reused across the guides, so you can compare concrete input and
+view APIs without learning a new example in each language.
+
+## Language guides
+
+| Language | Runtime package | Guide |
+| --- | --- | --- |
+| Rust | `intrlay` | [Rust](languages/rust.mdx) |
+| C++20 | Header-only library | [C++](languages/cpp.mdx) |
+| TypeScript / JavaScript | `@intrlay/runtime` | [TypeScript](languages/typescript.mdx) |
+| C# / .NET | `Intrlay` | [C#](languages/csharp.mdx) |
+| Python | `intrlay` | [Python](languages/python.mdx) |
+| Dart | `intrlay` | [Dart](languages/dart.mdx) |
+
+## Reference
+
+| Task | Reference |
+| --- | --- |
+| Generate from a Cargo library, C++ header, or metadata file | [Code generation](reference/code-generation.mdx) |
+| Select projections, omit unused APIs, or adapt a Rust type | [Schema annotations](reference/annotations.mdx) |
+| Configure casing, literal names, or namespaces | [Generated names](reference/naming.mdx) |
+| Inspect alignment, headers, and relative offsets | [Binary layout](reference/binary-layout.mdx) |
+
+Intrlay targets cooperating producers and consumers that agree on a schema.
+The application manages transport, validation of untrusted input, buffer lifetime,
+and synchronization.
+
+## Contributing
+
+See [Development](contributing/development.mdx) for the repository layout and
+checks, [Design principles](contributing/design-principles.mdx) for architectural
+goals, and [Coding conventions](contributing/code-style.mdx) for implementation
+guidance. The [contribution guide](https://github.com/intrlay/intrlay/blob/main/CONTRIBUTING.md)
+covers bug reports and proposed changes.

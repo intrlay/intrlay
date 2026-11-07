@@ -1,0 +1,81 @@
+# Coding conventions
+
+Use the surrounding module's language conventions and keep generated output as
+readable as handwritten library code. The [design principles](design-principles.mdx)
+describe the architectural constraints behind these conventions.
+
+## Structure and naming
+
+- Organize implementation by responsibility. Keep language-specific generation
+  in its backend; shared schema and layout rules belong in shared planning code.
+- Prefer names that identify both the operation and its scope. Avoid generated
+  names that concatenate unrelated owners when a structural name describes the
+  type, such as a fixed array's length and element type.
+- Keep dependencies explicit. Add a reusable runtime operation when it removes
+  duplicated recursive machinery; do not introduce a runtime schema interpreter
+  to shorten generated code.
+- Use blank lines and short comments to separate meaningful phases in longer
+  functions. Extract helpers when they have a clear responsibility, not just to
+  reduce line count.
+
+## Rust
+
+Use `cargo fmt` and the workspace lint configuration. Public items need rustdoc;
+generic parameters, associated types, and lifetime-sensitive APIs need enough
+context to explain their role.
+
+Return errors for invalid schemas and fallible operations. Do not use `unwrap`,
+`expect`, `todo`, or `unimplemented` to bypass error handling. Keep any necessary
+lint allowance narrow and explain its reason.
+
+Unsafe code must document its caller contract and the argument establishing
+safety at each use. Native-layout fast paths need a complete proof of their
+layout, alignment, initialization, and lifetime requirements. Do not infer
+portable safety from one compiler's observed output.
+
+## Generated code
+
+Follow target-language naming and documentation forms: rustdoc for Rust, JSDoc
+for TypeScript, XML documentation for C#, and docstrings/type hints for Python.
+Preserve source documentation when it describes the exported declaration.
+
+Keep a field's getter and setter adjacent. Separate different fields and methods
+with a blank line. Keep a cached field next to the code it supports when that
+language's layout allows it. Wrap long expressions and method bodies; a generated
+file is not minified output.
+
+Use native language facilities where they fit the contract: value types,
+templates, spans, TypedArrays, memoryviews, and typed data. Avoid temporary
+objects on hot paths when a direct accessor provides the same API semantics.
+Do not weaken object lifetime or const rules to create a native view.
+
+Schema mistakes and name collisions should produce useful diagnostics rather
+than silently renamed declarations. Target-specific exceptions must be reflected
+in documentation and executable tests.
+
+## Tests and performance
+
+Use the smallest case that demonstrates an externally observable behavior.
+Extend existing fixture families instead of creating a new project for each
+variation. Tests should check outcomes, cross-language byte compatibility, or
+intentional compile failures, not mirror implementation details.
+
+Generated-source assertions are useful for code shape or excluded APIs, but
+compilation and execution remain necessary for behavioral claims. Exercise both
+native and JavaScript compilation when changing Dart behavior that can differ
+between them.
+
+For optimizations, compare equivalent operations, including allocation, buffer
+reuse, validation, and access granularity. Keep exploratory comparison projects
+and generated artifacts under ignored temporary directories. Add a permanent
+regression only for behavior the project needs to preserve.
+
+## Documentation
+
+READMEs introduce the project or package and show basic use. Put detailed
+contracts, options, and implementation guidance in `docs/docs/` as MDX. Keep links working
+when moving documentation, including links consumed by packaging tasks.
+
+Describe the current design without retaining discussion transcripts or abandoned
+plans. Code examples must use the current generated API and should be compiled
+or executed when changed.

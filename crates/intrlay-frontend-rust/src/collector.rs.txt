@@ -1,0 +1,6 @@
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let output = std::env::args_os().nth(1).ok_or("missing schema output path")?;
+    let schema = intrlay_input::__intrlay_export_schema();
+    std::fs::write(output, schema.to_json()?)?;
+    Ok(())
+}

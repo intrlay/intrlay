@@ -1,0 +1,84 @@
+# Design principles
+
+Intrlay is built for structured object exchange across language boundaries,
+especially FFI. These principles guide its schema model, generated APIs, and
+runtime packages.
+
+## Define types in a source language
+
+Rust derives and C++ annotations describe ordinary program types. Frontends
+resolve those declarations into a shared schema; layout planning and target
+generation operate on that schema. A new source language should not require a
+second implementation of each target backend or of the layout rules.
+
+Generic declarations become concrete exported types. Records, enums with
+payloads, optional values, fixed arrays, sequences, strings, and owned trees
+cover the intended data model. Arbitrary object graphs, closures, and executable
+behavior are outside that model.
+
+## Make the representation explicit
+
+An encoded value has a defined byte layout independent of source-language
+container internals. It does not expose a Rust `Vec` allocation, an `Option`
+niche, or a managed object reference as the portable representation.
+
+Fixed headers, alignment, and relative offsets let readers address data directly.
+Construction determines payload sizes before allocating. A view does not grow
+an array, relocate a string, or compact a buffer after construction.
+
+Every declared type has a consistent view API. Native-layout optimizations are
+implementation choices backed by layout proofs; callers do not need a different
+object-exchange model for POD and non-POD types.
+
+## Respect each target language
+
+Shared schema semantics do not require identical APIs. Rust uses borrow rules;
+C++ uses templates and value-type views; C# uses structs and scoped spans.
+TypeScript, Python, and Dart use their typed storage facilities and can expose
+numeric projections or indexed field access to avoid temporary wrapper objects.
+
+Projection intentionally exposes representation details. It is a common policy
+for targets without value types, rather than an expanding set of independently
+configured per-language layout variants. Rust, C++, and C# retain their typed
+structure.
+
+## Keep work out of the read path
+
+Views read the requested data without first reconstructing the whole value.
+Generated code and small runtimes provide the operations needed by that schema;
+there is no general schema interpreter in the field-access path.
+
+Use compile-time specialization where the language supports it. Share recursive
+codec machinery rather than expanding every combination of nested types into
+source. Preserve optimizations only when their preconditions are established.
+Measure runtime cost, allocations, and generated or bundled size with equivalent
+access patterns before claiming an improvement.
+
+## Trust the boundary contract
+
+Intrlay assumes a valid encoding from a cooperating producer. It is not a
+validator for arbitrary network bytes. Applications decide how to authenticate,
+validate, version, and transport messages before exposing them through views.
+
+This does not make schema mistakes or construction failures acceptable. Reject
+invalid declarations, generated-name collisions, unsupported representations,
+and unrepresentable sizes where they are encountered. Keep those diagnostics
+separate from repeated validation on trusted reads.
+
+Buffer ownership and mutation remain explicit. Construction and replacement
+inputs must not overlap the bytes being written. Language lifetime and const
+rules still apply; optimization is not a reason to violate them.
+
+## Generate code people can read
+
+Generated code is part of the library's interface. Use meaningful names,
+predictable whitespace, target-language documentation, and small reusable
+runtime operations. Reducing line count is useful only when the result remains
+clear.
+
+Accessor-generation options control emitted code size, not access permissions.
+Omitting a setter does not create a new immutable buffer abstraction, and a
+returned numeric array keeps its normal language operations.
+
+See [Coding conventions](code-style.mdx) for implementation guidance and
+[Values, buffers, and views](../concepts/buffers-and-views.mdx) for the user-facing model.

@@ -1,0 +1,120 @@
+# Development
+
+## Repository layout
+
+| Path | Responsibility |
+| --- | --- |
+| `crates/intrlay-schema` | Shared type descriptions and schema registry |
+| `crates/intrlay-layout` | Layout primitives and alignment rules |
+| `crates/intrlay-derive` | Rust derive expansion |
+| `crates/intrlay-frontend-rust` | Cargo-based Rust metadata collection |
+| `crates/intrlay-frontend-cpp` | C++ declaration extraction through libclang |
+| `crates/intrlay-codegen` | Shared generation planning and language backends |
+| `crates/intrlay-cli` | User-facing `intrlay` executable |
+| `crates/intrlay-conformance` | Schemas and expected data for executable consumers |
+| `packages/` | Runtime packages, including the C# source generator |
+| `tests/` | Generated-code consumers and regression fixtures |
+| `xtask/` | Repository checks, packaging, and release automation |
+| `docs/` | Docusaurus site configuration and tooling |
+| `docs/docs/` | User and contributor documentation in MDX |
+
+Generated fixtures and local build artifacts belong under `target/` or the
+language tool's ignored output directory. Edit the generator or runtime source,
+not a generated fixture, to make a persistent change.
+
+## Toolchains
+
+The pinned Rust toolchain is in `rust-toolchain.toml`. The full check also needs
+Node.js/npm, Python/pip, Dart, the .NET SDK, a C++20 compiler, libclang, and CMake.
+CI currently uses Rust 1.95, Node.js 24, Python 3.13, .NET 10, and the stable Dart
+SDK. Test projects can require a newer SDK than the runtime package's minimum.
+
+Install LLVM for C++ schema extraction. Set `LIBCLANG_PATH` if its shared library
+is not discoverable. `CXX` selects the compiler for direct C++ consumer checks;
+the default is `clang++`. CMake also checks installed-header integration with
+the platform's configured compiler.
+
+The [check workflow](https://github.com/intrlay/intrlay/blob/main/.github/workflows/check.yml) is the executable source
+of truth for CI setup. The [language guides](../index.mdx#language-guides) describe
+requirements for library consumers rather than repository development.
+
+## Run checks
+
+From the repository root:
+
+```sh
+cargo xtask check
+```
+
+This formats/checks Rust, runs strict Clippy and workspace tests, generates
+fixtures, then compiles and executes consumers for all six targets. It also
+checks Python typing, Dart's JavaScript output, and installed C++/C# package
+integration. It installs local runtime and test dependencies as part of setup.
+
+For a focused Rust iteration:
+
+```sh
+cargo fmt --all --check
+cargo lint
+cargo test -p intrlay-codegen
+```
+
+Select the affected package rather than always running the example package
+above. A generator change also needs the affected target consumers; passing
+Rust tests alone does not prove generated code compiles.
+
+To regenerate the shared conformance outputs without running every consumer:
+
+```sh
+cargo run -p intrlay-conformance -- target
+```
+
+Run the full check before submitting changes that affect shared schema, layout,
+code generation, or runtime behavior. Check documentation links and run changed
+examples for documentation-only work.
+
+## Documentation site
+
+From the repository root:
+
+```sh
+npm --prefix docs ci
+npm --prefix docs start
+```
+
+Edit the MDX files under `docs/docs/`. `docs/sidebars.ts` defines navigation;
+the overview is the site home page. Use relative `.mdx` links between documents.
+The site has one English documentation tree.
+
+Before submitting documentation changes, run:
+
+```sh
+npm --prefix docs run check
+```
+
+This runs ESLint for TypeScript, JavaScript configuration, and MDX, followed by
+TypeScript checking and a production build that rejects broken document links
+and anchors. Preview that build with `npm --prefix docs run serve`.
+
+## Adding a regression
+
+Start with an existing fixture family for the relevant schema or language
+behavior. Include an input declaration, generation step, and consumer assertion
+that would fail without the fix. Cross-language encoding changes should compare
+the encoded data as well as the values read from it.
+
+For rejected schemas or unsupported APIs, assert the intended diagnostic or
+compile failure. Avoid broad snapshots that change whenever unrelated formatting
+or helper names change.
+
+## Package verification
+
+```sh
+python -m pip install build twine
+cargo xtask package --output target/local-packages
+```
+
+Use an empty output directory. This verifies distributable packages locally
+without publishing them. Run it when changing package metadata, included files,
+or runtime packaging. Repository automation belongs in the unpublished Rust
+`xtask` crate; language-specific build tools still build their own packages.

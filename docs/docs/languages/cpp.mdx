@@ -1,0 +1,190 @@
+# C++
+
+Intrlay's C++ runtime is a header-only C++20 library. Generated views use named
+accessors and compile-time metadata rather than interpreting a schema at runtime.
+
+## Integrate the headers
+
+From a source checkout, use CMake:
+
+```cmake
+add_subdirectory(path/to/intrlay/packages/cpp intrlay-runtime)
+target_link_libraries(my_app PRIVATE intrlay::intrlay)
+```
+
+For an installed package, use `find_package(intrlay CONFIG REQUIRED)` followed
+by the same target link. CMake integration requires version 3.20 or later. Other
+build systems can add `packages/cpp/include`, or a release archive's `include`
+directory, to their include paths. There is no link-time runtime dependency.
+
+## Define a C++ schema
+
+This is the drawing from the [tutorial](../tutorial.mdx), expressed with C++
+containers. Save it as `drawing.hpp`:
+
+```cpp title="drawing.hpp"
+#include <intrlay/annotations.hpp>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <variant>
+#include <vector>
+
+struct INTRLAY() Point {
+    float x;
+    float y;
+    float z;
+};
+
+struct INTRLAY() Clear {};
+struct INTRLAY() DrawPoint {
+    Point position;
+    float size;
+};
+using DrawingCommand INTRLAY() = std::variant<Clear, DrawPoint>;
+
+struct INTRLAY() Drawing {
+    std::string title;
+    std::vector<Point> points;
+    std::optional<std::uint32_t> selected_point;
+    DrawingCommand command;
+};
+```
+
+Extract and generate, replacing `include` with the Intrlay header directory:
+
+```sh
+intrlay extract-cpp drawing.hpp --output schema.json -- -Iinclude
+intrlay generate schema.json --language cpp --module-name drawing --output generated/drawing.hpp
+```
+
+Extraction uses libclang; application compilation can use any supported C++20
+compiler. `INTRLAY` annotations are consumed by the extraction frontend and do
+not require a Clang runtime in the application. Compilation database support and
+libclang setup are documented in [Code generation](../reference/code-generation.mdx#c-input).
+
+The frontend supports records and containers such as `std::array`, `std::vector`,
+`std::optional`, `std::variant`, `std::string`, and `std::unique_ptr` trees.
+Annotate concrete aliases to export template specializations. An alias does not
+create a second independently configurable identity for the same type.
+
+## Use generated views
+
+The generated module supplies its own native input types in
+`intrlay_generated::drawing`. A C++ `std::variant` retains each alternative's
+payload type. Alternative names are inferred from those types, so `DrawPoint`
+produces the accessor `as_draw_point()`.
+
+```cpp
+#include "generated/drawing.hpp"
+#include <cassert>
+
+int main() {
+    using namespace intrlay_generated::drawing;
+
+    Drawing value{
+        "Sketch",
+        {{1.0f, 2.0f, 3.0f}},
+        std::nullopt,
+        DrawingCommand{DrawPoint{{7.0f, 8.0f, 9.0f}, 0.5f}}
+    };
+    auto owner = DrawingView::create(value);
+    auto drawing = owner.view();
+
+    assert(drawing.title() == "Sketch");
+    assert(drawing.points().get(0).x() == 1.0f);
+    assert(!drawing.selected_point());
+    if (auto command = drawing.command().as_draw_point()) {
+        assert(command->position().x() == 7.0f);
+    }
+
+    drawing.points().get(0).set_x(10.0f);
+    drawing.set_selected_point(0);
+    drawing.command().replace(DrawingCommand{Clear{}});
+
+    DrawingViewReadOnly received(owner.bytes());
+    assert(received.points().get(0).x() == 10.0f);
+    assert(!received.command().as_draw_point());
+}
+```
+
+`create` returns an owner; `view()` borrows its storage. Existing writable or const
+byte spans can be wrapped directly. A variant-specific accessor returns
+`std::optional`; an inactive payload is absent. `tag()` is available for numeric
+tag dispatch. The generated `DrawingCommand` contains
+`std::variant<Clear, DrawPoint> value`; the named outer type gives it its own
+identity and supports recursive declarations. The original C++ schema's values
+can also be passed directly to `create`, without conversion to generated inputs.
+
+When alternatives repeat a type, give them distinct names on the source alias:
+
+```cpp
+using Endpoint INTRLAY(
+    alternative(0, name = "Start"),
+    alternative(1, name = "End")
+) = std::variant<Point, Point>;
+```
+
+The generated input stores `std::variant<Point, Point> value`. Select an
+alternative by index:
+
+```cpp
+Endpoint endpoint;
+endpoint.value.emplace<1>(Point{1.0f, 2.0f, 3.0f});
+auto owner = EndpointView::create(endpoint);
+assert(owner.view().as_end()->x() == 1.0f);
+assert(!owner.view().as_start());
+```
+
+Names do not change tags: `Start` is still tag `0`, and `End` is tag `1`.
+Ambiguous inferred names require an annotation; conflicting names are errors.
+
+## Generate C++ from a Rust schema
+
+The target is independent of the source language. For the Rust library from the
+tutorial, generate directly from its manifest:
+
+```sh
+intrlay generate --manifest-path protocol/Cargo.toml --language cpp --module-name drawing --output generated/drawing.hpp
+```
+
+The record APIs are the same, but a Rust named enum carries its own variant and
+field names. Its C++ construction and payload access therefore look like this:
+
+```cpp
+DrawingCommand command{DrawingCommandDrawPoint{{7.0f, 8.0f, 9.0f}, 0.5f}};
+auto owner = DrawingCommandView::create(command);
+assert(owner.view().draw_point_position()->x() == 7.0f);
+```
+
+Use the view API generated from your chosen schema. Matching encoded fields does
+not require identical native declarations or identical payload accessor names.
+
+## Caller-provided storage
+
+Given `value` above, an explicit aligned owner can be initialized in place:
+
+```cpp
+const auto size = DrawingView::compute_byte_length(value);
+intrlay::OwnedView<DrawingView> storage(size, DrawingView::alignment);
+auto drawing = DrawingView::create_in_place(storage.bytes(), value);
+assert(drawing.title() == "Sketch");
+```
+
+An FFI-provided `std::span<std::byte>` can replace `storage.bytes()` if it has the
+required capacity, alignment, and lifetime. The span itself does not retain the
+foreign allocation. Construction inputs must not overlap the destination.
+
+## Typed access and const storage
+
+Generated `Metadata` describes fields and enum alternatives for the shared codec
+templates. Normal use does not require accessing it directly.
+
+Const and mutable views share an implementation, with mutation constrained by
+the byte type. Collections retain typed value-view access. Byte storage is not
+silently reinterpreted as live native objects: generated access respects C++20
+object lifetime rules even for externally supplied read-only bytes.
+
+Keep owners alive and preserve the [mutation contract](../concepts/mutation.mdx).
+Default namespaces are `intrlay_generated::<module_name>`; override them with
+`cpp_namespace` in generation options.

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>../../target/edge-cases/expanded</CompilerGeneratedFilesOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../packages/csharp/Intrlay.csproj" />
+    <ProjectReference Include="../../packages/csharp/generator/Intrlay.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <Compile Include="../../target/edge-cases/*.cs" />
+  </ItemGroup>
+</Project>

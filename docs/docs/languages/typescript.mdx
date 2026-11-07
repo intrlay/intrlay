@@ -1,0 +1,103 @@
+# TypeScript and JavaScript
+
+Install the ES-module runtime with `npm install @intrlay/runtime`, generate with
+`--language typescript`, and compile the output with your TypeScript project.
+The [getting-started example](../getting-started.mdx) includes a complete Node.js
+consumer. The same views work with browser buffers.
+
+## Native inputs and buffer views
+
+Generate the [tutorial schema](../tutorial.mdx#1-define-the-message) with
+`--language typescript --module-name drawing --output generated/drawing.ts`.
+Construction takes structural input objects:
+
+```typescript
+import { DrawingView } from "./generated/drawing.js";
+import type { Drawing } from "./generated/drawing.js";
+
+const value: Drawing = {
+    title: "Sketch",
+    points: [{ x: 1, y: 2, z: 3 }],
+    selectedPoint: null,
+    command: { kind: "DrawPoint", position: { x: 7, y: 8, z: 9 }, size: 0.5 }
+};
+const drawing = DrawingView.create(value);
+
+console.log(drawing.title);           // Sketch
+console.log(drawing.points.get(0).x); // 1
+console.log(drawing.selectedPoint);   // null
+
+const position = drawing.command.drawPointPosition;
+if (position !== undefined) {
+    console.log(position.x); // 7
+}
+
+drawing.points.get(0).x = 10;
+drawing.selectedPoint = 0;
+drawing.command.replace({ kind: "Clear" });
+
+const received = new DrawingView(drawing.bytes);
+console.log(received.points.get(0).x);           // 10
+console.log(received.command.drawPointPosition); // undefined
+```
+
+The constructor borrows bytes. `create` encodes a native input into newly
+allocated storage. `drawing.bytes` exposes a `Uint8Array` over that storage.
+Scalar accessors use TypedArrays; strings are decoded to JavaScript strings
+when read. The runtime checks little-endian TypedArray storage once at load time.
+
+## Caller-provided buffers
+
+Given `value` above:
+
+```typescript
+const bytes = new Uint8Array(DrawingView.computeByteLength(value));
+const inPlace = DrawingView.createInPlace(bytes, value);
+```
+
+The region must satisfy `DrawingView.alignment` and the measured capacity.
+Do not pass an input view that overlaps the destination. An application can use
+an FFI-provided region in place of the allocation above if its lifetime is valid.
+[Storage and ownership](../concepts/storage.mdx) shows an aligned slice of a
+larger allocation.
+
+## Composite values
+
+Enum inputs use a `kind` discriminant. Variant-specific view getters return
+`undefined` for an inactive variant; `tag` exposes the encoded number. Optional
+values use nullable APIs; nested optional states that would otherwise collapse into `null`
+use a `Some<T>` presence wrapper. That distinction preserves `None`, `Some(None)`,
+and `Some(value)`.
+
+Record collections expose element views through `get(index)`. For a loop that
+only needs one field, indexed access avoids creating an element wrapper:
+
+```typescript
+let totalX = 0;
+const points = drawing.points;
+for (let index = 0; index < points.length; ++index) {
+    totalX += points.getX(index);
+}
+```
+
+These field helpers require an in-range integer index.
+
+Composite field getters cache views. They reread presence bits and enum tags so
+that replacement through another view remains observable. Obtain an active child
+again after a variant or presence change; do not retain an inactive payload view.
+
+Numeric fixed arrays use TypedArrays by default. Common `project` annotations
+can also flatten homogeneous records or request indexed field access. This can
+avoid creating an element wrapper when reading a field in a tight loop.
+Numeric projections include any padding lanes in their representation.
+
+`i64` and `u64` scalar values use JavaScript `bigint`. Generated APIs retain
+TypeScript types; choosing a numeric projection is an explicit request to expose
+the lower-level representation.
+
+## Generated API size
+
+`generate_getters`, `generate_setters`, and `create` can omit unused code. These
+are generation controls, not a readonly storage system. Returned TypedArrays
+retain their usual operations. See [Schema annotations](../reference/annotations.mdx)
+for scope, projection, and indexed-access rules.

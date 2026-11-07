@@ -1,0 +1,5 @@
+# Include the shared license and changelog copied by xtask, even though Git ignores them.
+!LICENSE*
+!CHANGELOG.md
+.dart_tool/
+pubspec.lock

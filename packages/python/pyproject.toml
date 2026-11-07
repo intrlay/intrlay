@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "intrlay"
+version = "0.1.0"
+description = "Typed storage for generated Intrlay memory views"
+requires-python = ">=3.12"
+readme = "README.md"
+license = "Apache-2.0 OR MIT"
+license-files = ["LICENSE", "LICENSE-APACHE", "LICENSE-MIT"]
+
+[project.urls]
+Repository = "https://github.com/intrlay/intrlay"
+Issues = "https://github.com/intrlay/intrlay/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+intrlay = ["py.typed"]

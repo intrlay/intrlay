@@ -1,0 +1,6 @@
+{
+  "exports": {
+    "Scalar": { "kind": "scalar", "value": "f32" }
+  },
+  "definitions": {}
+}

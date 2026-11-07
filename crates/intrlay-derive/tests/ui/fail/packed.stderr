@@ -1,0 +1,5 @@
+error: packed records cannot provide aligned TypedArray access
+ --> tests/ui/fail/packed.rs:2:11
+  |
+2 | #[repr(C, packed)]
+  |           ^^^^^^

@@ -1,0 +1,253 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - name: Read the latest numbered changelog section
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+        run: |
+          if [ -n "$RELEASE_TAG" ]; then
+            cargo xtask release prepare --tag "$RELEASE_TAG"
+          else
+            cargo xtask release prepare
+          fi
+          cargo xtask release package-sources
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-metadata
+          path: target/release-metadata/
+          if-no-files-found: error
+
+  check:
+    uses: ./.github/workflows/check.yml
+
+  binaries:
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+          targets: ${{ matrix.target }}
+      - name: Build and run the native generator
+        run: |
+          cargo build --locked --release -p intrlay-cli --target ${{ matrix.target }}
+          cargo run --locked --release -p intrlay-cli --target ${{ matrix.target }} -- --version
+          cargo run --locked --release -p intrlay-cli --target ${{ matrix.target }} -- generate tests/cli/scalar.json --language typescript --output target/smoke.ts
+      - name: Archive the generator and C++ headers
+        run: cargo xtask release archive --platform ${{ matrix.target }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: binary-${{ matrix.target }}
+          path: target/artifacts/
+          if-no-files-found: error
+
+  packages:
+    needs: [metadata, check]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - uses: dart-lang/setup-dart@v1
+      - run: python -m pip install build twine
+      - name: Build and verify all runtime packages
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: cargo xtask package --repository "$RELEASE_REPOSITORY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages
+          path: target/artifacts/
+          if-no-files-found: error
+
+  draft:
+    if: github.event_name == 'push'
+    needs: [metadata, check, binaries, packages]
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: binary-*
+          path: target/artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: packages
+          path: target/artifacts
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-metadata
+          path: target/release-metadata
+      - run: cargo xtask release checksums target/artifacts
+      - name: Create draft release with the exact changelog body
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: cargo xtask release draft
+
+  crates:
+    needs: draft
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - name: Publish unpublished workspace crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo xtask publish crates
+
+  npm:
+    needs: draft
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v8
+        with:
+          name: packages
+          path: target/artifacts
+      - name: Publish the verified npm archive using OIDC
+        run: cargo xtask publish npm
+
+  pypi:
+    needs: draft
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: packages
+          path: artifacts
+      - name: Select Python distributions
+        run: |
+          mkdir python-dist
+          cp artifacts/*.whl python-dist/
+          cp artifacts/intrlay-[0-9]*.tar.gz python-dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: python-dist
+          skip-existing: true
+
+  nuget:
+    needs: draft
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/download-artifact@v8
+        with:
+          name: packages
+          path: artifacts
+      - name: Publish the verified NuGet package
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: dotnet nuget push 'artifacts/*.nupkg' --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
+
+  pubdev:
+    needs: draft
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - uses: dart-lang/setup-dart@v1
+      - uses: actions/download-artifact@v8
+        with:
+          name: packages
+          path: target/artifacts
+      - name: Publish the verified Dart source package using OIDC
+        run: cargo xtask publish dart
+
+  publish-release:
+    needs: [metadata, crates, npm, pypi, nuget, pubdev]
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Make the completed release public
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: gh release edit "$RELEASE_TAG" --draft=false
+

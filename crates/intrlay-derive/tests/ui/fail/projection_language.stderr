@@ -1,0 +1,5 @@
+error: unknown intrlay attribute
+ --> tests/ui/fail/projection_language.rs:2:11
+  |
+2 | #[intrlay(javascript(generate_getters=false))]
+  |           ^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: from is not supported at this annotation location
+ --> tests/ui/fail/field_scope.rs:2:26
+  |
+2 | struct Value { #[intrlay(from=does_not_exist)] value: u32 }
+  |                          ^^^^

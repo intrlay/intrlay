@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>../../target/conformance/expanded</CompilerGeneratedFilesOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../target/conformance/bindings.cs" Link="bindings.cs" />
+    <Compile Include="../../target/documentation/bindings.cs" Link="documentation.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../packages/csharp/Intrlay.csproj" />
+    <ProjectReference Include="../../packages/csharp/generator/Intrlay.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>

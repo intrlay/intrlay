@@ -1,0 +1,79 @@
+# Binary layout
+
+Generated accessors handle these details. This reference is useful when choosing
+an FFI allocation, inspecting bytes, or deciding whether to expose a numeric
+projection. Start with [Values, buffers, and views](../concepts/buffers-and-views.mdx)
+for the application model.
+
+## Field order and alignment
+
+Records preserve field order. Before each field, padding advances the offset to
+that field's alignment. The record's final size is rounded to its alignment.
+Supported explicit alignment annotations participate in this calculation.
+
+For a record with fields `a: u8`, `b: f32`, and `c: u16`, with no extra alignment:
+
+```text
+offset     0       1..3       4..7       8..9       10..11
+           a       padding   b          c          padding
+size       1       3         4          2          2
+
+record size: 12 bytes; alignment: 4 bytes
+```
+
+This is a schema layout, not a promise about the source language's native ABI.
+In particular, native `Option` niches and native enum layouts do not determine
+their encoded form. Native-layout fast paths apply only when the implementation
+proves compatibility.
+
+## Headers and payloads
+
+Strings and variable-length sequences have fixed headers containing a relative
+offset and a byte length or element count. Payload storage follows separately.
+Element headers have a fixed stride even if the elements contain strings or
+nested sequences.
+
+Relative offsets are based on each reference's own header. Moving a complete
+encoded region preserves its references. All payloads still need to be available
+to the view; a header is not a standalone copy of a message with dynamic data.
+
+Offsets and counts use `u32`. Encoded sizes must fit the supported `u32` address
+space; the writer does not partition an oversized value into multiple buffers.
+Split large payloads at the application's schema level when needed.
+
+## Scalars and text
+
+Numbers use little-endian encoding and text uses UTF-8. The TypeScript TypedArray
+and Python numeric memoryview paths require little-endian hosts. Codecs handle
+the representation; application code normally accesses values through views.
+
+A numeric projection may include padding lanes. For example, a three-float record
+aligned to 16 bytes occupies four `f32` lanes per element. See
+[Numeric and indexed projections](annotations.mdx#numeric-and-indexed-projections)
+for an input declaration and the resulting API.
+
+## Layout is established during construction
+
+Measurement determines space for the whole value before writing. Strings,
+sequence lengths, and relative references remain fixed while views access that
+encoding. Scalars and complete fixed values can be replaced in their existing
+space; see [Mutation](../concepts/mutation.mdx).
+
+## Compatibility
+
+Intrlay does not add a library version, format version, or schema ID to serialized
+data. Versioning stays outside the encoding; readers and writers must agree on
+the binary layout before exchanging buffers.
+
+Intrlay does not negotiate schemas or automatically adapt data between schema
+revisions. The application coordinates schema changes, binding regeneration, and
+deployment of producers and consumers. Stored data must be read with a layout
+compatible with the one used to write it.
+
+If an Intrlay release changes the encoding rules, its release notes will identify
+the change as a breaking change. Package versions identify library releases and
+are not embedded in buffers.
+
+Views assume a valid encoding and the agreed layout. Intrlay provides no general
+input validation layer; the application supplies valid bytes and the correct
+buffer lifetime at the receiving boundary.
