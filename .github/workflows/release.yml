@@ -34,6 +34,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.95.0'
+          components: rustfmt, clippy
       - name: Read the latest numbered changelog section
         id: release
         env:
@@ -79,6 +80,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.95.0'
+          components: rustfmt, clippy
           targets: ${{ matrix.target }}
       - name: Build and run the native generator
         run: |
@@ -101,6 +103,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.95.0'
+          components: rustfmt, clippy
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -134,6 +137,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.95.0'
+          components: rustfmt, clippy
       - uses: actions/download-artifact@v8
         with:
           pattern: binary-*
@@ -165,6 +169,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.95.0'
+          components: rustfmt, clippy
       - uses: rust-lang/crates-io-auth-action@v1.0.6
         id: auth
       - name: Publish unpublished workspace crates
@@ -184,6 +189,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.95.0'
+          components: rustfmt, clippy
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -262,6 +268,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.95.0'
+          components: rustfmt, clippy
       - uses: dart-lang/setup-dart@v1
       - uses: actions/download-artifact@v8
         with:
