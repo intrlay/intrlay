@@ -68,6 +68,8 @@
 - Use distinct replacement methods when a numeric projection's borrowed getter
   and construction input have different types.
 - Reject uninhabited enums and invalid enum input tags.
+- Borrow C# fixed-array constructor arguments to support large inline inputs on
+  platforms whose CLR rejects passing them by value.
 - Document encoding inputs, generated type families, and ownership contracts;
   use Clang 19 for C++20 input alias deduction in CI.
 

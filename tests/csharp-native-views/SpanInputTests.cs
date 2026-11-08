@@ -79,8 +79,14 @@ static class SpanInputTests
     {
         var holder = new LargeHolder();
         // Initialize on a generous stack; the input itself stays on the heap.
-        var initialize = new Thread(() => holder.Value = new LargeInlinePacketInput(default, default, "payload"),
-            8 * 1024 * 1024);
+        var initialize = new Thread(() =>
+        {
+            FixedArray32768<uint> left = default;
+            FixedArray32768<uint> right = default;
+            left[0] = 17;
+            right[32767] = 29;
+            holder.Value = new LargeInlinePacketInput(in left, in right, "payload");
+        }, 8 * 1024 * 1024);
         initialize.Start();
         initialize.Join();
 
@@ -102,7 +108,7 @@ static class SpanInputTests
         write.Start();
         write.Join();
         var result = new LargeInlinePacketView(storage);
-        Check(result.Left[0] == 0 && result.Right[32767] == 0 && result.Label == "payload",
+        Check(result.Left[0] == 17 && result.Right[32767] == 29 && result.Label == "payload",
             "owned encoding does not retain all inline-array copies together");
     }
 

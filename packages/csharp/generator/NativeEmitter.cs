@@ -42,7 +42,10 @@ internal sealed partial class Emitter
             }
             Line();
         }
-        var parameters = string.Join(", ", fields.Select(field => $"{Input(field.Type)} @{field.Name}"));
+        // Fixed arrays live inline and can exceed the CLR's by-value argument
+        // limits on some platforms. Borrow them before copying into the record.
+        var parameters = string.Join(", ", fields.Select(field =>
+            $"{(Node(field.Type).Kind == "Array" ? "in " : "")}{Input(field.Type)} @{field.Name}"));
         Open($"public {name}({parameters})");
         foreach (var field in fields) Line($"this.@{field.Name} = @{field.Name};");
         Close();
