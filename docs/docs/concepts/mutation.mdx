@@ -29,13 +29,13 @@ allows replacement, including a change of tag:
 
 ```typescript
 drawing.command.replace({
-    kind: "DrawPoint",
+    kind: DrawingCommandKind.DrawPoint,
     position: { x: 7, y: 8, z: 9 },
     size: 0.5
 });
 console.log(drawing.command.drawPointSize); // 0.5
 
-drawing.command.replace({ kind: "Clear" });
+drawing.command.replace({ kind: DrawingCommandKind.Clear });
 console.log(drawing.command.drawPointSize); // undefined
 ```
 
@@ -65,7 +65,7 @@ For example, starting with `DrawPoint` active:
 
 ```typescript
 const oldPosition = drawing.command.drawPointPosition;
-drawing.command.replace({ kind: "Clear" });
+drawing.command.replace({ kind: DrawingCommandKind.Clear });
 const currentPosition = drawing.command.drawPointPosition; // undefined
 ```
 

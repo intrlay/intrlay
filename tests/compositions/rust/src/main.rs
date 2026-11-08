@@ -3,6 +3,24 @@ mod bindings;
 use bindings::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let nested = [
+        intrlay::ZeroedSequence::new(2),
+        intrlay::ZeroedSequence::new(0),
+    ];
+    let zero_input = ZeroedArraysInput {
+        id: 73_u32,
+        points: intrlay::ZeroedSequence::new(3),
+        flags: intrlay::ZeroedSequence::new(4),
+        matrix: intrlay::Zeroed,
+        present: Some(intrlay::Zeroed),
+        nested: nested.as_slice(),
+        empty: intrlay::Zeroed,
+    };
+    let expected = std::fs::read("target/compositions/zeroed.bin")?;
+    assert_eq!(
+        intrlay::create_from::<ZeroedArrays>(&zero_input)?.as_ref(),
+        expected
+    );
     let mut names = RenamedListView::create(&RenamedList {
         items: vec![Renamed {
             first: 11,

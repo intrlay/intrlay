@@ -32,6 +32,59 @@ struct Frame {
 }
 
 #[test]
+fn module_options_keep_target_configuration_local() -> Result<(), Box<dyn Error>> {
+    let mut registry = Registry::new();
+    registry.export::<Frame>("Frame");
+    let schema = registry.finish();
+    let mut options: GenerateOptions = serde_json::from_str(
+        r#"{
+            "module_name": "Drawing",
+            "cpp": { "namespace": "app::drawing" },
+            "csharp": { "namespace": "App.Drawing", "language_version": 15 }
+        }"#,
+    )?;
+    let cpp = generate_with_options(&schema, Language::Cpp, options.clone())?;
+    assert!(cpp.contains("namespace app::drawing {"));
+    assert!(cpp.contains("::app::drawing::"));
+    let csharp = generate_with_options(&schema, Language::CSharp, options.clone())?;
+    assert!(csharp.contains("namespace App.Drawing;"));
+    assert!(csharp.contains("CSharpLanguageVersion = 15"));
+    for language in [
+        Language::Rust,
+        Language::TypeScript,
+        Language::Python,
+        Language::Dart,
+    ] {
+        assert_eq!(
+            generate_with_options(&schema, language, options.clone())?,
+            generate_with_options(&schema, language, GenerateOptions::default())?,
+        );
+    }
+
+    options.csharp.language_version = Some(13);
+    assert_eq!(
+        generate_with_options(&schema, Language::Cpp, options.clone())?,
+        cpp
+    );
+    assert!(generate_with_options(&schema, Language::CSharp, options).is_err());
+    Ok(())
+}
+
+#[test]
+fn unknown_module_options_are_not_silently_ignored() {
+    for json in [
+        r#"{"cpp_namespace": "app"}"#,
+        r#"{"cpp": {"namespce": "app"}}"#,
+        r#"{"csharp": {"language_verison": 15}}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<GenerateOptions>(json).is_err(),
+            "{json}"
+        );
+    }
+}
+
+#[test]
 fn module_and_helper_names_do_not_depend_on_exports() -> Result<(), Box<dyn Error>> {
     for extra_export in [false, true] {
         let mut registry = Registry::new();
@@ -58,9 +111,9 @@ fn module_and_helper_names_do_not_depend_on_exports() -> Result<(), Box<dyn Erro
         ] {
             let mut options = options.clone();
             if language == Language::Cpp {
-                options.cpp_namespace = Some(namespace.into());
+                options.cpp.namespace = Some(namespace.into());
             } else {
-                options.csharp_namespace = Some(namespace.into());
+                options.csharp.namespace = Some(namespace.into());
             }
             assert!(generate_with_options(&schema, language, options)?.contains(marker));
         }
@@ -101,7 +154,9 @@ fn cpp_modules_keep_shared_names_in_separate_scopes(
             &schema,
             Language::Cpp,
             GenerateOptions {
-                cpp_namespace: Some(namespace.into()),
+                cpp: intrlay_codegen::CppOptions {
+                    namespace: Some(namespace.into()),
+                },
                 ..Default::default()
             },
         )?;
@@ -129,7 +184,9 @@ fn cpp_namespace_must_be_a_qualified_identifier() {
             &schema,
             Language::Cpp,
             GenerateOptions {
-                cpp_namespace: Some(namespace.into()),
+                cpp: intrlay_codegen::CppOptions {
+                    namespace: Some(namespace.into()),
+                },
                 ..Default::default()
             },
         );

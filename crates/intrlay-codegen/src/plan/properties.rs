@@ -117,14 +117,10 @@ mod tests {
     use intrlay_schema::{Definition, DefinitionKind, Field, Language, Schema, Type, Variant};
 
     use super::*;
-    use crate::{GenerateOptions, backend};
+    use crate::backend;
 
     fn plan(schema: &Schema) -> Result<TypeGraph, crate::GenerateError> {
-        TypeGraph::new(
-            schema,
-            backend::for_language(Language::TypeScript),
-            GenerateOptions::default(),
-        )
+        TypeGraph::new(schema, backend::for_language(Language::TypeScript), None)
     }
 
     #[test]

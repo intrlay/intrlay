@@ -10,7 +10,7 @@ internal sealed partial class Emitter
     private string[]? nativeTypeNames;
 
     private string[] NativeTypeNames() => nativeTypeNames ??= schema.Nodes.Values.Where(type => type.Native)
-        .SelectMany(type => new[] { type.Name }.Concat(type.Variants.Select(variant => type.Name + variant.Name)))
+        .SelectMany(type => new[] { type.Name }.Concat(type.Variants.Select(variant => variant.InputName)))
         .ToArray();
 
     private NativeUnion NativeLayout(Node node)
@@ -183,6 +183,7 @@ internal sealed partial class Emitter
                     part.Child = Build(child);
                     break;
                 case "Enum":
+                    if (node.ValueEnum) { part.Slot = Number("U32"); break; }
                     var union = emitter.NativeLayout(node);
                     part.Union = union;
                     part.Slot = DataField(emitter.NativeType(node) + "." + union.NumericType,
@@ -248,7 +249,9 @@ internal sealed partial class Emitter
         var union = NativeLayout(node);
         var storage = union.Storage;
         var root = union.Root;
-        Open($"public readonly partial struct {node.Name}");
+        bool patterns = schema.CSharpLanguageVersion >= 15;
+        if (patterns) Line("[global::System.Runtime.CompilerServices.Union]");
+        Open($"public readonly partial struct {node.Name}" + (patterns ? $" : {node.Name}.IUnionMembers" : ""));
         Line("// Mutually exclusive payloads share numeric, reference, and memory-owner slots.");
         Line($"private readonly {union.StorageType} {union.StorageField};");
         Line($"private {node.Name}({union.StorageType} storage) => {union.StorageField} = storage;");
@@ -269,6 +272,7 @@ internal sealed partial class Emitter
             Close();
             Line();
         }
+        if (patterns) UnionMembers(union);
         NativeTransfers(union);
         NativeStorageTypes(storage, union.StorageType, union.NumericType, "private");
         foreach (var array in union.Arrays.Values)
@@ -301,7 +305,7 @@ internal sealed partial class Emitter
 
     private void NativePayload(NativeUnion union, Variant variant, List<(Field Field, Part Value)> fields)
     {
-        var type = union.Node.Name + variant.Name;
+        var type = variant.InputName;
         Docs(variant.Docs);
         if (fields.Count == 0)
         {
@@ -345,7 +349,8 @@ internal sealed partial class Emitter
     private void NativeWrite(Part part, string value, string storage, NameScope locals)
     {
         var node = part.Node;
-        if (node.Scalar) Line($"{storage}.{part.Slot} = {value};");
+        if (node.ValueEnum) Line($"{storage}.{part.Slot} = (uint){value};");
+        else if (node.Scalar) Line($"{storage}.{part.Slot} = {value};");
         else switch (node.Kind)
         {
             case "String":
@@ -390,6 +395,7 @@ internal sealed partial class Emitter
     {
         var node = part.Node;
         var slot = storage + "." + part.Slot;
+        if (node.ValueEnum) return $"({Input(node.Id)}){slot}";
         if (node.Scalar) return slot;
         switch (node.Kind)
         {

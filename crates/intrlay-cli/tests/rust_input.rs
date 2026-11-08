@@ -306,3 +306,38 @@ intrlay = {{ path = {runtime} }}
     fails_with(&result, "required arguments were not provided");
     Ok(())
 }
+
+#[test]
+fn csharp_language_flag_overrides_the_options_file() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let options = temporary.path().join("options.json");
+    let output = temporary.path().join("bindings.cs");
+    fs::write(&options, r#"{"csharp": {"language_version": 15}}"#)?;
+    for version in [None, Some("14"), Some("15"), Some("16"), Some("13")] {
+        let mut command = cli();
+        command
+            .arg("generate")
+            .arg(repository().join("tests/cli/scalar.json"))
+            .args(["--language", "csharp", "--options"])
+            .arg(&options)
+            .arg("--output")
+            .arg(&output);
+        if let Some(version) = version {
+            command.args(["--csharp-language-version", version]);
+        }
+        let result = command.output()?;
+        if version == Some("13") {
+            fails_with(&result, "C# 14 or later");
+        } else {
+            succeeds(&result);
+            let source = fs::read_to_string(&output)?;
+            if version == Some("14") {
+                assert!(source.contains("[global::Intrlay.GenerateBindings]"));
+            } else {
+                let selected = version.unwrap_or("15");
+                assert!(source.contains(&format!("CSharpLanguageVersion = {selected}")));
+            }
+        }
+    }
+    Ok(())
+}

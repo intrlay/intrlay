@@ -6,7 +6,7 @@ void check(bool value) { if (!value) throw StateError('boundary value regression
 
 void main() {
   const values = ['', 'hello', '\uFEFF', '\uFEFFhello', '\uFEFF\uFEFFhello', 'a\uFEFFb', '한글😀'];
-  final text = bindings.TextView.create(const bindings.Text(values: values));
+  final text = bindings.TextView.create(const bindings.TextInput(values: values));
   final golden = File('target/edge-cases/text.bin').readAsBytesSync();
   check(text.bytes.length == golden.length);
   for (var i = 0; i < golden.length; i++) check(text.bytes[i] == golden[i]);

@@ -17,13 +17,13 @@ the Intrlay CLI's `--language dart` option.
 
 ## Usage
 
-Given the generated `Point` and `PointView` from the getting-started example:
+Given the generated `PointInput` and `PointView` from the getting-started example:
 
 ```dart
 import 'generated/point.dart';
 
 void main() {
-  final point = PointView.create(const Point(x: 1, y: 2, z: 3));
+  final point = PointView.create(const PointInput(x: 1, y: 2, z: 3));
   point.x = 4;
 
   assert(PointView(point.bytes).x == 4);

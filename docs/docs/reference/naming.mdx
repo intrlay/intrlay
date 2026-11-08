@@ -20,6 +20,73 @@ For the tutorial's `selected_point` field:
 Type names normally use `PascalCase`. Generated operation names follow the same
 language's style: `create_in_place`, `createInPlace`, or `CreateInPlace`.
 
+## Type families
+
+For a record named `Drawing`, the default API names identify the role of each
+type:
+
+| Target | Encoding input | Encoded view |
+| --- | --- | --- |
+| Rust | Owned `Drawing` or generic `DrawingInput` | `DrawingView`, parameterized by its storage |
+| C++ | `DrawingInput<>`, with field source types selectable by template deduction | `DrawingView` and `DrawingViewReadOnly` |
+| C# | `DrawingInput`; eligible records also have `DrawingSpanInput` | `DrawingView`, `DrawingViewReadOnly`, `DrawingSpanView`, and `DrawingSpanViewReadOnly` |
+| TypeScript | Structural `DrawingInput` | `DrawingView` |
+| Python | `DrawingInput` with `TypedDict` fields | `DrawingView` |
+| Dart | `DrawingInput` class | `DrawingView` |
+
+Rust derives add input and view types alongside the schema declaration. Rust
+target generation emits a schema declaration with that derive, so the same
+type family is available there. C++ schema declarations remain application
+types; the generated module provides its own inputs and views, and its encoder
+also accepts matching source declarations. The other targets use their input
+types for construction without a separate `Drawing` value type.
+
+TypeScript, Python, and Dart omit unused record and payload-enum input types.
+Their presence follows construction and mutation dependencies, rather than
+`create` alone; see [Accessor generation](annotations.mdx#accessor-generation-and-construction).
+
+The suffixes describe representation, not ownership guarantees. A C++ input can
+own a vector or borrow a span; a Rust input can borrow fields independently.
+A C# `SpanInput` is a scoped `ref struct` for supported records. See
+[Values, buffers, and views](../concepts/buffers-and-views.mdx) for the relationship
+between these types and their storage.
+
+### Enum names
+
+Payload-free enums use a native `ModeInput` enum in each target. In Rust,
+`ModeInput` is an alias of the schema's `Mode`. They also have a `ModeView` for
+encoded storage.
+
+These native enum declarations remain available as tag constants even when no
+writer needs an input. TypeScript's `tag` getter uses `ModeInput` as its return
+type, while Python and Dart return the numeric wire tag.
+
+For an enum with payloads, such as `DrawingCommand`:
+
+- TypeScript uses a `DrawingCommandInput` union and numeric
+  `DrawingCommandKind` discriminants. Python uses the same naming pattern, with
+  `TypedDict` alternatives such as `DrawingCommandDrawPointInput` and an
+  `IntEnum` for the kind.
+- Dart uses a sealed `DrawingCommandInput` base with subclasses such as
+  `DrawingCommandDrawPointInput`.
+- C# provides `DrawingCommandInput.FromDrawPoint(...)` factories. Payload structs
+  use names such as `DrawingCommandDrawPointInput`.
+- C++ inputs for a Rust enum use payload types such as
+  `DrawingCommandDrawPointInput<>`. A C++ `std::variant` schema retains its named
+  payload types instead, such as `DrawPointInput<>`.
+- Rust uses `DrawingCommandInput` variants for construction and
+  `DrawingCommandVariantView` for matching borrowed payloads.
+
+All targets expose `DrawingCommandView` for encoded access. See
+[Enum tags](annotations.mdx#enum-tags) for tag values and payload access.
+
+Generated companion names use the exported base name. Renaming `Drawing` to
+`Sketch` produces `SketchInput` and `SketchView`; the same rule applies to other
+companions. A schema declaration named `DrawingInput` would collide with the
+input generated for `Drawing` in Rust, where both schema and input declarations
+occupy the same module. Each target checks the names it emits in their actual
+scopes and reports collisions rather than silently adjusting them.
+
 ## Configure a whole generation unit
 
 Save this as `naming.json`. It keeps type and variant names in PascalCase, uses
@@ -142,14 +209,14 @@ the command line. C++ derives `intrlay_generated::<snake_case_name>` and C#
 derives `IntrlayGenerated.<PascalCaseName>`; other targets use their file/module
 system. The default module name is `Schema`.
 
-Use `cpp_namespace` or `csharp_namespace` for an explicit namespace, independently
+Use `cpp.namespace` or `csharp.namespace` for an explicit namespace, independently
 of symbol casing:
 
 ```json
 {
   "module_name": "drawing",
-  "cpp_namespace": "app::drawing",
-  "csharp_namespace": "App.Drawing"
+  "cpp": { "namespace": "app::drawing" },
+  "csharp": { "namespace": "App.Drawing" }
 }
 ```
 

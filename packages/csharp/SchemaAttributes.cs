@@ -7,7 +7,11 @@ namespace Intrlay;
 /// <remarks>Schema attributes are omitted from assemblies unless INTRLAY_INCLUDE_SCHEMA is defined.</remarks>
 [Conditional("INTRLAY_INCLUDE_SCHEMA")]
 [AttributeUsage(AttributeTargets.Class)]
-public sealed class GenerateBindingsAttribute : Attribute;
+public sealed class GenerateBindingsAttribute : Attribute
+{
+    /// <summary>Minimum consumer language version. C# 15 adds non-boxing payload-enum patterns.</summary>
+    public int CSharpLanguageVersion { get; set; } = 14;
+}
 
 /// <summary>A wire representation whose offsets have already been resolved by Intrlay.</summary>
 public enum WireKind
@@ -48,8 +52,12 @@ public sealed class WireTypeAttribute(
     public bool NativeLayout { get; set; }
     /// <summary>The resolved encoder writes every byte, including all alignment gaps.</summary>
     public bool FullyWritten { get; set; }
+    public bool Zeroable { get; set; }
     public string ViewName { get; set; } = "";
     public string SpanName { get; set; } = "";
+    /// <summary>Optional stack-scoped input for a record with directly borrowable payloads.</summary>
+    public string SpanInputName { get; set; } = "";
+    public string SourceInputName { get; set; } = "";
     public string ArrayName { get; set; } = "";
     public string NativeReadName { get; set; } = "";
     public string MeasureName { get; set; } = "";
@@ -87,6 +95,7 @@ public sealed class WireVariantAttribute(int owner, uint tag, string name, strin
     public string Name { get; } = name;
     public string Factory { get; } = factory;
     public string Documentation { get; set; } = "";
+    public string InputName { get; set; } = "";
 }
 
 /// <summary>Requests a named buffer view of a wire type.</summary>

@@ -2,8 +2,8 @@ use intrlay_layout::Layout;
 use intrlay_schema::Describe;
 
 use crate::{
-    BufferLayout, EncodeError, Initialization, OwnedBuffer, SizeCursor, Writer,
-    buffer::BufferAllocation,
+    BufferLayout, EncodeError, EncodeSource, Initialization, OwnedBuffer, SizeCursor, ValueSource,
+    Writer, buffer::BufferAllocation,
 };
 
 /// A concrete value's encoded layout, construction, and borrowed access.
@@ -44,6 +44,13 @@ pub unsafe trait Intrlay: Describe + 'static {
     /// ownership is embedded, and the native size, field offsets, and byte order match.
     /// Derives use this for a whole-record copy without exposing a native-reference API.
     const NATIVE_LAYOUT: bool = false;
+    /// Whether an all-zero fixed header is a valid encoding without descendants.
+    ///
+    /// This is a wire-layout guarantee, not a promise about the native value's
+    /// representation or `Default`. Zero-initialization sources check it at
+    /// compile time. Custom codecs must retain the default unless their view and
+    /// decoder accept an all-zero header with no out-of-line storage.
+    const ZEROABLE: bool = false;
     /// Whether any value can require storage outside its fixed header.
     /// False permits replacing presence bits and enum tags in existing storage.
     /// A false value guarantees that measurement and writing reserve no payloads.
@@ -110,8 +117,18 @@ pub unsafe trait Intrlay: Describe + 'static {
 /// # Errors
 /// Returns an error if the value exceeds the supported size or count limits.
 pub fn compute_layout<C: Intrlay>(value: &C::Value) -> Result<BufferLayout, EncodeError> {
+    compute_layout_from::<C>(&ValueSource::<C>::new(value))
+}
+
+/// Computes allocation requirements from an owned or borrowed encoding input.
+///
+/// # Errors
+/// Returns an error for unsupported sizes or inconsistent sequence lengths.
+pub fn compute_layout_from<C: Intrlay>(
+    value: &(impl EncodeSource<C> + ?Sized),
+) -> Result<BufferLayout, EncodeError> {
     let mut cursor = SizeCursor::new(C::LAYOUT)?;
-    C::measure(value, &mut cursor)?;
+    value.measure(&mut cursor)?;
     Ok(cursor.finish())
 }
 
@@ -120,14 +137,24 @@ pub fn compute_layout<C: Intrlay>(value: &C::Value) -> Result<BufferLayout, Enco
 /// # Errors
 /// Returns an error for unsupported sizes or a layout that changes during construction.
 pub fn create<C: Intrlay>(value: &C::Value) -> Result<OwnedBuffer, EncodeError> {
-    let layout = compute_layout::<C>(value)?;
-    let mut buffer = if C::WRITES_ALL_BYTES {
+    create_from::<C>(&ValueSource::<C>::new(value))
+}
+
+/// Constructs one buffer directly from recursively borrowed input values.
+///
+/// # Errors
+/// Returns an error for unsupported sizes or an input layout/count that changes.
+pub fn create_from<C: Intrlay>(
+    value: &(impl EncodeSource<C> + ?Sized),
+) -> Result<OwnedBuffer, EncodeError> {
+    let layout = compute_layout_from::<C>(value)?;
+    let mut buffer = if source_writes_all_bytes::<C, _>(value) {
         BufferAllocation::new::<false>(layout)?
     } else {
         BufferAllocation::new::<true>(layout)?
     };
     let mut writer = Writer::new_uninit(buffer.as_uninit_mut(), C::LAYOUT)?;
-    C::write(value, &mut writer, 0)?;
+    value.write(&mut writer, 0)?;
     writer.finish(layout)?;
     // SAFETY: Either the allocation was zeroed, or the codec's byte-coverage
     // proof and matching final layout guarantee that every byte was initialized.
@@ -155,7 +182,21 @@ pub fn write_into<C: Intrlay>(
     value: &C::Value,
     bytes: &mut [u8],
 ) -> Result<BufferLayout, EncodeError> {
-    let layout = compute_layout::<C>(value)?;
+    write_from::<C>(&ValueSource::<C>::new(value), bytes)
+}
+
+/// Writes an input into caller-owned storage without constructing an owned value.
+///
+/// Input storage must not overlap the destination. Safe borrows enforce this.
+///
+/// # Errors
+/// Returns an error for insufficient/misaligned storage, unsupported sizes, or
+/// changing input layouts/counts. On failure, storage may be partially written.
+pub fn write_from<C: Intrlay>(
+    value: &(impl EncodeSource<C> + ?Sized),
+    bytes: &mut [u8],
+) -> Result<BufferLayout, EncodeError> {
+    let layout = compute_layout_from::<C>(value)?;
     if bytes.len() < layout.byte_length() {
         return Err(EncodeError::BufferTooSmall {
             required: layout.byte_length(),
@@ -168,13 +209,17 @@ pub fn write_into<C: Intrlay>(
         });
     }
     let bytes = &mut bytes[..layout.byte_length()];
-    if !C::WRITES_ALL_BYTES {
+    if !source_writes_all_bytes::<C, _>(value) {
         bytes.fill(0);
     }
     let mut writer = Writer::new(bytes, C::LAYOUT)?;
-    C::write(value, &mut writer, 0)?;
+    value.write(&mut writer, 0)?;
     writer.finish(layout)?;
     Ok(layout)
+}
+
+fn source_writes_all_bytes<C: Intrlay, S: EncodeSource<C> + ?Sized>(_: &S) -> bool {
+    S::WRITES_ALL_BYTES
 }
 
 /// Constructs into external storage and returns its mutable typed projection.
@@ -188,5 +233,19 @@ pub fn create_in_place<'a, C: Intrlay>(
 ) -> Result<C::ViewMut<'a>, EncodeError> {
     let layout = write_into::<C>(value, bytes)?;
     // SAFETY: The codec has just initialized this exact region from a valid source value.
+    Ok(unsafe { C::view_mut(&mut bytes[..layout.byte_length()], 0) })
+}
+
+/// Constructs a borrowed typed view from an independent encoding input.
+///
+/// # Errors
+/// Returns an error for insufficient/misaligned storage, unsupported sizes, or
+/// changing input layouts/counts. On failure, storage may be partially written.
+pub fn create_in_place_from<'a, C: Intrlay>(
+    value: &(impl EncodeSource<C> + ?Sized),
+    bytes: &'a mut [u8],
+) -> Result<C::ViewMut<'a>, EncodeError> {
+    let layout = write_from::<C>(value, bytes)?;
+    // SAFETY: The source initialized this exact region with a valid C encoding.
     Ok(unsafe { C::view_mut(&mut bytes[..layout.byte_length()], 0) })
 }

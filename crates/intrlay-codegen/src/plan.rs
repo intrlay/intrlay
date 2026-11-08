@@ -6,7 +6,7 @@ mod mutation;
 mod properties;
 mod view_plan;
 pub use cache::ViewCache;
-pub use encoding::EncodingPlan;
+pub use encoding::{EncodingPlan, WriterParameters};
 pub use mutation::{Mutation, MutationStep};
 pub use view_plan::ViewPlan;
 
@@ -17,9 +17,7 @@ use intrlay_schema::{
     ApiGeneration, DefinitionKind, Exposure, Language, Layouts, Scalar, Schema, TargetOptions, Type,
 };
 
-use crate::{
-    GenerateError, GenerateOptions, SymbolKind, Visibility, backend::Backend, names::Names,
-};
+use crate::{GenerateError, NamingPolicy, SymbolKind, Visibility, backend::Backend, names::Names};
 
 pub type Id = usize;
 
@@ -100,6 +98,34 @@ pub struct Node {
     properties: properties::Properties,
 }
 
+impl Node {
+    /// Only declared payload absence qualifies, not a zero-sized payload type.
+    pub fn is_value_enum(&self) -> bool {
+        matches!(&self.kind, Kind::Enum(variants) if variants.iter().all(|variant| variant.fields.is_empty()))
+    }
+    /// Input declarations remain distinct from a future frontend's schema type.
+    pub fn input_name(&self) -> String {
+        format!("{}Input", self.name)
+    }
+
+    pub fn kind_name(&self) -> String {
+        format!("{}Kind", self.name)
+    }
+
+    /// Numeric tag type: a value enum itself, or a payload enum's companion.
+    pub fn tag_type_name(&self) -> String {
+        if self.is_value_enum() {
+            self.input_name()
+        } else {
+            self.kind_name()
+        }
+    }
+
+    pub fn variant_input_name(&self, variant: &Variant) -> String {
+        format!("{}{}Input", self.name, variant.name)
+    }
+}
+
 /// Canonical codecs and projected APIs are built once and shared by validation
 /// and every backend. Projected nodes retain their canonical `Node::codec` ID.
 pub struct GenerationPlan {
@@ -111,9 +137,9 @@ impl GenerationPlan {
     pub fn new(
         schema: &Schema,
         backend: &'static Backend,
-        options: GenerateOptions,
+        naming: Option<NamingPolicy>,
     ) -> Result<Self, GenerateError> {
-        let encoding = EncodingPlan::new(TypeGraph::new(schema, backend, options)?);
+        let encoding = EncodingPlan::new(TypeGraph::new(schema, backend, naming)?);
         let views = ViewPlan::new(&encoding.types);
         Ok(Self { encoding, views })
     }
@@ -125,9 +151,6 @@ impl GenerationPlan {
 pub struct TypeGraph {
     pub backend: &'static Backend,
     pub names: Names,
-    pub module_name: String,
-    pub cpp_namespace: Option<String>,
-    pub csharp_namespace: Option<String>,
     canonical_nodes: usize,
     pub nodes: Vec<Node>,
     pub exports: BTreeMap<String, Id>,
@@ -137,9 +160,9 @@ impl TypeGraph {
     fn new(
         schema: &Schema,
         backend: &'static Backend,
-        options: GenerateOptions,
+        naming: Option<NamingPolicy>,
     ) -> Result<Self, GenerateError> {
-        let mut builder = Builder::new(schema, backend, options)?;
+        let mut builder = Builder::new(schema, backend, naming)?;
         let language = backend.language;
         // Reserve named declarations first so recursive references resolve without
         // changing public names according to the order fields happen to be visited.
@@ -225,7 +248,7 @@ impl TypeGraph {
     }
 
     pub fn input_name(&self, id: Id) -> String {
-        self.nodes[id].name.clone()
+        self.nodes[id].input_name()
     }
 
     fn resolve_array_projections(&mut self) {
@@ -349,7 +372,8 @@ impl TypeGraph {
         }
     }
 
-    /// Public schema types and views returned by their accessors form the API.
+    /// Standalone construction/access APIs and views returned by their accessors
+    /// form the view graph. Encoding a nested record does not require its view.
     /// Inline scalar, Option, and Box layouts need no wrapper of their own unless
     /// the caller explicitly exports one as a standalone buffer entry point.
     fn collect_views(&self) -> BTreeSet<Id> {
@@ -363,7 +387,10 @@ impl TypeGraph {
                     matches!(node.kind, Kind::Record(_) | Kind::Enum(_)).then_some(id)
                 }),
         ) {
-            self.include_view(id, &mut views);
+            let generation = self.nodes[id].options.generation;
+            if generation.create || generation.getters || generation.setters {
+                self.include_view(id, &mut views);
+            }
         }
         views
     }
@@ -564,7 +591,7 @@ impl<'a> Builder<'a> {
     fn new(
         schema: &'a Schema,
         backend: &'static Backend,
-        options: GenerateOptions,
+        naming: Option<NamingPolicy>,
     ) -> Result<Self, GenerateError> {
         let mut layouts = Layouts::new(schema);
         layouts.validate()?;
@@ -576,11 +603,8 @@ impl<'a> Builder<'a> {
             plan: TypeGraph {
                 backend,
                 names: Names {
-                    policy: options.naming.unwrap_or_else(|| (backend.naming_policy)()),
+                    policy: naming.unwrap_or_else(|| (backend.naming_policy)()),
                 },
-                module_name: identifier(options.module_name.as_deref().unwrap_or("Schema"))?,
-                cpp_namespace: options.cpp_namespace,
-                csharp_namespace: options.csharp_namespace,
                 canonical_nodes: 0,
                 nodes: Vec::new(),
                 exports: BTreeMap::new(),
@@ -592,36 +616,32 @@ impl<'a> Builder<'a> {
 
     fn reserve(&mut self, ty: Type, name: String) -> Result<Id, GenerateError> {
         let id = self.types.len();
-        let view_name = if self.language == Language::Rust {
-            // The derive appends View to the emitted native declaration name.
-            format!("{name}View")
-        } else if let Type::Named(identity) = &ty {
+        let source = if let Type::Named(identity) = &ty {
             let definition = &self.schema.definitions[identity];
-            if let Some(explicit) = definition
+            let explicit = definition
                 .targets
                 .get(&self.language)
-                .and_then(|target| target.name.as_ref())
-            {
-                format!("{explicit}View")
-            } else {
-                let source = self
-                    .schema
-                    .exports
-                    .iter()
-                    .find_map(|(alias, export)| (*export == ty).then_some(alias))
-                    .unwrap_or(&definition.name);
-                self.plan.names.type_name(&format!("{source}_view"))
+                .and_then(|target| target.name.as_ref());
+            let source = self
+                .schema
+                .exports
+                .iter()
+                .find_map(|(alias, export)| (*export == ty).then_some(alias))
+                .unwrap_or(&definition.name);
+            crate::api::ViewName::Named {
+                source,
+                explicit: explicit.is_some(),
             }
         } else {
-            let prefix = if self.language == Language::CSharp {
-                ""
-            } else {
-                "Intrlay"
-            };
-            self.plan
-                .names
-                .type_name(&format!("{prefix}{}_view", self.type_label(&ty)))
+            crate::api::ViewName::Structural {
+                label: &self.type_label(&ty),
+            }
         };
+        let view_name = self
+            .plan
+            .backend
+            .api
+            .view_name(&self.plan.names, &name, source);
         self.plan.nodes.push(Node {
             codec: id,
             name,

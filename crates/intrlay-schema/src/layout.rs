@@ -81,7 +81,7 @@ impl<'a> Layouts<'a> {
     /// Computes a tagged enum's union and each variant's field offsets.
     ///
     /// # Errors
-    /// Reports duplicate tags or invalid payload layouts.
+    /// Reports empty enums, duplicate tags, or invalid payload layouts.
     pub fn variants(
         &mut self,
         variants: &[crate::Variant],
@@ -210,6 +210,9 @@ impl<'a> Layouts<'a> {
         alignment: usize,
         visiting: &mut BTreeSet<String>,
     ) -> Result<VariantLayout, LayoutError> {
+        if variants.is_empty() {
+            return Err(LayoutError("uninhabited enums cannot be exchanged".into()));
+        }
         if !alignment.is_power_of_two() {
             return Err(LayoutError(format!("invalid alignment: {alignment}")));
         }

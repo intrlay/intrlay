@@ -4,8 +4,8 @@ title: "C#"
 
 # C#
 
-Install `Intrlay` with `dotnet add package Intrlay`. The package targets .NET 8
-and uses C# 12 features. It includes both the runtime and a Roslyn incremental
+Install `Intrlay` with `dotnet add package Intrlay`. The package targets .NET 10
+and C# 14. It includes both the runtime and a Roslyn incremental
 source generator; no separate analyzer package is needed.
 
 ## Generation and compilation
@@ -22,7 +22,11 @@ layout. Schema attributes are omitted from the final assembly unless
 `INTRLAY_INCLUDE_SCHEMA` is defined.
 
 The default namespace is `IntrlayGenerated.Drawing` for this module. Set
-`csharp_namespace` in the CLI options file to override it.
+`csharp.namespace` in the CLI options file to override it.
+
+The default output requires C# 14. Select `--csharp-language-version 15` for
+[union patterns](#union-patterns-c-15) on C# 15 and .NET 11. The runtime package
+retains its .NET 10 target; this option controls the generated consumer APIs.
 
 ## Memory-backed views
 
@@ -30,8 +34,8 @@ The default namespace is `IntrlayGenerated.Drawing` for this module. Set
 using System;
 using IntrlayGenerated.Drawing;
 
-var command = DrawingCommand.FromDrawPoint(new Point(7, 8, 9), 0.5f);
-var value = new Drawing("Sketch", new Point[] { new(1, 2, 3) }, null, command);
+var command = DrawingCommandInput.FromDrawPoint(new PointInput(7, 8, 9), 0.5f);
+var value = new DrawingInput("Sketch", new PointInput[] { new(1, 2, 3) }, null, command);
 var drawing = DrawingView.Create(in value);
 
 Console.WriteLine(drawing.Title);       // Sketch
@@ -44,7 +48,7 @@ if (drawing.Command.DrawPointPosition is { } position)
 
 drawing.Points[0].SetX(10);
 drawing.SetSelectedPoint(0);
-var clear = DrawingCommand.FromClear();
+var clear = DrawingCommandInput.FromClear();
 drawing.Command.Replace(in clear);
 
 var received = new DrawingViewReadOnly(drawing.Bytes);
@@ -52,13 +56,14 @@ Console.WriteLine(received.Points[0].X); // 10
 Console.WriteLine(received.Command.DrawPointPosition is null); // True
 ```
 
-`Drawing` is a native input struct. `DrawingView` is a value-type view backed by
+`DrawingInput` is a native input struct. `DrawingView` is a value-type view backed by
 `Memory<byte>`; it can be stored in an ordinary object without allocating a
 wrapper for each access. `DrawingViewReadOnly` uses read-only storage.
 
-Enum inputs use typed factories. Variant-specific getters return nullable results
+Enums with payloads use typed factories; payload-free enum inputs are ordinary
+C# enums with `uint` tags. Variant-specific getters return nullable results
 when the alternative is inactive; `Tag` exposes the numeric tag. The input
-collection is `ReadOnlyMemory<Point>`, supplied here by a `Point[]`. The view's
+collection is `ReadOnlyMemory<PointInput>`, supplied here by a `PointInput[]`. The view's
 collection indexes encoded elements without reconstructing that array.
 
 Construction allocates the encoded buffer unless `CreateInPlace` is used.
@@ -94,19 +99,130 @@ is an optimization, not an assumption applied to every generated record.
 ## Native collections and variants
 
 Native fixed arrays use generic `FixedArrayN<T>` inline-array structs, one per
-length in the module. Variable-length inputs use memory-backed representations
-such as `ReadOnlyMemory<T>`; they cannot retain stack storage. Span views concern
-encoded storage and do not change that native input model.
+length in the module. Variable-length inputs use `ReadOnlyMemory<T>` and cannot
+retain stack storage. Fixed arrays can use `default` for zero-filled fields.
+
+Records with directly borrowable payloads also get a `TypeSpanInput` ref struct.
+It accepts `ReadOnlySpan<char>` strings and spans of scalar or native-layout
+elements. Other fixed fields keep their value types. For the drawing example:
+
+```csharp
+Span<PointInput> points = stackalloc PointInput[] { new(1, 2, 3), new(4, 5, 6) };
+var input = new DrawingSpanInput("Sketch".AsSpan(), points, null, command);
+Span<byte> bytes = stackalloc byte[DrawingView.ComputeByteLength(input)];
+var drawing = DrawingSpanView.CreateInPlace(bytes, input);
+```
+
+The public overload takes a scoped input value; returned views borrow only
+their encoded destination. Both overloads are generated from the same codec
+rules, without copying their payloads into intermediate collections. As with
+other construction APIs, input storage must not overlap the destination and
+must remain stable during measurement and writing.
+
+Collections cannot store ref struct elements. Nested dynamic records, boxed
+payloads, and optional dynamic payloads use heap-compatible inputs; flat span
+inputs borrow stack storage for synchronous encoding. Fully fixed records have
+stack-compatible value inputs and use the native-copy path when their layout
+qualifies.
+
+## Generic initialization sources
+
+`TypeInput.FromSources(...)` constructs a generic input whose field types select
+value copying or zero initialization. `Create`, `ComputeByteLength`, and
+`CreateInPlace` accept it alongside their ordinary input and span-input overloads.
+For the drawing schema:
+
+```csharp
+var input = DrawingInput.FromSources(
+    "Empty sketch",
+    new Intrlay.ZeroedSequence<PointInput>(32),
+    null,
+    DrawingCommandInput.FromClear());
+var drawing = DrawingView.Create(in input);
+Console.WriteLine(drawing.Points.Count); // 32
+```
+
+The source type determines the initialization strategy. The JIT specializes
+constrained generic calls without boxing or a per-value copy/zero flag.
+
+| Source | Storage | Use |
+| --- | --- | --- |
+| `SequenceInput<T>.From(memory)` | `ReadOnlyMemory<T>` | Copy existing sequence or fixed-array elements |
+| `SequenceSpanInput<T>.From(span)` | `ReadOnlySpan<T>` | Copy stack-backed elements in a generic `TypeSpanInput` |
+| `new ZeroedSequence<T>(count)` | Element count | Clear a variable-length sequence |
+| `new ZeroedArray<T>()` | No element storage | Clear the fixed extent declared by the schema |
+
+Only schemas whose elements have a valid zero representation accept zero sources.
+Element types must match exactly. Fixed-array value sources must have the declared
+length. `TypeSpanInput.FromSources(...)` permits ref struct sources; the ordinary
+`TypeInput.FromSources(...)` cannot retain them.
+
+Nested sources implement `IEncodeInput<TInput>`, where `TInput` identifies the
+canonical schema. Generated collection, optional, and boxed input wrappers compose
+these sources without first building the owned input tree. Collection elements
+share one concrete source type. Optional wrappers preserve absence separately from
+zero-initialized contents.
+
+For a payload enum, a variant's `VariantInput.FromSources(...)` produces a source
+for that enum. It stores only the selected payload and writes its declared tag.
+The ordinary enum input remains available for values whose variant is selected
+at runtime. Both forms produce the same wire layout.
+
+Source contents and lengths must remain stable during measurement and writing,
+and must not overlap the destination. See
+[Zero-initialized arrays](../concepts/buffers-and-views.mdx#zero-initialized-arrays).
 
 Optional value types use `Nullable<T>` where it represents all states. Nested
 optional states use additional presence wrappers when needed.
 
-Native enums use typed factories and shared struct storage. Unmanaged payload
+Enums with payloads use typed factories and shared struct storage. Unmanaged payload
 fields can overlap in explicit-layout storage; managed references and collection
 owners occupy separate GC-visible slots reused across mutually exclusive
 variants. Nested enums reuse their own storage plans, avoiding expansion of
 every combination of alternatives. This native storage plan is distinct from
 the encoded layout.
+
+## Union patterns (C# 15)
+
+With `--csharp-language-version 15`, payload-enum inputs are custom `[Union]`
+structs implementing `System.Runtime.CompilerServices.IUnion`. Each declared
+case has a distinct payload input type, even when several cases contain the
+same scalar type. The compiler supports implicit case conversions and exhaustive
+typed matching:
+
+```csharp
+DrawingCommandInput command = new DrawingCommandDrawPointInput(new PointInput(7, 8, 9), 0.5f);
+var bytes = DrawingCommandView.Create(in command);
+
+static float Size(in DrawingCommandInput command) => command switch
+{
+    DrawingCommandClearInput => 0,
+    DrawingCommandDrawPointInput point => point.Size,
+};
+
+Console.WriteLine(Size(command)); // 0.5
+```
+
+Typed factories such as `FromDrawPoint`, case getters, generic field sources,
+and view APIs remain available. Union patterns apply to the native inputs;
+views keep their byte-backed accessors.
+
+The generated union retains the same tag and shared payload storage as the
+C# 14 input. A nested `IUnionMembers` interface supplies the C# protocol's
+`Create`, `HasValue`, and `TryGetValue` members. These names do not replace
+schema-defined getters or follow the module's naming policy. The generator
+reports a name collision if a case uses `IUnionMembers`.
+
+Conversions and typed patterns use the payload structs directly, without
+boxing. The required `IUnion.Value` object projection is implemented explicitly;
+access through that interface can box, so use typed patterns on the concrete
+input for allocation-free access. An empty declared case is still a value.
+A default input whose zero tag is not declared matches `null`, while a declared
+zero tag identifies its corresponding default case. Payload-free enums remain
+ordinary C# enums.
+
+The Roslyn generator reports an error if the consuming compilation's language
+version is too low or the required .NET union types are absent.
 
 C# retains typed value APIs regardless of getter/setter omission or numeric
 projection options for reference-type targets. `create` still controls standalone

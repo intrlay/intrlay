@@ -11,14 +11,15 @@ Generate the [tutorial schema](../tutorial.mdx#1-define-the-message) with
 
 ```dart
 import 'generated/drawing.dart';
+import 'package:intrlay/intrlay.dart' as intrlay;
 
 void main() {
-  const value = Drawing(
+  const value = DrawingInput(
     title: 'Sketch',
-    points: [Point(x: 1, y: 2, z: 3)],
+    points: intrlay.SequenceInput.from([PointInput(x: 1, y: 2, z: 3)]),
     selectedPoint: null,
-    command: DrawingCommandDrawPoint(
-      position: Point(x: 7, y: 8, z: 9),
+    command: DrawingCommandDrawPointInput(
+      position: PointInput(x: 7, y: 8, z: 9),
       size: 0.5,
     ),
   );
@@ -34,7 +35,7 @@ void main() {
 
   drawing.points[0].x = 10;
   drawing.selectedPoint = 0;
-  drawing.command.replace(const DrawingCommandClear());
+  drawing.command.replace(const DrawingCommandClearInput());
 
   final received = DrawingView(drawing.bytes);
   assert(received.points[0].x == 10);
@@ -43,11 +44,59 @@ void main() {
 ```
 
 Generated classes provide typed input values and separate buffer views.
-Enum inputs are a sealed class with a concrete class for each variant.
+Enums with payloads are a sealed input class with a concrete class for each
+variant. Payload-free enums use a Dart enum whose `tag` is the declared wire
+value, independent of its ordinal `index`.
 Variant-specific getters return `null` when inactive; `tag` exposes the encoded
 number. `drawing.bytes` is a `Uint8List`. Borrowing it does not copy the payload.
 The runtime shares buffer initialization and UTF-8 size calculation; generated
 code keeps explicit typed accessors.
+
+Collections with zero-initializable elements use `SequenceInput<T>` or
+`FixedArrayInput<T>`. `.from(list)` borrows existing element storage;
+`.zeroed(length)` requests a zero-filled sequence, and `.zeroed()` requests a
+fixed array whose length comes from the schema. Existing lists need no wrapper
+allocation. A zero-filled sequence uses one count object, while fixed arrays
+use a shared marker; neither allocates the requested elements. Other collections
+take ordinary lists. See
+[Zero-initialized arrays](../concepts/buffers-and-views.mdx#zero-initialized-arrays).
+
+## Numeric array inputs
+
+Generate the [Samples schema](../concepts/buffers-and-views.mdx#numeric-arrays)
+with `--language dart --output generated/samples.dart`. Collection inputs can
+borrow typed lists directly:
+
+```dart
+import 'dart:typed_data';
+
+import 'generated/samples.dart';
+import 'package:intrlay/intrlay.dart' as intrlay;
+
+void main() {
+  final values = Float32List.fromList([1, 2, 3]);
+  final matrix = Float32List(16);
+  matrix[0] = 1;
+
+  final samples = SamplesView.create(SamplesInput(
+    values: intrlay.SequenceInput.from(values),
+    matrix: intrlay.FixedArrayInput.from(matrix),
+  ));
+  matrix[0] = 2;
+  assert(samples.matrix[0] == 1); // Encoding copied the input.
+}
+```
+
+The `.from` inputs retain the typed lists without copying them or allocating
+wrappers. There is no need to call `toList`. Writers bulk-copy compatible lanes
+into aligned construction buffers without an intermediate list. Ordinary lists,
+scalar conversions, and unaligned mutation buffers retain element writers.
+
+Small fixed arrays use element copying when range-copy setup would cost more.
+Native and JavaScript builds use separate thresholds; the platform selection is
+a compile-time constant, so it does not add a per-element runtime branch.
+The array size and input representation still determine whether bulk copying
+applies. JavaScript-target 64-bit integers retain element conversion.
 
 ## Caller-provided buffers
 

@@ -55,30 +55,6 @@ impl TypeGraph {
                 _ => true,
             })
     }
-
-    /// C# uses explicit record layout and inline fixed arrays. Only completely
-    /// initialized unmanaged representations qualify for direct POD access.
-    pub fn csharp_native_layout(&self, id: Id) -> bool {
-        if !self.writes_all_bytes(id) {
-            return false;
-        }
-        let mut visited = BTreeSet::new();
-        let mut pending = vec![id];
-        while let Some(id) = pending.pop() {
-            if !visited.insert(id) {
-                continue;
-            }
-            match &self.nodes[id].kind {
-                Kind::Scalar(scalar) if *scalar != intrlay_schema::Scalar::Bool => {}
-                Kind::Record(fields) if !fields.is_empty() => {
-                    pending.extend(fields.iter().map(|field| field.ty));
-                }
-                Kind::Array { element, length } if *length != 0 => pending.push(*element),
-                _ => return false,
-            }
-        }
-        true
-    }
 }
 
 #[cfg(test)]
@@ -86,7 +62,7 @@ mod tests {
     use intrlay::{Intrlay, schema::Registry};
     use intrlay_schema::Language;
 
-    use crate::{GenerateOptions, backend, plan::TypeGraph};
+    use crate::{backend, plan::TypeGraph};
 
     #[derive(Intrlay)]
     struct Packed {
@@ -124,7 +100,7 @@ mod tests {
         TypeGraph::new(
             &registry.finish(),
             backend::for_language(Language::CSharp),
-            GenerateOptions::default(),
+            None,
         )
         .unwrap_or_else(|error| panic!("valid schema: {error}"))
     }
@@ -149,21 +125,5 @@ mod tests {
         assert!(!fully_written::<StringAndWords>());
         assert!(fully_written::<AlignedBox>());
         assert!(!fully_written::<Box<u64>>());
-    }
-
-    #[test]
-    fn native_records_exclude_managed_fields_and_padding() {
-        let packed = plan::<Packed>();
-        assert!(packed.csharp_native_layout(packed.exports["Root"]));
-        let padded = plan::<Padded>();
-        assert!(!padded.csharp_native_layout(padded.exports["Root"]));
-        let arrays = plan::<AlignedPayloads>();
-        assert!(!arrays.csharp_native_layout(arrays.exports["Root"]));
-        let fixed = plan::<[[Packed; 3]; 2]>();
-        assert!(fixed.csharp_native_layout(fixed.exports["Root"]));
-        let empty = plan::<[u32; 0]>();
-        assert!(!empty.csharp_native_layout(empty.exports["Root"]));
-        let managed = plan::<[String; 2]>();
-        assert!(!managed.csharp_native_layout(managed.exports["Root"]));
     }
 }

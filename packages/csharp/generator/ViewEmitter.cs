@@ -51,7 +51,11 @@ internal sealed partial class Emitter
             Inline();
             Line($"public {view.SpanName} {Name("as_span")}() => new({buffer}.Span, {offset});");
         }
-        if (node.Create) Construction(node, viewName);
+        if (node.Create)
+        {
+            Construction(node, viewName);
+            if (CustomSource(node)) SourceConstruction(node, viewName);
+        }
         if (!view.ReadOnly && node.Write && !node.HasPayload)
         {
             Line();
@@ -96,13 +100,18 @@ internal sealed partial class Emitter
         Line();
     }
 
-    private void Construction(Node node, string view)
+    private void Construction(Node node, string view, bool spanInput = false)
     {
-        var input = Input(node.Id);
+        var borrowed = spanInput;
+        var input = borrowed ? node.SpanInputName : Input(node.Id);
+        // scoped values bound their contained spans as well as the parameter.
+        // scoped in only bounds the reference to the struct, so it cannot prove
+        // that a returned span view is independent of stack-backed input fields.
+        var passing = borrowed ? "scoped " : "in ";
         var size = Name("byte_size");
         var measure = Name("compute_byte_length");
         Line();
-        Open($"public static int {measure}(in {input} value)");
+        Open($"public static int {measure}({passing}{input} value)");
         if (node.HasPayload)
         {
             Line($"var cursor = new global::Intrlay.Cursor({size});");
@@ -112,16 +121,16 @@ internal sealed partial class Emitter
         else Line($"return {size};");
         Close();
         Line();
-        Open($"public static {view} {Name("create")}(in {input} value)");
-        Line($"var buffer = new byte[{measure}(in value)];");
+        Open($"public static {view} {Name("create")}({passing}{input} value)");
+        Line($"var buffer = new byte[{measure}({(borrowed ? "" : "in ")}value)];");
         Line($"var cursor = new global::Intrlay.Cursor({size});");
         Line($"global::{schema.Namespace}.{schema.Name}.@{node.WriteName}(buffer, 0, in value, ref cursor);");
         if (node.HasPayload) Line("cursor.Finish(buffer.Length);");
         Line($"return new {view}(buffer);");
         Close();
         Line();
-        Open($"public static {view} {Name("create_in_place")}(global::System.{(scopedView ? "Span" : "Memory")}<byte> buffer, scoped in {input} value)");
-        Line($"var storage = buffer.Slice(0, {measure}(in value));");
+        Open($"public static {view} {Name("create_in_place")}(global::System.{(scopedView ? "Span" : "Memory")}<byte> buffer, scoped {(borrowed ? "" : "in ")}{input} value)");
+        Line($"var storage = buffer.Slice(0, {measure}({(borrowed ? "" : "in ")}value));");
         if (!node.FullyWritten) Line($"{Bytes("storage")}.Clear();");
         Line($"var cursor = new global::Intrlay.Cursor({size});");
         Line($"global::{schema.Namespace}.{schema.Name}.@{node.WriteName}({Bytes("storage")}, 0, in value, ref cursor);");
@@ -129,6 +138,7 @@ internal sealed partial class Emitter
         Line($"return new {view}(storage);");
         Close();
         Line();
+        if (!spanInput && node.SpanInputName.Length != 0) Construction(node, view, spanInput: true);
     }
 
     private void Property(Node owner, Field field, bool readOnly)

@@ -49,7 +49,8 @@ const CASES: &[Case] = &[
     },
     Case {
         typescript_sources: &["bindings.ts", "../../tests/compositions/typescript.ts"],
-        dart_sources: &["bindings.dart", "setter-names.dart"],
+        python_sources: &["bindings.py", "value_enums.py"],
+        dart_sources: &["bindings.dart", "setter-names.dart", "value-enums.dart"],
         typecheck_python_consumer: true,
         dart_web: true,
         compiled_consumers: &[
@@ -106,9 +107,72 @@ pub(super) fn run(workspace: &Workspace) -> Result<()> {
     for case in CASES {
         check_case(workspace, case)?;
     }
+    check_value_enum_typescript(workspace)?;
     check_python_errors(workspace)?;
     check_csharp_storage(workspace)?;
+    check_csharp_sources(workspace)?;
     check_expanded_source(workspace)
+}
+
+fn check_csharp_sources(workspace: &Workspace) -> Result<()> {
+    let result = workspace
+        .command("dotnet")?
+        .args([
+            "build",
+            "tests/csharp-native-views/NativeViews.csproj",
+            "-c",
+            "Release",
+            "-p:TestInvalidSources=true",
+        ])
+        .capture()?;
+    let messages = diagnostics(&result);
+    let pattern = Regex::new(r"InvalidSourceTests\.cs\((\d+),\d+\): error (CS\d+):")?;
+    let errors = pattern
+        .captures_iter(&messages)
+        .map(|capture| (capture[1].to_owned(), capture[2].to_owned()))
+        .collect::<std::collections::BTreeSet<_>>();
+    ensure!(
+        !result.status.success()
+            && errors.len() == 5
+            && errors.iter().filter(|(_, code)| code == "CS0315").count() == 3
+            && errors.iter().filter(|(_, code)| code == "CS1503").count() == 1
+            && errors.iter().filter(|(_, code)| code == "CS9244").count() == 1
+            && !messages.contains("error ILAY001:"),
+        "unexpected generic input diagnostics:\n{messages}"
+    );
+    Ok(())
+}
+
+fn check_value_enum_typescript(workspace: &Workspace) -> Result<()> {
+    // Exercise both inlined enum constants and isolated modules' runtime enum
+    // objects, including member access, numeric literals, and re-exports.
+    for isolated in [false, true] {
+        let mut compiler = workspace.command("node")?;
+        compiler.args([
+            "tests/typescript/node_modules/typescript/bin/tsc",
+            "--strict",
+            "--target",
+            "ES2022",
+            "--module",
+            "ESNext",
+            "--moduleResolution",
+            "Bundler",
+            "--rootDir",
+            ".",
+            "--outDir",
+            "target/compositions/compiled",
+            "tests/compositions/value-enums.ts",
+        ]);
+        if isolated {
+            compiler.arg("--isolatedModules");
+        }
+        compiler.run()?;
+        workspace
+            .command("node")?
+            .arg("tests/compositions/value-enums.mjs")
+            .run()?;
+    }
+    Ok(())
 }
 
 fn check_case(workspace: &Workspace, case: &Case) -> Result<()> {
@@ -203,20 +267,18 @@ fn check_python_errors(workspace: &Workspace) -> Result<()> {
 
 fn check_csharp_storage(workspace: &Workspace) -> Result<()> {
     let project = "tests/csharp-recursive-storage/RecursiveStorage.csproj";
-    for framework in ["net8.0", "net10.0"] {
-        workspace
-            .command("dotnet")?
-            .args([
-                "run",
-                "--project",
-                project,
-                "-c",
-                "Release",
-                "--framework",
-                framework,
-            ])
-            .run()?;
-    }
+    workspace
+        .command("dotnet")?
+        .args([
+            "run",
+            "--project",
+            project,
+            "-c",
+            "Release",
+            "--framework",
+            "net10.0",
+        ])
+        .run()?;
     let result = workspace
         .command("dotnet")?
         .args([

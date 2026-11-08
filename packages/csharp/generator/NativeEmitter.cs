@@ -11,10 +11,10 @@ internal sealed partial class Emitter
         {
             NativeRecord(node.Name, node.Fields, node);
         }
-        else if (node.Kind == "Enum")
+        else if (node.Kind == "Enum" && !node.ValueEnum)
         {
             foreach (var variant in node.Variants)
-                NativeRecord(node.Name + variant.Name, node.Fields.Where(field => field.Variant == variant.Tag).ToList());
+                NativeRecord(variant.InputName, node.Fields.Where(field => field.Variant == variant.Tag).ToList());
 
             NativeEnum(node);
         }

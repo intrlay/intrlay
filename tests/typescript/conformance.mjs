@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const directory = resolve(process.argv[2]);
-const { MessageView, NullableCasesView } = await import(pathToFileURL(resolve(directory, "bindings.ts")));
+const { MessageView, NullableCasesView } = await import(pathToFileURL(resolve(directory, "bindings.js")));
 const rustBytes = new Uint8Array(readFileSync(resolve(directory, "rust.bin")));
 const nullableBytes = new Uint8Array(readFileSync(resolve(directory, "nullable.bin")));
 const nullable = new NullableCasesView(nullableBytes);
@@ -27,7 +27,7 @@ assert.deepEqual(NullableCasesView.create({
     absentUnit: null, presentUnit: { value: null },
     nestedAbsent: null, nestedNone: { value: null }, nestedValue: { value: 7 },
     boxedNone: { value: null }, triple: { value: { value: null } },
-    variants: [{ kind: "Empty" }, { kind: "Value", value: null }, { kind: "Value", value: 9 }],
+    variants: [{ kind: 0 /* NullableVariantKind.Empty */ }, { kind: 1 /* NullableVariantKind.Value */, value: null }, { kind: 1 /* NullableVariantKind.Value */, value: 9 }],
 }).bytes, nullableBytes);
 const view = new MessageView(rustBytes);
 assert.equal(view.sequence, 0x123456789abcdef0n);
@@ -44,7 +44,7 @@ const value = {
     sequence: 0x123456789abcdef0n,
     title: "fixture 🦀 한글",
     points: [{ x: 1, y: 2, z: 3 }, { x: 4, y: 5, z: 6 }],
-    commands: [{ kind: "Clear" }, { kind: "DrawPoint", position: { x: 7, y: 8, z: 9 }, size: 0.75, label: "example" }],
+    commands: [{ kind: 0 /* DrawingCommandKind.Clear */ }, { kind: 1 /* DrawingCommandKind.DrawPoint */, position: { x: 7, y: 8, z: 9 }, size: 0.75, label: "example" }],
     tree: { id: 7, next: { id: 8, next: null } },
     optional: 0,
     fixed: [10, 20, 30],

@@ -13,6 +13,7 @@ mod dart;
 mod documentation;
 mod name_validation;
 mod names;
+mod options;
 mod plan;
 mod python;
 mod rust;
@@ -23,9 +24,12 @@ use std::{error::Error, fmt};
 
 use intrlay_schema::{Language, Schema};
 pub use names::{
-    GenerateOptions, Modifier, NameStyle, NamingPolicy, NamingRule, Symbol, SymbolKind,
-    SymbolSelector, Visibility,
+    Modifier, NameStyle, NamingPolicy, NamingRule, Symbol, SymbolKind, SymbolSelector, Visibility,
 };
+
+pub use cpp::CppOptions;
+pub use csharp::CSharpOptions;
+pub use options::GenerateOptions;
 
 /// A schema or target API that cannot produce a valid binding.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,11 +71,11 @@ pub fn generate(schema: &Schema, language: Language) -> Result<String, GenerateE
 pub fn generate_with_options(
     schema: &Schema,
     language: Language,
-    options: GenerateOptions,
+    mut options: GenerateOptions,
 ) -> Result<String, GenerateError> {
     let backend = backend::for_language(language);
-    let plan = plan::GenerationPlan::new(schema, backend, options)?;
-    name_validation::validate(&plan)?;
-    let source = (backend.generate)(&plan)?;
+    plan::identifier(options.module_name())?;
+    let plan = plan::GenerationPlan::new(schema, backend, options.naming.take())?;
+    let source = (backend.generate)(&plan, &options)?;
     symbols::render(&plan.encoding.types, &source)
 }

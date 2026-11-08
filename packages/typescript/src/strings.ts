@@ -11,8 +11,8 @@ export function encodeString(value: string, target: Uint8Array): void {
 /** Decodes a borrowed string; a leading U+FEFF belongs to the value. */
 export function readString(storage: Storage, offset: number): string {
     const integers = storage.u32;
-    const start = offset + integers[offset / 4]!;
-    const length = integers[offset / 4 + 1]!;
+    const start = offset + integers[offset >>> 2]!;
+    const length = integers[(offset >>> 2) + 1]!;
     return (decoder ??= new TextDecoder("utf-8", { ignoreBOM: true }))
         .decode(storage.bytes.subarray(start, start + length));
 }

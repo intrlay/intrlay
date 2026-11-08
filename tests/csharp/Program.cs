@@ -23,7 +23,7 @@ static double Traverse(MessageView view, int count)
 }
 
 [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
-static void Construct(Memory<byte> buffer, in Message value, int count)
+static void Construct(Memory<byte> buffer, in MessageInput value, int count)
 {
     for (int i = 0; i < count; ++i)
         _ = MessageView.CreateInPlace(buffer, in value);
@@ -40,12 +40,12 @@ Check(view.Tree.Next.GetValueOrDefault().Id == 8, "recursive box");
 Check(!view.Tree.Next.GetValueOrDefault().Next.HasValue, "None");
 Check(view.Optional.HasValue && view.Optional.Value == 0, "Some(0)");
 
-var value = new Message(
+var value = new MessageInput(
     0x123456789abcdef0UL,
     "fixture 🦀 한글",
-    new[] { new Point(1, 2, 3), new Point(4, 5, 6) },
-    new[] { DrawingCommand.FromClear(), DrawingCommand.FromDrawPoint(new Point(7, 8, 9), 0.75, "example") },
-    new Link(7, new Box<Link>(new Link(8, default))),
+    new[] { new PointInput(1, 2, 3), new PointInput(4, 5, 6) },
+    new[] { DrawingCommandInput.FromClear(), DrawingCommandInput.FromDrawPoint(new PointInput(7, 8, 9), 0.75, "example") },
+    new LinkInput(7, new Box<LinkInput>(new LinkInput(8, default))),
     new Nullable<uint>(0),
     new float[] { 10, 20, 30 });
 
@@ -87,10 +87,10 @@ Check(nullable.Triple.HasValue && nullable.Triple.Value.HasValue && nullable.Tri
 Check(!nullable.Variants[0].ValueValue.HasValue, "inactive nullable enum field");
 Check(nullable.Variants[1].ValueValue.HasValue && nullable.Variants[1].ValueValue.Value is null, "active nullable enum field");
 Check(nullable.Variants[2].ValueValue.Value == 9, "active enum payload");
-var nullableValue = new NullableCases(
+var nullableValue = new NullableCasesInput(
     null, new Nullable<uint>(0), "", null, null, new Nullable<ValueTuple>(default(ValueTuple)),
     default, new Optional<Nullable<uint>>(null), new Optional<Nullable<uint>>(7),
     new Box<Nullable<uint>>(null), new Optional<Optional<Nullable<uint>>>(new Optional<Nullable<uint>>(null)),
-    new[] { NullableVariant.FromEmpty(), NullableVariant.FromValue(null), NullableVariant.FromValue(9) });
+    new[] { NullableVariantInput.FromEmpty(), NullableVariantInput.FromValue(null), NullableVariantInput.FromValue(9) });
 Check(NullableCasesView.Create(in nullableValue).Bytes.Span.SequenceEqual(nullableBytes), "nullable exact Rust bytes");
 Console.WriteLine("C#: nullable values preserve all nested presence states");

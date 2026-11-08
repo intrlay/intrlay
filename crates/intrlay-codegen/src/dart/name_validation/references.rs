@@ -1,9 +1,8 @@
-//! Unqualified references in a class share its member namespace in Dart.
-//! Python method bodies use module lookup, but annotations also see class names.
+//! Unqualified type and codec references share a Dart class's member namespace.
 
 use std::collections::BTreeSet;
 
-use intrlay_schema::{Exposure, Language};
+use intrlay_schema::Exposure;
 
 use crate::{
     GenerateError,
@@ -14,19 +13,14 @@ use crate::{
 
 pub(super) fn native_fields(plan: &TypeGraph, fields: &[Field]) -> BTreeSet<String> {
     let mut references = References::new(plan);
-    if plan.backend.language == Language::Dart {
-        for field in fields {
-            references.input(field.ty);
-        }
+    for field in fields {
+        references.input(field.ty);
     }
     references.names
 }
 
 pub(super) fn view(plan: &TypeGraph, id: Id) -> Result<BTreeSet<String>, GenerateError> {
     let mut references = References::new(plan);
-    if !matches!(plan.backend.language, Language::Dart | Language::Python) {
-        return Ok(references.names);
-    }
     let node = &plan.nodes[id];
     if node.options.generation.create {
         references.input(id);
@@ -105,11 +99,6 @@ impl<'a> References<'a> {
     }
 
     fn insert(&mut self, name: String) {
-        let name = if self.plan.backend.language == Language::Python {
-            crate::python::reference_name(&name)
-        } else {
-            name
-        };
         self.names.insert(name);
     }
 
@@ -157,9 +146,7 @@ impl<'a> References<'a> {
 
     /// A folded accessor can use a field-specific projection in its body.
     fn load(&mut self, id: Id, exposure: Exposure) {
-        if self.plan.backend.language != Language::Dart
-            || matches!(exposure, Exposure::TypedArray(_))
-        {
+        if matches!(exposure, Exposure::TypedArray(_)) {
             return;
         }
         if let Some(field) = self.plan.folded_field(id) {
@@ -176,10 +163,7 @@ impl<'a> References<'a> {
     }
 
     fn codec(&mut self, operation: &str, id: Id) -> Result<(), GenerateError> {
-        // Python bodies resolve these at module scope, not through descriptors.
-        if self.plan.backend.language == Language::Dart {
-            self.insert(symbols::codec_function(self.plan, operation, id)?);
-        }
+        self.insert(symbols::codec_function(self.plan, operation, id)?);
         Ok(())
     }
 
@@ -203,14 +187,6 @@ impl<'a> References<'a> {
         if api.getter {
             self.projected(field.ty, field.options.exposure);
             self.load(field.ty, field.options.exposure);
-        }
-        // Python also annotates cached slots when only a mutator is emitted.
-        if self.plan.backend.language == Language::Python && api.cache.is_some() {
-            if variant.is_some() {
-                self.output(field.ty);
-            } else {
-                self.projected(field.ty, field.options.exposure);
-            }
         }
         if api.setter.is_some() {
             self.mutation(field.ty)?;

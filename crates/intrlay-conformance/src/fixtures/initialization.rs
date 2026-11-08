@@ -80,7 +80,10 @@ fn generate_initialization_cases(fixtures: &mut Fixtures) -> Result<(), Box<dyn 
         &registry.finish(),
         Language::CSharp,
         GenerateOptions {
-            csharp_namespace: Some("Initialization.Generated".into()),
+            csharp: intrlay_codegen::CSharpOptions {
+                namespace: Some("Initialization.Generated".into()),
+                ..Default::default()
+            },
             ..Default::default()
         },
     )?;
@@ -97,7 +100,7 @@ fn generate_initialization_cases(fixtures: &mut Fixtures) -> Result<(), Box<dyn 
             .split("[global::Intrlay.WireType(")
             .skip(1)
             .filter_map(|attribute| attribute.split_once(")]").map(|(value, _)| value))
-            .find(|attribute| attribute.contains(&format!("\"{name}\"")))
+            .find(|attribute| attribute.contains(&format!("\"{name}Input\"")))
             .ok_or_else(|| format!("missing metadata for {name}"))?;
         assert_eq!(
             declaration.contains("FullyWritten = true"),

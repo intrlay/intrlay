@@ -12,6 +12,10 @@ permissions:
 jobs:
   conformance:
     runs-on: ubuntu-24.04
+    env:
+      CC: clang-19
+      CXX: clang++-19
+      LIBCLANG_PATH: /usr/lib/llvm-19/lib
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -27,9 +31,16 @@ jobs:
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '11.0.x'
+          dotnet-quality: preview
       - uses: dart-lang/setup-dart@v1
       - name: Install C++ frontend dependencies
-        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-19 libclang-19-dev cmake
+          "$CXX" --version
       - name: Check Rust and every generated language
         run: cargo xtask check
 

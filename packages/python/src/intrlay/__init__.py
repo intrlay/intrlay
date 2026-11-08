@@ -3,9 +3,36 @@ from __future__ import annotations
 
 import ctypes
 import sys
+from array import array
 from collections.abc import Buffer, Callable, Iterator, Sequence, Sized
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NewType, overload
 from enum import Enum
+
+
+ZeroedSequence = NewType("ZeroedSequence", int)
+"""A sequence length explicitly requested without intermediate elements."""
+
+
+class Zeroed:
+    """Zero initialization using the fixed array's schema length."""
+
+    __slots__ = ()
+
+
+_zeroed_array = Zeroed()
+
+
+@overload
+def zeroed() -> Zeroed: ...
+
+
+@overload
+def zeroed(length: int) -> ZeroedSequence: ...
+
+
+def zeroed(length: int | None = None) -> Zeroed | ZeroedSequence:
+    """Request zeroed elements; omit length only for a fixed array."""
+    return _zeroed_array if length is None else ZeroedSequence(length)
 
 
 class CacheState(Enum):
@@ -49,6 +76,31 @@ class Cursor:
 
 def count(value: int | Sized) -> int:
     return value if isinstance(value, int) else len(value)
+
+
+def try_copy_numeric_array(
+    target: IntView | FloatView, start: int, values: Sequence[int] | Sequence[float]
+) -> bool:
+    """Copy compatible contiguous lanes without an intermediate bytes object.
+
+    Return False for ordinary sequences or different scalar formats so the
+    generated element writer retains its numeric conversion and range checks.
+    Source and destination must not overlap, as with all encoding inputs.
+    """
+    if (
+        isinstance(values, memoryview)
+        and values.format == target.format
+        and values.ndim == 1
+        and values.c_contiguous
+    ) or (
+        isinstance(values, array) and values.typecode == target.format
+    ) or (
+        target.format == "B" and isinstance(values, (bytes, bytearray))
+    ):
+        target[start:start + len(values)] = values
+        return True
+    return False
+
 
 class Storage:
     """Shared byte storage with lazily cached native numeric views."""
@@ -156,18 +208,29 @@ class Storage:
         return str(self.bytes[start:start + length], "utf-8")
 
 
-class View:
-    __slots__ = ("_storage", "_offset")
+class BufferView:
+    """Backing storage for views whose generated API needs no record offset."""
+
+    __slots__ = ("_storage",)
     _storage: Storage
+
+    def __init__(self, buffer: Buffer | Storage, offset: int = 0) -> None:  # noqa: ARG002 - Preserve the view constructor's offset keyword.
+        self._storage = buffer if isinstance(buffer, Storage) else Storage(buffer)
+
+    @property
+    def buffer(self) -> IntView:
+        return self._storage.bytes
+
+
+class View(BufferView):
+    """Backing storage and record offset for generated accessors."""
+
+    __slots__ = ("_offset",)
     _offset: int
 
     def __init__(self, buffer: Buffer | Storage, offset: int = 0) -> None:
         self._storage = buffer if isinstance(buffer, Storage) else Storage(buffer)
         self._offset = offset
-
-    @property
-    def buffer(self) -> IntView:
-        return self._storage.bytes
 
 
 def allocate(size: int, alignment: int) -> IntView:
@@ -178,7 +241,7 @@ def allocate(size: int, alignment: int) -> IntView:
     start = -address % alignment
     return memoryview(owner)[start:start + size]
 
-def initialize[View: View, Value](
+def initialize[View: BufferView, Value](
     cls: type[View],
     buffer: Buffer,
     value: Value,

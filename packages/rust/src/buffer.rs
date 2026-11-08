@@ -33,6 +33,13 @@ pub enum EncodeError {
         /// Allocation requirements observed while writing.
         written: BufferLayout,
     },
+    /// A repeatable input yielded a different count than it declared.
+    SequenceLengthChanged {
+        /// Count captured when the sequence input was created.
+        expected: usize,
+        /// Number of elements observed before construction stopped.
+        actual: usize,
+    },
 }
 
 impl fmt::Display for EncodeError {
@@ -50,6 +57,12 @@ impl fmt::Display for EncodeError {
                 write!(
                     f,
                     "source layout changed during construction: {measured:?} -> {written:?}"
+                )
+            }
+            Self::SequenceLengthChanged { expected, actual } => {
+                write!(
+                    f,
+                    "source sequence declared {expected} elements, yielded {actual}"
                 )
             }
         }
@@ -302,6 +315,14 @@ impl<'a> Writer<'a> {
                 bytes.len(),
             );
         }
+    }
+
+    /// Initializes a fixed region to zero, including its padding.
+    ///
+    /// # Panics
+    /// Panics if an incorrectly implemented codec exceeds the measured region.
+    pub fn zero(&mut self, offset: usize, length: usize) {
+        self.bytes[offset..offset + length].fill(MaybeUninit::new(0));
     }
 
     /// Writes a forward offset relative to this reference header's own address.

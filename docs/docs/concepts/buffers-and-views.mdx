@@ -1,23 +1,32 @@
 # Values, buffers, and views
 
-A native value is input to the encoder. A buffer contains its encoded bytes. A
-view accesses those bytes without first rebuilding the native value.
+A schema describes a message's fields and their encoded representation. An
+encoding input supplies the values to write. A buffer holds the encoded bytes,
+and a view accesses them without reconstructing the input objects.
 
-These are three different things, even when they describe the same drawing.
+| Concept | Drawing example |
+| --- | --- |
+| Schema | A title, a sequence of points, an optional selection, and a command. |
+| Encoding input | A `DrawingInput` whose fields supply that data. |
+| Buffer | One byte region containing the complete encoded drawing. |
+| View | A `DrawingView` that reads or updates fields in that region. |
+
+The schema determines the layout independently of which application containers
+own the input data.
 
 ## Encoding creates a separate representation
 
 Using the [tutorial schema](../tutorial.mdx#1-define-the-message):
 
 ```typescript
-import { DrawingView } from "./generated/drawing.js";
+import { DrawingCommandKind, DrawingView } from "./generated/drawing.js";
 
 const points = [{ x: 1, y: 2, z: 3 }];
 const drawing = DrawingView.create({
     title: "Sketch",
     points,
     selectedPoint: null,
-    command: { kind: "Clear" }
+    command: { kind: DrawingCommandKind.Clear }
 });
 
 drawing.points.get(0).x = 10;
@@ -47,7 +56,109 @@ The diagram shows the relationship, not exact byte offsets. The layout is
 defined by Intrlay's shared schema rules, not by a language's `Vec`, array, or
 object implementation.
 
-## Borrowing shares existing bytes
+## Inputs can borrow application data
+
+A Rust schema can declare `Vec<Point>` while the producer supplies an existing
+slice. With the tutorial's declarations:
+
+```rust
+let points = [Point { x: 1.0, y: 2.0, z: 3.0 }];
+let input = DrawingInput {
+    title: "Sketch",
+    points: points.as_slice(),
+    selected_point: None::<u32>,
+    command: DrawingCommand::Clear,
+};
+let drawing = DrawingView::create_from(&input)?;
+```
+
+`DrawingInput` borrows the title and point data. Encoding copies them into the
+final buffer without first constructing a `String` or `Vec<Point>`. An owned
+`Drawing` can also supply the same values through `DrawingView::create`.
+
+Rust and C++ inputs can combine borrowed fields recursively. C++ uses constrained
+input templates, including `std::string_view` and `std::span` sources. C# offers
+`SpanInput` overloads for records with directly borrowable payloads; its
+[language guide](../languages/csharp.mdx#native-collections-and-variants) describes
+which shapes qualify. TypeScript, Python, and Dart provide input objects using
+their ordinary string and collection types.
+
+Inputs must remain stable throughout measurement and writing. Once encoding
+returns, the buffer is independent of the input's lifetime. It still needs its
+own owner, as described in [Storage and ownership](storage.mdx).
+
+The [generated-name reference](../reference/naming.mdx#type-families) lists the
+input and view types available in each language.
+
+## Numeric arrays
+
+Numeric array inputs can borrow existing typed storage. For example, this schema
+contains a variable-length sequence and a fixed-length array:
+
+```rust
+#[derive(intrlay::Intrlay)]
+pub struct Samples {
+    pub values: Vec<f32>,
+    pub matrix: [f32; 16],
+}
+
+intrlay::export_types!(Samples);
+```
+
+Both fields can take a TypeScript `Float32Array`, a Python `array('f')` or numeric
+memoryview, or a Dart `Float32List`. The fixed-array input must contain exactly
+16 elements. This also applies to numeric array fields nested inside other
+records or collections.
+
+Encoding copies the supplied elements into the final buffer without requiring
+an intermediate ordinary array or list. The encoded buffer does not share its
+elements with the input storage. Writers select bulk copying or element loops
+according to the input representation and array size; this choice does not
+change the schema or byte layout. The [TypeScript](../languages/typescript.mdx#numeric-array-inputs),
+[Python](../languages/python.mdx#numeric-array-inputs), and
+[Dart](../languages/dart.mdx#numeric-array-inputs) guides show construction examples.
+
+## Zero-initialized arrays
+
+An input can request zero-filled elements directly in the encoded buffer,
+without allocating an intermediate collection of zero values. For `Samples`
+above, the sequence needs a count; the fixed array takes its count from the
+schema. Use these field inputs in the generated `SamplesInput`:
+
+| Language | `values`: 32 elements | `matrix`: 16 elements |
+| --- | --- | --- |
+| Rust | `intrlay::ZeroedSequence::new(32)` | `intrlay::Zeroed` |
+| C++ | `intrlay::zeroed(32)` | `intrlay::zeroed()` |
+| TypeScript | `zeroed(32)` from `@intrlay/runtime` | `zeroed()` |
+| Python | `intrlay.zeroed(32)` | `intrlay.zeroed()` |
+| Dart | `intrlay.SequenceInput<double>.zeroed(32)` | `const intrlay.FixedArrayInput<double>.zeroed()` |
+| C# | `new Intrlay.ZeroedSequence<float>(32)` | `new Intrlay.ZeroedArray<float>()` |
+
+The request initializes the wire bytes to zero. It does not call a user-defined
+default constructor. Eligible elements include numbers, booleans, and fixed
+records or arrays composed of eligible fields. Strings, sequences, optional
+values, boxes, and enums are not eligible elements. An empty fixed array needs
+no element initialization.
+
+Requests also work inside nested inputs. For example, each element of a
+sequence of float sequences can request its own zero-filled length. The outer
+sequence still supplies those element inputs normally.
+
+Rust and C++ select the zero-writing path through source types at compile time.
+TypeScript uses a branded count and Python uses an integer `NewType`; neither
+allocates an element wrapper for each requested zero. Their fixed-array request
+is a shared marker. Dart's `SequenceInput` and `FixedArrayInput` extension types
+also accept existing lists through `.from(list)` without copying their elements.
+C# sequence inputs accept arrays and `ReadOnlyMemory<T>` implicitly, while
+`SequenceSpanInput<T>` accepts spans for scoped generic input overloads. C# uses
+`TypeInput.FromSources(...)` or `TypeSpanInput.FromSources(...)` to combine value
+and zero sources; ordinary fixed-array inputs also accept `default`.
+
+Existing values remain valid inputs. A zero request clears its complete region
+even when encoding into reused storage. It does not permit resizing a view's
+variable-length data after construction.
+
+## Views borrow existing encoded bytes
 
 Continue the example:
 
@@ -70,7 +181,7 @@ every possible operation is allocation-free.
 
 | Operation | What happens |
 | --- | --- |
-| Create from a native value | Measure, allocate, and encode into new storage. |
+| Create from an encoding input | Measure, allocate, and encode into new storage. |
 | Create in caller storage | Measure and encode into an existing writable region. |
 | Open a view on encoded bytes | Refer to existing storage; no whole-message decoding. |
 | Read a child or element | Access that part of the same encoding. |

@@ -71,7 +71,10 @@ fn generate_hygiene_cases(fixtures: &mut Fixtures) -> Result<(), Box<dyn Error>>
                 &schema,
                 language,
                 GenerateOptions {
-                    csharp_namespace: Some("EdgeCases.Hygiene".into()),
+                    csharp: intrlay_codegen::CSharpOptions {
+                        namespace: Some("EdgeCases.Hygiene".into()),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             )?,

@@ -26,12 +26,12 @@ int main(int argc, char** argv) {
     check(nullable.triple() && *nullable.triple() && !(**nullable.triple()).has_value(), "three option levels");
     check(!nullable.variants().get(0).value_value(), "inactive nullable enum field");
     check(nullable.variants().get(1).value_value() && !nullable.variants().get(1).value_value()->has_value(), "active nullable enum field");
-    NullableCases nullable_value{
+    NullableCasesInput<> nullable_value{
         std::nullopt, 0, std::string{}, std::nullopt, std::nullopt, std::monostate{},
         std::nullopt, std::optional<std::uint32_t>{}, std::optional<std::uint32_t>{7},
         std::make_unique<std::optional<std::uint32_t>>(),
         std::optional<std::optional<std::uint32_t>>{std::in_place, std::nullopt},
-        {{NullableVariantEmpty{}}, {NullableVariantValue{std::nullopt}}, {NullableVariantValue{9}}}
+        {{NullableVariantEmptyInput<>{}}, {NullableVariantValueInput<>{std::nullopt}}, {NullableVariantValueInput<>{9}}}
     };
     check(std::ranges::equal(NullableCasesView::create(nullable_value).bytes(), nullable_bytes), "nullable exact Rust bytes");
     std::ifstream file(directory + "/rust.bin", std::ios::binary | std::ios::ate);
@@ -47,20 +47,30 @@ int main(int argc, char** argv) {
     check(view.tree().next()->id() == 8 && !view.tree().next()->next().has_value(), "recursive box");
     check(view.optional().has_value() && *view.optional() == 0, "Some(0)");
 
-    Message value{
+    MessageInput<> value{
         UINT64_C(0x123456789abcdef0), "fixture 🦀 한글",
         {{1, 2, 3}, {4, 5, 6}},
-        {{DrawingCommandClear{}}, {DrawingCommandDrawPoint{{7, 8, 9}, 0.75, "example"}}},
-        {7, std::make_unique<Link>(Link{8, std::nullopt})},
+        {{DrawingCommandClearInput<>{}}, {DrawingCommandDrawPointInput<>{{7, 8, 9}, 0.75, "example"}}},
+        {7, std::make_unique<LinkInput<>>(LinkInput<>{8, std::nullopt})},
         0, {10, 20, 30}
     };
     auto created = MessageView::create(value);
     check(std::ranges::equal(created.bytes(), bytes), "exact Rust bytes");
+    auto input = MessageInput{
+        value.sequence, std::string_view(value.title), std::span(value.points),
+        std::span(value.commands), LinkInput{value.tree.id, std::optional{value.tree.next->get()}},
+        value.optional, std::span(value.fixed)
+    };
+    static_assert(intrlay::EncodeSourceFor<decltype(input), MessageView::Metadata>);
+    static_assert(!intrlay::EncodeSourceFor<int, MessageView::Metadata>);
+    auto invalid = PointInput{std::string_view("not a coordinate"), 2.0f, 3.0f};
+    static_assert(!intrlay::EncodeSourceFor<decltype(invalid), PointView::Metadata>);
+    check(std::ranges::equal(MessageView::create(input).bytes(), bytes), "borrowed field sources");
     intrlay::OwnedView<MessageView> storage(length + 32, MessageView::alignment);
     std::ranges::fill(storage.bytes(), std::byte{0xcc});
     auto borrowed = MessageView::create_in_place(storage.bytes().subspan(16), value);
-    borrowed.set_sequence(42);
-    borrowed.points().get(1).set_z(99);
+    borrowed.set_sequence(std::uint64_t{42});
+    borrowed.points().get(1).set_z(99.0f);
     check(borrowed.sequence() == 42 && borrowed.points().get(1).z() == 99, "mutation");
     check(storage.bytes()[15] == std::byte{0xcc} && storage.bytes().back() == std::byte{0xcc}, "external buffer bounds");
     std::ofstream output(directory + "/cpp.bin", std::ios::binary);

@@ -28,7 +28,7 @@ After generating `point.hpp` with `--language cpp --module-name example`:
 int main() {
     using namespace intrlay_generated::example;
 
-    auto point = PointView::create(Point{1.0f, 2.0f, 3.0f});
+    auto point = PointView::create(PointInput{1.0f, 2.0f, 3.0f});
     auto view = point.view();
     view.set_x(4.0f);
     assert(view.x() == 4.0f);

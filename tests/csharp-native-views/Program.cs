@@ -9,24 +9,27 @@ static void Check(bool condition, string message)
     if (!condition) throw new InvalidOperationException(message);
 }
 
-static Vertex MakeVertex() => new(7, new float[] { 1, 2, 3 }, new float[] { 0, 0, 0, 1 });
+static VertexInput MakeVertex() => new(7, new float[] { 1, 2, 3 }, new float[] { 0, 0, 0, 1 });
+
+SpanInputTests.Run();
+GenericInputTests.Run();
 
 var vertex = MakeVertex();
-var data = Payload.FromData(new uint[] { 10, 20, 30 }, new[] { "a", "b" }, new[] { vertex, vertex });
-var again = Payload.FromAgain(new uint[] { 40, 50, 60 }, new[] { "c", "d" });
-var nested = Payload.FromNested(new[] { Nested.FromNumber(456), Nested.FromText("nested") });
-var value = new Scene(
+var data = PayloadInput.FromData(new uint[] { 10, 20, 30 }, new[] { "a", "b" }, new[] { vertex, vertex });
+var again = PayloadInput.FromAgain(new uint[] { 40, 50, 60 }, new[] { "c", "d" });
+var nested = PayloadInput.FromNested(new[] { NestedInput.FromNumber(456), NestedInput.FromText("nested") });
+var value = new SceneInput(
     new[] { vertex, vertex },
     new FixedArray2<uint>[] { new uint[] { 1, 2 }, new uint[] { 3, 4 } },
-    null, vertex, new Intrlay.Optional<Nullable<Vertex>>(null),
+    null, vertex, new Intrlay.Optional<Nullable<VertexInput>>(null),
     new[] { "first", "second" }, new FixedArray3<uint>[] { new uint[] { 5, 6, 7 } },
-    Array.Empty<uint>(), new ValueTuple[] { default, default }, new Padded(9, 123), true,
+    Array.Empty<uint>(), new ValueTuple[] { default, default }, new PaddedInput(9, 123), true,
     new[] { data, again, nested });
 
 var expected = File.ReadAllBytes("target/native-views/rust.bin");
 var view = SceneView.Create(in value);
 Check(view.Bytes.Span.SequenceEqual(expected), "native inline inputs produce exact Rust bytes");
-Check(Unsafe.SizeOf<Vertex>() == 32 && !RuntimeHelpers.IsReferenceOrContainsReferences<Vertex>(), "inline POD native layout");
+Check(Unsafe.SizeOf<VertexInput>() == 32 && !RuntimeHelpers.IsReferenceOrContainsReferences<VertexInput>(), "inline POD native layout");
 Check(RuntimeHelpers.IsReferenceOrContainsReferences<FixedArray2<string>>(), "managed inline storage remains GC-visible");
 Check(data.Data.Numbers[2] == 30 && data.Data.Texts[1] == "b" && data.Data.Vertices[1].Id == 7, "native enum arrays");
 Check(again.Again.Texts[1] == "d" && nested.Nested.Items[1].Text.Field0 == "nested", "native managed array alternatives");
@@ -45,7 +48,7 @@ Check(typeof(PaddedView).GetMethod("ToValue") is null, "padding excludes POD API
 var cachedVertices = view.Vertices;
 Check(scoped.Vertices.TryGetNativeSpan(out var nativeVertices), "aligned POD span");
 Check(nativeVertices[1].Position[2] == 3, "native array elements");
-nativeVertices[1] = new Vertex(99, new float[] { 4, 5, 6 }, new float[] { 0, 0, 0, 1 });
+nativeVertices[1] = new VertexInput(99, new float[] { 4, 5, 6 }, new float[] { 0, 0, 0, 1 });
 Check(cachedVertices[1].Id == 99 && readOnly.Vertices[1].Position[2] == 6, "cached metadata retains live mutations");
 scoped.Vertices[0].Position.Set(1, 12);
 Check(nativeVertices[0].Position[1] == 12, "typed and POD views share storage");
@@ -80,12 +83,16 @@ long before = GC.GetAllocatedBytesForCurrentThread();
 ulong sum = 0;
 for (int i = 0; i < 1000; ++i)
 {
-    var current = Payload.FromData(data.Data.Numbers, data.Data.Texts, data.Data.Vertices);
+    var current = PayloadInput.FromData(data.Data.Numbers, data.Data.Texts, data.Data.Vertices);
     sum += current.Data.Numbers[2] + current.Data.Vertices[0].Id;
     sum += readOnly.Vertices[0].ToValue().Id + readOnly.Present.Value.Id;
 }
 Check(GC.GetAllocatedBytesForCurrentThread() == before, "native/scoped traversal and enum factories allocate no objects");
 Console.WriteLine($"C#: inline arrays, POD, scoped views, optional/enum composition and aliasing passed; {sum}");
+
+#if INTRLAY_CSHARP15
+UnionPatternTests.Run();
+#endif
 
 sealed class CountingMemoryManager(byte[] bytes) : MemoryManager<byte>
 {

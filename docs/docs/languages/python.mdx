@@ -10,14 +10,14 @@ Generate the [tutorial schema](../tutorial.mdx#1-define-the-message) with
 `--language python --output generated/drawing.py`:
 
 ```python
-from generated.drawing import Drawing, DrawingView
+from generated.drawing import DrawingCommandKind, DrawingInput, DrawingView
 
-value: Drawing = {
+value: DrawingInput = {
     "title": "Sketch",
     "points": [{"x": 1.0, "y": 2.0, "z": 3.0}],
     "selected_point": None,
     "command": {
-        "kind": "DrawPoint",
+        "kind": DrawingCommandKind.DrawPoint,
         "position": {"x": 7.0, "y": 8.0, "z": 9.0},
         "size": 0.5,
     },
@@ -33,7 +33,7 @@ if position is not None:
 
 drawing.points[0].x = 10.0
 drawing.selected_point = 0
-drawing.command.replace({"kind": "Clear"})
+drawing.command.replace({"kind": DrawingCommandKind.Clear})
 
 received = DrawingView(drawing.buffer)
 assert received.points[0].x == 10.0
@@ -41,7 +41,9 @@ assert received.command.draw_point_position is None
 ```
 
 Generated native inputs use type hints, including `TypedDict` for records.
-Enum inputs use a `kind` literal. Variant-specific getters return `None` when
+Enums with payloads use a `kind` discriminant with members of a generated
+`enum.IntEnum`, such as `DrawingCommandKind`. Payload-free enums use `IntEnum`
+input classes directly. Both preserve the declared wire tags. Variant-specific getters return `None` when
 inactive; `tag` exposes the encoded number. Properties read and write
 memoryview-backed storage. `drawing.buffer` is a
 memoryview; borrowing it does not copy its contents.
@@ -49,6 +51,11 @@ memoryview; borrowing it does not copy its contents.
 `bytes`, `bytearray`, and compatible buffer-protocol objects can back a view.
 Mutation requires writable storage. The runtime uses native numeric memoryview
 formats and requires a little-endian host with the supported scalar widths.
+
+All generated views inherit `intrlay.BufferView`, which exposes `buffer`.
+Views whose accessors need a record offset inherit through `intrlay.View`.
+Construction-only views retain just their backing storage, and collection views
+store only the offset and length caches used by their emitted accessors.
 
 ## Caller-provided buffers
 
@@ -65,6 +72,35 @@ assert in_place.title == "Sketch"
 An externally allocated region must satisfy the same storage requirements.
 Inputs must not overlap the bytes being written. Keep the external owner alive
 even when Python still holds a memoryview of it.
+
+## Numeric array inputs
+
+Generate the [Samples schema](../concepts/buffers-and-views.mdx#numeric-arrays)
+with `--language python --output generated/samples.py`. Arrays and memoryviews
+can supply the numeric fields directly:
+
+```python
+from array import array
+
+from generated.samples import SamplesView
+
+values = array("f", [1.0, 2.0, 3.0])
+matrix = array("f", [0.0]) * 16
+matrix[0] = 1.0
+
+samples = SamplesView.create({"values": values, "matrix": memoryview(matrix)})
+matrix[0] = 2.0
+assert samples.matrix[0] == 1.0  # Encoding copied the input.
+```
+
+Numeric inputs accept ordinary sequences, `array.array`, and one-dimensional
+numeric memoryviews. There is no need to convert existing typed storage with
+`list` or `tobytes`. Contiguous memoryviews with the matching scalar format and
+arrays with the matching typecode copy directly into the destination; no
+intermediate bytes object is needed. `u8` arrays also accept `bytes` and
+`bytearray` inputs. Different formats and strided views retain element conversion
+and its range checks. Short fixed arrays omit bulk-copy dispatch when an element
+loop is cheaper.
 
 ## Collections and optional values
 

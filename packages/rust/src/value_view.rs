@@ -126,6 +126,31 @@ impl<C: Intrlay, B: AsRef<[u8]> + AsMut<[u8]>> ValueView<C, B> {
 }
 
 impl<C: Intrlay> ValueView<C, OwnedBuffer> {
+    /// Constructs directly from borrowed or generated input values.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported sizes or changing input layouts/counts.
+    pub fn create_from(
+        value: &(impl crate::EncodeSource<C> + ?Sized),
+    ) -> Result<Self, EncodeError> {
+        let buffer = crate::create_from::<C>(value)?;
+        // SAFETY: The source initialized a complete encoding of C.
+        Ok(unsafe { Self::new_unchecked(buffer, 0) })
+    }
+
+    /// Constructs from an encoding input into caller-owned storage.
+    ///
+    /// # Errors
+    /// Returns an error for insufficient/misaligned storage or changing inputs.
+    pub fn create_in_place_from<'a>(
+        value: &(impl crate::EncodeSource<C> + ?Sized),
+        bytes: &'a mut [u8],
+    ) -> Result<ValueView<C, &'a mut [u8]>, EncodeError> {
+        let layout = crate::write_from::<C>(value, bytes)?;
+        // SAFETY: The source initialized this exact region with C's encoding.
+        Ok(unsafe { ValueView::new_unchecked(&mut bytes[..layout.byte_length()], 0) })
+    }
+
     /// Measures and allocates an encoded value.
     ///
     /// # Errors

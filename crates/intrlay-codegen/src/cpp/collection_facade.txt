@@ -1,4 +1,4 @@
-template<class Descriptor, class Byte, bool Constructible = true>
+template<class Descriptor, ::intrlay::BufferByte Byte, bool Constructible = true>
 class CollectionView {
     ::intrlay::ArrayView<Descriptor, Byte, false> $[storage];
 
@@ -28,20 +28,22 @@ public:
     }
 
     template<class Value>
-    static ::std::size_t $[compute_byte_length](const Value& value) requires Constructible {
+    static ::std::size_t $[compute_byte_length](const Value& value)
+        requires (Constructible && ::intrlay::EncodeSourceFor<Value, Descriptor>) {
         return ::intrlay::ViewFactory<
             CollectionView, Descriptor, Descriptor::byte_size, Descriptor::alignment>::compute_byte_length(value);
     }
 
     template<class Value>
-    static ::intrlay::OwnedView<CollectionView> $[create](const Value& value) requires Constructible {
+    static ::intrlay::OwnedView<CollectionView> $[create](const Value& value)
+        requires (Constructible && ::intrlay::EncodeSourceFor<Value, Descriptor>) {
         return ::intrlay::ViewFactory<
             CollectionView, Descriptor, Descriptor::byte_size, Descriptor::alignment>::create(value);
     }
 
     template<class Value>
     static CollectionView $[create_in_place](::std::span<::std::byte> bytes, const Value& value)
-        requires Constructible {
+        requires (Constructible && ::intrlay::EncodeSourceFor<Value, Descriptor>) {
         return ::intrlay::ViewFactory<
             CollectionView, Descriptor, Descriptor::byte_size, Descriptor::alignment>::create_in_place(bytes, value);
     }

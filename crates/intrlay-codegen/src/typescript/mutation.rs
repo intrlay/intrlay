@@ -20,7 +20,7 @@ pub(super) fn body(plan: &TypeGraph, mutation: &Mutation, offset: &str) -> Strin
                     "if (storage.u8[position] === 0) {{\n    return;\n}}\nposition += {offset};"
                 );
             }
-            MutationStep::Boxed => code.push_str("position += storage.u32[position / 4]!;\n"),
+            MutationStep::Boxed => code.push_str("position += storage.u32[position >>> 2]!;\n"),
             MutationStep::Inline(offset) => {
                 let _ = writeln!(code, "position += {offset};");
             }

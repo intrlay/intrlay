@@ -75,7 +75,9 @@ pub(crate) fn runtime_symbol(plan: &TypeGraph, key: &str) -> Result<String, Gene
     let names = &plan.names;
     let result = match key {
         "byte_size" | "alignment" => names.constant(key),
-        "create" | "create_in_place" | "compute_byte_length" => names.method(key, true),
+        "create" | "create_in_place" | "compute_byte_length" | "from_sources" => {
+            names.method(key, true)
+        }
         "get"
         | "set"
         | "replace"

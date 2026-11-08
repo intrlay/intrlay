@@ -53,6 +53,7 @@ macro_rules! scalar {
             type ViewMut<'a> = ScalarMut<'a, Self>;
             const LAYOUT: Layout = Layout::new(size_of::<Self>(), size_of::<Self>());
             const NATIVE_LAYOUT: bool = cfg!(target_endian = "little");
+            const ZEROABLE: bool = true;
             const WRITES_FIXED_LAYOUT: bool = true;
             const IN_PLACE_WRITE: bool = true;
             const INITIALIZATION: Initialization = Initialization::FIXED;
@@ -101,6 +102,7 @@ unsafe impl Intrlay for bool {
     type ViewMut<'a> = ScalarMut<'a, Self>;
     const LAYOUT: Layout = Layout::new(1, 1);
     const NATIVE_LAYOUT: bool = true;
+    const ZEROABLE: bool = true;
     const WRITES_FIXED_LAYOUT: bool = true;
     const IN_PLACE_WRITE: bool = true;
     const INITIALIZATION: Initialization = Initialization::FIXED;
@@ -137,6 +139,7 @@ unsafe impl Intrlay for () {
     type ViewMut<'a> = ();
     const LAYOUT: Layout = Layout::UNIT;
     const NATIVE_LAYOUT: bool = true;
+    const ZEROABLE: bool = true;
     const WRITES_FIXED_LAYOUT: bool = true;
     const IN_PLACE_WRITE: bool = true;
     const INITIALIZATION: Initialization = Initialization::FIXED;
@@ -270,6 +273,7 @@ unsafe impl<C: Intrlay, const N: usize> Intrlay for [C; N] {
     const LAYOUT: Layout = C::LAYOUT.array(N);
     const NATIVE_LAYOUT: bool = C::NATIVE_LAYOUT;
     const HAS_PAYLOAD: bool = N != 0 && C::HAS_PAYLOAD;
+    const ZEROABLE: bool = N == 0 || C::ZEROABLE;
     const IN_PLACE_WRITE: bool = N == 0 || C::IN_PLACE_WRITE;
     const WRITES_FIXED_LAYOUT: bool = N == 0 || C::WRITES_FIXED_LAYOUT;
     const INITIALIZATION: Initialization = if N == 0 {

@@ -3,7 +3,7 @@ members = ["crates/*", "packages/rust", "xtask"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.95"
 publish = true
@@ -12,13 +12,13 @@ license = "Apache-2.0 OR MIT"
 repository = "https://github.com/intrlay/intrlay"
 
 [workspace.dependencies]
-intrlay-layout = { path = "crates/intrlay-layout", version = "0.1.2" }
-intrlay-schema = { path = "crates/intrlay-schema", version = "0.1.2" }
-intrlay = { path = "packages/rust", version = "0.1.2" }
-intrlay-derive = { path = "crates/intrlay-derive", version = "0.1.2" }
-intrlay-codegen = { path = "crates/intrlay-codegen", version = "0.1.2" }
-intrlay-frontend-cpp = { path = "crates/intrlay-frontend-cpp", version = "0.1.2" }
-intrlay-frontend-rust = { path = "crates/intrlay-frontend-rust", version = "0.1.2" }
+intrlay-layout = { path = "crates/intrlay-layout", version = "0.1.3" }
+intrlay-schema = { path = "crates/intrlay-schema", version = "0.1.3" }
+intrlay = { path = "packages/rust", version = "0.1.3" }
+intrlay-derive = { path = "crates/intrlay-derive", version = "0.1.3" }
+intrlay-codegen = { path = "crates/intrlay-codegen", version = "0.1.3" }
+intrlay-frontend-cpp = { path = "crates/intrlay-frontend-cpp", version = "0.1.3" }
+intrlay-frontend-rust = { path = "crates/intrlay-frontend-rust", version = "0.1.3" }
 proc-macro2 = "1.0"
 proc-macro-crate = "3.5"
 trybuild = "1.0"

@@ -30,6 +30,9 @@ enum Command {
         /// Stable generation unit name, used by the default C++/C# namespaces.
         #[arg(long)]
         module_name: Option<String>,
+        /// Minimum C# language version (default 14). Version 15 enables union patterns.
+        #[arg(long)]
+        csharp_language_version: Option<u16>,
     },
     /// Resolve annotated C++20 types through libclang and write common metadata.
     ExtractCpp {
@@ -127,6 +130,7 @@ fn execute(command: Command) -> Result<(), Box<dyn Error>> {
             output,
             options,
             module_name,
+            csharp_language_version,
         } => {
             let schema = source.load()?;
             let mut options: GenerateOptions = options
@@ -141,6 +145,9 @@ fn execute(command: Command) -> Result<(), Box<dyn Error>> {
                 .unwrap_or_default();
             if let Some(module_name) = module_name {
                 options.module_name = Some(module_name);
+            }
+            if let Some(version) = csharp_language_version {
+                options.csharp.language_version = Some(version);
             }
             (
                 output,

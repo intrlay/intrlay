@@ -92,6 +92,43 @@ struct Shared {
 }
 
 #[derive(Intrlay)]
+#[repr(u32)]
+enum SparseState {
+    First = 3,
+    Middle = 37,
+    Last = u32::MAX,
+}
+
+#[derive(Intrlay)]
+enum ValueChoice {
+    #[intrlay(tag = 9)]
+    Empty,
+    #[intrlay(tag = 91)]
+    Present {
+        state: SparseState,
+        optional: Option<SparseState>,
+        fixed: [SparseState; 2],
+        states: Vec<SparseState>,
+        text: String,
+    },
+}
+
+#[derive(Intrlay)]
+struct ValueEnums {
+    choice: ValueChoice,
+}
+
+#[derive(Intrlay)]
+struct ElementAccess {
+    number: u32,
+}
+
+#[derive(Intrlay)]
+struct ElementAccessCollection {
+    items: Vec<ElementAccess>,
+}
+
+#[derive(Intrlay)]
 struct SharedAlpha {
     shared: Shared,
 }
@@ -202,12 +239,16 @@ enum PrivateHelper {
 
 #[derive(Intrlay)]
 struct Position {
+    #[intrlay(csharp(name = "PositionInput"))]
     position: u32,
 }
 
 #[derive(Intrlay)]
 enum PayloadCollision {
-    Item { payload_collision_item: u32 },
+    Item {
+        #[intrlay(csharp(name = "PayloadCollisionItemInput"))]
+        payload_collision_item: u32,
+    },
 }
 
 #[derive(Intrlay)]
@@ -424,6 +465,43 @@ fn reject_python_object_protocol_properties() {
     );
 }
 
+#[derive(Intrlay, Default, Clone)]
+#[repr(C, align(16))]
+struct ZeroedPoint {
+    x: f32,
+    y: f32,
+    z: f32,
+}
+
+#[derive(Intrlay)]
+struct ZeroedArrays {
+    id: u32,
+    points: Vec<ZeroedPoint>,
+    flags: Vec<bool>,
+    matrix: [[f32; 2]; 2],
+    present: Option<[u32; 2]>,
+    nested: Vec<Vec<u32>>,
+    empty: [String; 0],
+}
+
+fn zeroed_arrays(fixtures: &mut Fixtures, registry: &mut Registry) -> Result<(), Box<dyn Error>> {
+    registry.export::<ZeroedArrays>("ZeroedArrays");
+    let value = ZeroedArrays {
+        id: 73,
+        points: vec![ZeroedPoint::default(); 3],
+        flags: vec![false; 4],
+        matrix: [[0.0; 2]; 2],
+        present: Some([0; 2]),
+        nested: vec![vec![0; 2], vec![]],
+        empty: [],
+    };
+    fixtures.insert(
+        "compositions/zeroed.bin",
+        intrlay::create::<ZeroedArrays>(&value)?.as_ref(),
+    )?;
+    Ok(())
+}
+
 fn generate_composition_fixtures(fixtures: &mut Fixtures) -> Result<(), Box<dyn Error>> {
     let directory = std::path::PathBuf::from("compositions");
 
@@ -440,6 +518,7 @@ fn generate_composition_fixtures(fixtures: &mut Fixtures) -> Result<(), Box<dyn 
     registry.export::<ManagedUnion>("ManagedUnion");
     registry.export::<Vec<()>>("UnitSequence");
     registry.export::<NumericItems>("NumericItems");
+    zeroed_arrays(fixtures, &mut registry)?;
     let schema = registry.finish();
     let native_value = ManagedUnion::Record(ManagedPayload {
         label: "shared".into(),
@@ -465,7 +544,9 @@ fn generate_composition_fixtures(fixtures: &mut Fixtures) -> Result<(), Box<dyn 
                 &schema,
                 language,
                 GenerateOptions {
-                    cpp_namespace: Some("composition".into()),
+                    cpp: intrlay_codegen::CppOptions {
+                        namespace: Some("composition".into()),
+                    },
                     ..Default::default()
                 },
             )?,
@@ -473,11 +554,62 @@ fn generate_composition_fixtures(fixtures: &mut Fixtures) -> Result<(), Box<dyn 
     }
     csharp_modules(fixtures, &directory)?;
     csharp_unions(fixtures, &directory)?;
+    value_enums(fixtures, &directory)?;
     let mut registry = Registry::new();
     registry.export::<SetterNames>("SetterNames");
     fixtures.insert(
         directory.join("setter-names.dart"),
         generate(&registry.finish(), Language::Dart)?,
+    )?;
+    Ok(())
+}
+
+fn value_enums(fixtures: &mut Fixtures, directory: &Path) -> Result<(), Box<dyn Error>> {
+    let mut registry = Registry::new();
+    registry.export::<SparseState>("SparseState");
+    registry.export::<SparseState>("StateAlias");
+    registry.export::<ValueChoice>("ValueChoice");
+    registry.export::<ValueChoice>("ValueChoiceAlias");
+    registry.export::<ValueEnums>("ValueEnums");
+    let schema = registry.finish();
+    for (language, extension) in [
+        (Language::TypeScript, "ts"),
+        (Language::Python, "py"),
+        (Language::Dart, "dart"),
+        (Language::CSharp, "cs"),
+    ] {
+        let file = if language == Language::Python {
+            "value_enums.py".into()
+        } else {
+            format!("value-enums.{extension}")
+        };
+        fixtures.insert(
+            directory.join(file),
+            generate_with_options(
+                &schema,
+                language,
+                GenerateOptions {
+                    csharp: intrlay_codegen::CSharpOptions {
+                        namespace: Some("Composition.ValueEnums".into()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )?,
+        )?;
+    }
+    fixtures.insert(
+        directory.join("value-enums.bin"),
+        ValueEnumsView::create(&ValueEnums {
+            choice: ValueChoice::Present {
+                state: SparseState::Last,
+                optional: Some(SparseState::Middle),
+                fixed: [SparseState::First, SparseState::Last],
+                states: vec![SparseState::Middle, SparseState::First],
+                text: "hello".into(),
+            },
+        })?
+        .as_bytes(),
     )?;
     Ok(())
 }
@@ -494,7 +626,10 @@ fn csharp_unions(fixtures: &mut Fixtures, directory: &Path) -> Result<(), Box<dy
             &registry.finish(),
             Language::CSharp,
             GenerateOptions {
-                csharp_namespace: Some("Composition.Regression".into()),
+                csharp: intrlay_codegen::CSharpOptions {
+                    namespace: Some("Composition.Regression".into()),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )?,
@@ -516,6 +651,22 @@ fn csharp_unions(fixtures: &mut Fixtures, directory: &Path) -> Result<(), Box<dy
 
 fn csharp_modules(fixtures: &mut Fixtures, directory: &Path) -> Result<(), Box<dyn Error>> {
     let mut registry = Registry::new();
+    registry.export::<ElementAccessCollection>("ElementAccessCollection");
+    fixtures.insert(
+        directory.join("element-access.cs"),
+        generate_with_options(
+            &registry.finish(),
+            Language::CSharp,
+            GenerateOptions {
+                csharp: intrlay_codegen::CSharpOptions {
+                    namespace: Some("Composition.ElementAccess".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )?,
+    )?;
+    let mut registry = Registry::new();
     registry.export::<Root>("Root");
     fixtures.insert(
         directory.join("binding-name.cs"),
@@ -523,7 +674,10 @@ fn csharp_modules(fixtures: &mut Fixtures, directory: &Path) -> Result<(), Box<d
             &registry.finish(),
             Language::CSharp,
             GenerateOptions {
-                csharp_namespace: Some("Composition.BindingName".into()),
+                csharp: intrlay_codegen::CSharpOptions {
+                    namespace: Some("Composition.BindingName".into()),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )?,
@@ -546,7 +700,10 @@ fn csharp_modules(fixtures: &mut Fixtures, directory: &Path) -> Result<(), Box<d
                 &registry.finish(),
                 Language::CSharp,
                 GenerateOptions {
-                    csharp_namespace: Some(format!("Composition.{name}")),
+                    csharp: intrlay_codegen::CSharpOptions {
+                        namespace: Some(format!("Composition.{name}")),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             )?,
@@ -569,7 +726,10 @@ fn csharp_modules(fixtures: &mut Fixtures, directory: &Path) -> Result<(), Box<d
             &registry.finish(),
             Language::CSharp,
             GenerateOptions {
-                csharp_namespace: Some("Composition.Naming".into()),
+                csharp: intrlay_codegen::CSharpOptions {
+                    namespace: Some("Composition.Naming".into()),
+                    ..Default::default()
+                },
                 naming: Some(policy),
                 ..Default::default()
             },
@@ -590,7 +750,7 @@ fn reject_native_enum_collisions_and_invalid_namespaces() {
     let schema = registry.finish();
     for namespace in ["", ".", "a..b", "a.class", "a.1", "a;b"] {
         assert!(
-            matches!(generate_with_options(&schema, Language::CSharp, GenerateOptions { csharp_namespace: Some(namespace.into()), ..Default::default() }), Err(error) if error.0.contains("invalid C# namespace"))
+            matches!(generate_with_options(&schema, Language::CSharp, GenerateOptions { csharp: intrlay_codegen::CSharpOptions { namespace: Some(namespace.into()), ..Default::default() }, ..Default::default() }), Err(error) if error.0.contains("invalid C# namespace"))
         );
     }
 }

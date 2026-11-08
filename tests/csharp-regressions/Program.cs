@@ -8,19 +8,19 @@ using IntrlayGenerated.TaggedDefaults;
 
 ConstructionExtents.Run();
 
-var a = AlphaView.Create(new Alpha(new uint[] { 1, 2 }));
-var b = BetaView.Create(new Beta(new uint[] { 3, 4 }));
+var a = AlphaView.Create(new AlphaInput(new uint[] { 1, 2 }));
+var b = BetaView.Create(new BetaInput(new uint[] { 3, 4 }));
 if (a.Values[1] != 2 || b.Values[0] != 3) throw new Exception("module coexistence");
 ReadOnlyMemory<byte> bytes = new byte[] { 7, 0, 0, 0 };
 if (new ReadOnlyViewReadOnly(bytes).Value != 7) throw new Exception("read-only memory");
 if (new AlphaViewReadOnly(a.Bytes).Values[1] != 2) throw new Exception("read-only descendants");
 if (ScalarView.Create(1.5f).Value != 1.5f) throw new Exception("scalar export");
-var vectors = ProjectionsView.Create(new Projections(new Vector[] { new(1, 2, 3) }));
+var vectors = ProjectionsView.Create(new ProjectionsInput(new VectorInput[] { new(1, 2, 3) }));
 if (vectors.Vectors.Count != 1 || vectors.Vectors[0].Z != 3) throw new Exception("typed record collection");
 vectors.Vectors[0].SetY(9);
 if (vectors.Vectors[0].Y != 9) throw new Exception("borrowed mutation");
 if (new ProjectionsViewReadOnly(vectors.Bytes).Vectors[0].Y != 9) throw new Exception("read-only collection");
-var arrays = FixedArraysView.Create(new FixedArrays(
+var arrays = FixedArraysView.Create(new FixedArraysInput(
     new float[] { 1, 2, 3 }, new float[] { 4, 5, 6, 7 },
     new IntrlayGenerated.Arrays.FixedArray3<float>[] { new float[] { 8, 9, 10 }, new float[] { 11, 12, 13 } },
     new ReadOnlyMemory<float>(new float[] { 14, 15, 16 }), null, new float[] { 17, 18, 19 }));
@@ -64,9 +64,9 @@ RejectUnknownTag(() => { NonZeroTagSpanView.CreateInPlace(tagBuffer.AsSpan(), de
 RejectUnknownTag(() => NonZeroPayloadTagView.ComputeByteLength(default));
 RejectUnknownTag(() => NonZeroPayloadTagView.Create(default));
 RejectUnknownTag(() => NonZeroPayloadTagView.CreateInPlace(tagBuffer, default));
-RejectUnknownTag(() => TaggedItemsView.Create(new TaggedItems(new NonZeroTag[] { default })));
+RejectUnknownTag(() => TaggedItemsView.Create(new TaggedItemsInput(new NonZeroTagInput[] { default })));
 
-var validTag = NonZeroTagView.CreateInPlace(tagBuffer, NonZeroTag.FromSecond());
+var validTag = NonZeroTagView.CreateInPlace(tagBuffer, NonZeroTagInput.Second);
 if (validTag.Tag != 2) throw new Exception("valid enum after rejected construction");
 if (RestrictedView.Create(default).Tag != 0) throw new Exception("declared zero-tag variant must remain valid");
 Console.WriteLine("C#: default enum tags without a declared variant are rejected");

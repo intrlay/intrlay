@@ -2,34 +2,39 @@
 
 from collections.abc import Iterator
 from typing import assert_type
+from intrlay import zeroed
 
 from bindings import (
-    DrawingCommand,
-    Link,
+    DrawingCommandInput,
+    DrawingCommandKind,
+    LinkInput,
     LinkView,
-    Message,
+    MessageInput,
     MessageView,
-    NullableCases,
+    NullableCasesInput,
     NullableCasesView,
-    Point,
+    PointInput,
     PointView,
     Some,
 )
-from edge_bindings import AccessModes, AccessModesView, OptionalPointsView, ScalarView
+from edge_bindings import (
+    AccessModesInput, AccessModesView, CreateOnlyView, OptionalPointsView,
+    ScalarView, UnitFieldsView,
+)
 
 
-def inputs(point: Point, command: DrawingCommand) -> Message:
-    if command['kind'] == 'DrawPoint':
-        assert_type(command['position'], Point)
+def inputs(point: PointInput, command: DrawingCommandInput) -> MessageInput:
+    if command['kind'] == DrawingCommandKind.DrawPoint:
+        assert_type(command['position'], PointInput)
         assert_type(command['size'], float)
     return {
         'sequence': 1,
         'title': 'Typed input',
-        'points': [point],
-        'commands': [command, {'kind': 'Clear'}],
+        'points': zeroed(3),
+        'commands': [command, {'kind': DrawingCommandKind.Clear}],
         'tree': {'id': 1, 'next': {'id': 2, 'next': None}},
         'optional': None,
-        'fixed': [1, 2, 3],
+        'fixed': zeroed(),
     }
 
 
@@ -37,7 +42,7 @@ class DerivedMessageView(MessageView):
     __slots__ = ()
 
 
-def views(value: Message, nullable_input: NullableCases, recursive: Link) -> None:
+def views(value: MessageInput, nullable_input: NullableCasesInput, recursive: LinkInput) -> None:
     view = MessageView.create(value)
     assert_type(view, MessageView)
     assert_type(DerivedMessageView.create(value), DerivedMessageView)
@@ -66,7 +71,13 @@ def explicit_exports() -> None:
     scalar.value = 2.0
     array = OptionalPointsView.create([None, {'x': 1.0, 'y': 2.0}])
     assert array[0] is None
-    input: AccessModes = {'read_only': 1, 'write_only': 2}
+    input: AccessModesInput = {'read_only': 1, 'write_only': 2}
     access = AccessModesView.create(input)
     assert_type(access.read_only, int)
     access.set_write_only(3)
+
+
+def keyword_arguments(buffer: bytearray) -> None:
+    assert_type(ScalarView.compute_byte_length(value=1.5), int)
+    assert_type(CreateOnlyView(buffer=buffer, offset=4), CreateOnlyView)
+    assert_type(UnitFieldsView(buffer=buffer, offset=4).get_marker(index=0), None)

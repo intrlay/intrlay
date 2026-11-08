@@ -10,6 +10,54 @@ final _isLittleEndian = Endian.host == Endian.little;
 // Reusing it avoids both per-message allocation and scalar fillRange loops.
 final _zeroBytes = Uint8List(16 * 1024);
 
+// Never is a subtype of every element type, so the request can share List<T>'s
+// representation without casting real element storage on each access.
+final class _ZeroedElements extends ListBase<Never> {
+  @override
+  final int length;
+
+  const _ZeroedElements(this.length);
+
+  @override
+  set length(int value) => throw UnsupportedError('zero-initialization request');
+
+  @override
+  Never operator [](int index) => throw UnsupportedError('zero-initialization request');
+
+  @override
+  void operator []=(int index, Never value) => throw UnsupportedError('zero-initialization request');
+}
+
+/// A typed construction input erased to its existing element storage.
+/// Only schemas whose element encoding supports zero initialization use it.
+extension type SequenceInput<T>._(List<T> _value) implements Object {
+  const SequenceInput.from(List<T> values) : _value = values;
+  SequenceInput.zeroed(int length) : _value = _ZeroedElements(length) {
+    RangeError.checkNotNegative(length, 'length');
+  }
+
+  @pragma('vm:prefer-inline')
+  @pragma('dart2js:tryInline')
+  int get length => _value.length;
+
+  @pragma('vm:prefer-inline')
+  @pragma('dart2js:tryInline')
+  List<T>? get values => _value is _ZeroedElements ? null : _value;
+}
+
+const _zeroedFixedArray = _ZeroedElements(0);
+
+/// A fixed array's values or zero initialization using the schema's length.
+/// The non-null marker remains distinct from an absent optional array.
+extension type const FixedArrayInput<T>._(List<T> _value) implements Object {
+  const FixedArrayInput.from(List<T> values) : _value = values;
+  const FixedArrayInput.zeroed() : _value = _zeroedFixedArray;
+
+  @pragma('vm:prefer-inline')
+  @pragma('dart2js:tryInline')
+  List<T>? get values => identical(_value, _zeroedFixedArray) ? null : _value;
+}
+
 Uint8List _prepareWriteBytes(Uint8List bytes, int size, int alignment) {
   if (bytes.length < size || bytes.offsetInBytes % alignment != 0) {
     throw ArgumentError('buffer capacity or alignment');
@@ -142,7 +190,7 @@ class Storage {
 /// Generated encoders supply offsets aligned to each scalar's size. Borrowed
 /// views use [Storage.writer], which preserves unaligned ByteData access.
 /// Native encoders create only the numeric views they use, once per storage.
-/// JavaScript uses ByteData stores directly to avoid extra typed-view objects.
+/// JavaScript uses ByteData for scalar stores and byte views for bulk copies.
 final class WriteStorage extends Storage {
   @override
   WriteStorage get writer => this;
@@ -176,7 +224,7 @@ final class WriteStorage extends Storage {
   @pragma('vm:prefer-inline')
   void writeUint16(int offset, int value) {
     if (!_isWeb && _isLittleEndian && _aligned) {
-      _uint16[offset >> 1] = value;
+      _uint16[offset >>> 1] = value;
     } else {
       data.setUint16(offset, value, Endian.little);
     }
@@ -190,7 +238,7 @@ final class WriteStorage extends Storage {
   @pragma('vm:prefer-inline')
   void writeUint32(int offset, int value) {
     if (!_isWeb && _isLittleEndian && _aligned) {
-      _uint32[offset >> 2] = value;
+      _uint32[offset >>> 2] = value;
     } else {
       data.setUint32(offset, value, Endian.little);
     }
@@ -204,7 +252,7 @@ final class WriteStorage extends Storage {
   @pragma('vm:prefer-inline')
   void writeInt64(int offset, int value) {
     if (!_isWeb && _isLittleEndian && _aligned) {
-      _uint64[offset >> 3] = value;
+      _uint64[offset >>> 3] = value;
     } else if (_isWeb) {
       _writeWideWeb(data, offset, value);
     } else {
@@ -216,7 +264,7 @@ final class WriteStorage extends Storage {
   @pragma('vm:prefer-inline')
   void writeUint64(int offset, int value) {
     if (!_isWeb && _isLittleEndian && _aligned) {
-      _uint64[offset >> 3] = value;
+      _uint64[offset >>> 3] = value;
     } else if (_isWeb) {
       _writeWideWeb(data, offset, value);
     } else {
@@ -228,7 +276,7 @@ final class WriteStorage extends Storage {
   @pragma('vm:prefer-inline')
   void writeFloat32(int offset, double value) {
     if (!_isWeb && _isLittleEndian && _aligned) {
-      _float32[offset >> 2] = value;
+      _float32[offset >>> 2] = value;
     } else {
       data.setFloat32(offset, value, Endian.little);
     }
@@ -238,7 +286,7 @@ final class WriteStorage extends Storage {
   @pragma('vm:prefer-inline')
   void writeFloat64(int offset, double value) {
     if (!_isWeb && _isLittleEndian && _aligned) {
-      _float64[offset >> 3] = value;
+      _float64[offset >>> 3] = value;
     } else {
       data.setFloat64(offset, value, Endian.little);
     }
@@ -247,6 +295,20 @@ final class WriteStorage extends Storage {
 
 // Array writers resolve native byte order and the cached destination once.
 // Inlining on JavaScript preserves fixed-length loops in the generated caller.
+// Dart 3.13 AOT/dart2js measurements: small loops beat range-copy dispatch.
+// Code generation applies the same limits statically for fixed-length arrays.
+const _arrayLoopLimit = _isWeb ? 128 : 4;
+// Byte lists already expose the needed source view, so web breaks even sooner.
+const _byteArrayLoopLimit = _isWeb ? 64 : 4;
+
+// Web borrows source bytes only for a bulk copy. Using the native lane caches
+// here would keep every lazy lane field in every WriteStorage allocation,
+// including messages that only write scalars or short arrays.
+@pragma('dart2js:tryInline')
+void _copyTypedArrayBytes(WriteStorage storage, int offset, TypedData values) {
+  final bytes = Uint8List.view(values.buffer, values.offsetInBytes, values.lengthInBytes);
+  storage.bytes.setRange(offset, offset + bytes.length, bytes);
+}
 
 /// Writes signed 8-bit array elements using their two's-complement bits.
 @pragma('vm:prefer-inline')
@@ -254,10 +316,30 @@ final class WriteStorage extends Storage {
 void writeInt8Array(WriteStorage storage, int offset, List<int> values) =>
     writeUint8Array(storage, offset, values);
 
-/// Writes byte elements in one range operation.
+/// Bulk-copies typed byte lists; other inputs retain direct element stores.
 @pragma('dart2js:tryInline')
 void writeUint8Array(WriteStorage storage, int offset, List<int> values) {
-  storage.bytes.setRange(offset, offset + values.length, values);
+  if (values.length > _byteArrayLoopLimit && (values is Uint8List || values is Int8List)) {
+    storage.bytes.setRange(offset, offset + values.length, values);
+  } else {
+    writeUint8ArrayElements(storage, offset, values);
+  }
+}
+
+/// Writes a short signed byte array without range-copy setup.
+@pragma('vm:prefer-inline')
+@pragma('dart2js:tryInline')
+void writeInt8ArrayElements(WriteStorage storage, int offset, List<int> values) =>
+    writeUint8ArrayElements(storage, offset, values);
+
+/// Writes a short byte array without range-copy setup.
+@pragma('vm:prefer-inline')
+@pragma('dart2js:tryInline')
+void writeUint8ArrayElements(WriteStorage storage, int offset, List<int> values) {
+  final target = storage.bytes;
+  for (var index = 0; index < values.length; ++index) {
+    target[offset + index] = values[index];
+  }
 }
 
 /// Writes signed 16-bit array elements using their two's-complement bits.
@@ -266,12 +348,34 @@ void writeUint8Array(WriteStorage storage, int offset, List<int> values) {
 void writeInt16Array(WriteStorage storage, int offset, List<int> values) =>
     writeUint16Array(storage, offset, values);
 
-/// Resolves the 16-bit destination view once for the complete array.
+/// Bulk-copies compatible integer lanes, retaining conversion for other lists.
 @pragma('dart2js:tryInline')
 void writeUint16Array(WriteStorage storage, int offset, List<int> values) {
+  if (values.length > _arrayLoopLimit && _isLittleEndian && storage._aligned &&
+      (values is Uint16List || values is Int16List)) {
+    if (_isWeb) {
+      _copyTypedArrayBytes(storage, offset, values as TypedData);
+    } else {
+      final start = offset >>> 1;
+      storage._uint16.setRange(start, start + values.length, values);
+    }
+  } else {
+    writeUint16ArrayElements(storage, offset, values);
+  }
+}
+
+/// Writes signed 16-bit elements without bulk-copy dispatch.
+@pragma('vm:prefer-inline')
+@pragma('dart2js:tryInline')
+void writeInt16ArrayElements(WriteStorage storage, int offset, List<int> values) =>
+    writeUint16ArrayElements(storage, offset, values);
+
+/// Resolves the 16-bit destination once and writes elements individually.
+@pragma('dart2js:tryInline')
+void writeUint16ArrayElements(WriteStorage storage, int offset, List<int> values) {
   if (!_isWeb && _isLittleEndian && storage._aligned) {
     final lanes = storage._uint16;
-    final start = offset >> 1;
+    final start = offset >>> 1;
     for (var index = 0; index < values.length; ++index) {
       lanes[start + index] = values[index];
     }
@@ -289,12 +393,34 @@ void writeUint16Array(WriteStorage storage, int offset, List<int> values) {
 void writeInt32Array(WriteStorage storage, int offset, List<int> values) =>
     writeUint32Array(storage, offset, values);
 
-/// Resolves the 32-bit destination view once for the complete array.
+/// Bulk-copies compatible integer lanes, retaining conversion for other lists.
 @pragma('dart2js:tryInline')
 void writeUint32Array(WriteStorage storage, int offset, List<int> values) {
+  if (values.length > _arrayLoopLimit && _isLittleEndian && storage._aligned &&
+      (values is Uint32List || values is Int32List)) {
+    if (_isWeb) {
+      _copyTypedArrayBytes(storage, offset, values as TypedData);
+    } else {
+      final start = offset >>> 2;
+      storage._uint32.setRange(start, start + values.length, values);
+    }
+  } else {
+    writeUint32ArrayElements(storage, offset, values);
+  }
+}
+
+/// Writes signed 32-bit elements without bulk-copy dispatch.
+@pragma('vm:prefer-inline')
+@pragma('dart2js:tryInline')
+void writeInt32ArrayElements(WriteStorage storage, int offset, List<int> values) =>
+    writeUint32ArrayElements(storage, offset, values);
+
+/// Resolves the 32-bit destination once and writes elements individually.
+@pragma('dart2js:tryInline')
+void writeUint32ArrayElements(WriteStorage storage, int offset, List<int> values) {
   if (!_isWeb && _isLittleEndian && storage._aligned) {
     final lanes = storage._uint32;
-    final start = offset >> 2;
+    final start = offset >>> 2;
     for (var index = 0; index < values.length; ++index) {
       lanes[start + index] = values[index];
     }
@@ -312,12 +438,30 @@ void writeUint32Array(WriteStorage storage, int offset, List<int> values) {
 void writeInt64Array(WriteStorage storage, int offset, List<int> values) =>
     writeUint64Array(storage, offset, values);
 
-/// Resolves the 64-bit destination view once for the complete array.
+/// Bulk-copies native integer lanes; web keeps its existing integer conversion.
 @pragma('dart2js:tryInline')
 void writeUint64Array(WriteStorage storage, int offset, List<int> values) {
+  if (!_isWeb && values.length > _arrayLoopLimit && _isLittleEndian && storage._aligned &&
+      (values is Uint64List || values is Int64List)) {
+    final start = offset >>> 3;
+    storage._uint64.setRange(start, start + values.length, values);
+  } else {
+    writeUint64ArrayElements(storage, offset, values);
+  }
+}
+
+/// Writes signed 64-bit elements without bulk-copy dispatch.
+@pragma('vm:prefer-inline')
+@pragma('dart2js:tryInline')
+void writeInt64ArrayElements(WriteStorage storage, int offset, List<int> values) =>
+    writeUint64ArrayElements(storage, offset, values);
+
+/// Resolves the 64-bit destination once and writes elements individually.
+@pragma('dart2js:tryInline')
+void writeUint64ArrayElements(WriteStorage storage, int offset, List<int> values) {
   if (!_isWeb && _isLittleEndian && storage._aligned) {
     final lanes = storage._uint64;
-    final start = offset >> 3;
+    final start = offset >>> 3;
     for (var index = 0; index < values.length; ++index) {
       lanes[start + index] = values[index];
     }
@@ -329,12 +473,27 @@ void writeUint64Array(WriteStorage storage, int offset, List<int> values) {
   }
 }
 
-/// Writes float32 array elements with one destination view lookup.
+/// Bulk-copies Float32List lanes, retaining rounding for other numeric lists.
 @pragma('dart2js:tryInline')
 void writeFloat32Array(WriteStorage storage, int offset, List<double> values) {
+  if (values.length > _arrayLoopLimit && _isLittleEndian && storage._aligned && values is Float32List) {
+    if (_isWeb) {
+      _copyTypedArrayBytes(storage, offset, values);
+    } else {
+      final start = offset >>> 2;
+      storage._float32.setRange(start, start + values.length, values);
+    }
+  } else {
+    writeFloat32ArrayElements(storage, offset, values);
+  }
+}
+
+/// Writes float32 elements with one destination lookup and no bulk dispatch.
+@pragma('dart2js:tryInline')
+void writeFloat32ArrayElements(WriteStorage storage, int offset, List<double> values) {
   if (!_isWeb && _isLittleEndian && storage._aligned) {
     final lanes = storage._float32;
-    final start = offset >> 2;
+    final start = offset >>> 2;
     for (var index = 0; index < values.length; ++index) {
       lanes[start + index] = values[index];
     }
@@ -346,12 +505,27 @@ void writeFloat32Array(WriteStorage storage, int offset, List<double> values) {
   }
 }
 
-/// Writes float64 array elements with one destination view lookup.
+/// Bulk-copies Float64List lanes, retaining conversion for other numeric lists.
 @pragma('dart2js:tryInline')
 void writeFloat64Array(WriteStorage storage, int offset, List<double> values) {
+  if (values.length > _arrayLoopLimit && _isLittleEndian && storage._aligned && values is Float64List) {
+    if (_isWeb) {
+      _copyTypedArrayBytes(storage, offset, values);
+    } else {
+      final start = offset >>> 3;
+      storage._float64.setRange(start, start + values.length, values);
+    }
+  } else {
+    writeFloat64ArrayElements(storage, offset, values);
+  }
+}
+
+/// Writes float64 elements with one destination lookup and no bulk dispatch.
+@pragma('dart2js:tryInline')
+void writeFloat64ArrayElements(WriteStorage storage, int offset, List<double> values) {
   if (!_isWeb && _isLittleEndian && storage._aligned) {
     final lanes = storage._float64;
-    final start = offset >> 3;
+    final start = offset >>> 3;
     for (var index = 0; index < values.length; ++index) {
       lanes[start + index] = values[index];
     }

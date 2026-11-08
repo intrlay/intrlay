@@ -26,13 +26,26 @@ not a generated fixture, to make a persistent change.
 
 The pinned Rust toolchain is in `rust-toolchain.toml`. The full check also needs
 Node.js/npm, Python/pip, Dart, the .NET SDK, a C++20 compiler, libclang, and CMake.
-CI currently uses Rust 1.95, Node.js 24, Python 3.13, .NET 10, and the stable Dart
-SDK. Test projects can require a newer SDK than the runtime package's minimum.
+CI uses Rust 1.95, Node.js 24, Python 3.13, .NET 10 and 11, Clang/libclang 19,
+and the stable Dart SDK. The C# 15 union consumers use .NET 11; the runtime
+package targets .NET 10. An isolated .NET 11 installation can be selected for
+those checks with `DOTNET11=/path/to/dotnet`. Other C# checks use `dotnet` on
+`PATH`.
 
 Install LLVM for C++ schema extraction. Set `LIBCLANG_PATH` if its shared library
 is not discoverable. `CXX` selects the compiler for direct C++ consumer checks;
 the default is `clang++`. CMake also checks installed-header integration with
-the platform's configured compiler.
+the platform's configured compiler. Use Clang 19 or later for the C++ checks;
+they exercise C++20 template argument deduction through generated input aliases.
+The compiler and libclang can be selected explicitly on Ubuntu 24.04:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y clang-19 libclang-19-dev cmake
+export CC=clang-19
+export CXX=clang++-19
+export LIBCLANG_PATH=/usr/lib/llvm-19/lib
+```
 
 The [check workflow](https://github.com/intrlay/intrlay/blob/main/.github/workflows/check.yml) is the executable source
 of truth for CI setup. The [language guides](../index.mdx#language-guides) describe
@@ -48,8 +61,13 @@ cargo xtask check
 
 This formats/checks Rust, runs strict Clippy and workspace tests, generates
 fixtures, then compiles and executes consumers for all six targets. It also
-checks Python typing, Dart's JavaScript output, and installed C++/C# package
+checks TypeScript's unused locals and parameters, Python typing and unused
+arguments, Dart's JavaScript output, and installed C++/C# package
 integration. It installs local runtime and test dependencies as part of setup.
+
+Python unused-argument checks use temporary copies without the generated
+file-wide lint suppression. Narrow exceptions for keyword-compatible public
+parameters remain active, and stale exceptions are checked too.
 
 For a focused Rust iteration:
 
@@ -94,7 +112,9 @@ npm --prefix docs run check
 
 This runs ESLint for TypeScript, JavaScript configuration, and MDX, followed by
 TypeScript checking and a production build that rejects broken document links
-and anchors. Preview that build with `npm --prefix docs run serve`.
+and anchors. Fenced code examples are not compiled by this command; generate
+their bindings and run them with the corresponding language toolchain. Preview
+the site build with `npm --prefix docs run serve`.
 
 ## Adding a regression
 

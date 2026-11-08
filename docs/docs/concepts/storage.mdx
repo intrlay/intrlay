@@ -24,6 +24,12 @@ the header and is not enough storage for a drawing's title and point collection.
 For an already encoded message, use the length supplied with that byte region;
 you do not need to reconstruct a native value just to measure it again.
 
+The input's storage and the encoded destination have separate lifetimes.
+Borrowed strings, slices, and spans must remain valid and stable through
+measurement and writing. They must not overlap bytes written by the encoder.
+The returned view refers only to the destination; it does not retain the input
+objects. These rules apply to nested inputs and iterator-backed sources too.
+
 ## Align a region inside a larger buffer
 
 Each generated target view exposes its storage alignment. For example, when an
@@ -55,7 +61,7 @@ preserves relative offsets; copying only its header does not.
 
 These names use the default naming policy:
 
-| Language | Measure a native value | Required alignment |
+| Language | Measure an encoding input | Required alignment |
 | --- | --- | --- |
 | Rust | `DrawingView::compute_layout(&value)?` | The returned `BufferLayout::alignment()` |
 | C++ | `DrawingView::compute_byte_length(value)` | `DrawingView::alignment` |
@@ -64,9 +70,24 @@ These names use the default naming policy:
 | Python | `DrawingView.compute_byte_length(value)` | `DrawingView.ALIGNMENT` |
 | Dart | `DrawingView.computeByteLength(value)` | `DrawingView.alignment` |
 
+Rust's `compute_layout` accepts the owned schema value. For a generated
+`DrawingInput`, use `DrawingView::compute_layout_from(&input)?` and
+`DrawingView::create_in_place_from(&input, bytes)?`. Both input forms produce the
+same layout. C++ uses the same measure and create functions for its owned and
+borrowed input templates.
+
+C#'s scoped input overload takes a `DrawingSpanInput` by value:
+`DrawingView.ComputeByteLength(input)` measures it, and
+`DrawingSpanView.CreateInPlace(bytes, input)` writes it into a `Span<byte>`.
+The [Rust](../languages/rust.mdx#borrow-encoding-inputs),
+[C++](../languages/cpp.mdx#borrow-encoding-inputs), and
+[C#](../languages/csharp.mdx#native-collections-and-variants) guides show complete
+construction examples.
+
 Rust's `View::LAYOUT` is the fixed **header** layout. For allocating a complete
-message, use `compute_layout`, which also accounts for payload alignment. A native
-receiving boundary must arrange suitable storage for the agreed schema; a plain
+message, use `compute_layout` or `compute_layout_from`, which also account for
+payload alignment. A native receiving boundary must arrange suitable storage for
+the agreed schema; a plain
 `Vec<u8>` allocation does not promise every possible schema alignment. The
 [Rust guide](../languages/rust.mdx#caller-storage-and-received-bytes) demonstrates
 `OwnedBuffer` and a borrowed receiving view. Python also provides

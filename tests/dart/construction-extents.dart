@@ -2,27 +2,27 @@
 import 'dart:typed_data';
 import '../../target/construction-extents/bindings.dart';
 
-class ChangingExtent extends Extent {
-  final Empty? first;
-  final Empty? second;
+class ChangingExtent extends ExtentInput {
+  final EmptyInput? first;
+  final EmptyInput? second;
   int reads = 0;
 
   ChangingExtent(this.first, this.second) : super(value: first);
 
   @override
-  Empty? get value => ++reads == 1 ? first : second;
+  EmptyInput? get value => ++reads == 1 ? first : second;
 }
 
 void main() {
   for (final grow in [true, false]) {
-    final Empty? first = grow ? null : const Empty();
-    final Empty? second = grow ? const Empty() : null;
+    final EmptyInput? first = grow ? null : const EmptyInput();
+    final EmptyInput? second = grow ? const EmptyInput() : null;
     final backing = Uint8List(96)..fillRange(0, 96, 0xa5);
-    for (final create in <ExtentView Function(Extent)>[
+    for (final create in <ExtentView Function(ExtentInput)>[
       ExtentView.create,
       (value) => ExtentView.createInPlace(Uint8List.sublistView(backing, 16, 80), value),
       (value) => ExtentView.createInPlace(
-          ExtentView.create(const Extent(value: Empty())).bytes, value),
+          ExtentView.create(const ExtentInput(value: EmptyInput())).bytes, value),
     ]) {
       var rejected = false;
       try {
@@ -37,12 +37,12 @@ void main() {
       throw StateError('borrowed buffer boundary');
     }
     final recovered = ExtentView.createInPlace(
-        Uint8List.sublistView(backing, 16, 80), const Extent(value: Empty()));
+        Uint8List.sublistView(backing, 16, 80), const ExtentInput(value: EmptyInput()));
     if (recovered.bytes.length != 16 || recovered.value == null) {
       throw StateError('recovery after rejection');
     }
   }
-  final stable = ExtentView.create(ChangingExtent(const Empty(), const Empty()));
+  final stable = ExtentView.create(ChangingExtent(const EmptyInput(), const EmptyInput()));
   if (stable.value == null) throw StateError('equal-size getter result');
   print('Dart: dynamic extents, borrowed slices, reuse and recovery passed');
 }

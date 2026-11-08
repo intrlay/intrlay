@@ -17,6 +17,15 @@ mod derive_names;
 #[path = "../../../target/regressions/rust-enum-names.rs"]
 mod enum_names;
 
+#[path = "../../../target/regressions/rust-enum-accessors.rs"]
+mod enum_accessors;
+
+#[path = "../../../target/regressions/rust-enum-keywords.rs"]
+mod enum_keywords;
+
+#[path = "../../../target/naming/omitted-factories.rs"]
+mod omitted_factories;
+
 #[path = "../../../target/replacement/bindings.rs"]
 mod replacement;
 
@@ -25,6 +34,11 @@ use intrlay::Intrlay;
 mod alias_names;
 
 fn main() {
+    let bytes = 17_u32.to_le_bytes();
+    // SAFETY: A Packet is one u32, initialized with its complete encoding.
+    let value = unsafe { omitted_factories::PacketView::from_bytes_unchecked(&bytes[..]) };
+    assert_eq!(value.create(), 17);
+
     let mut whole = alternatives::WholeChoiceView::create(&alternatives::WholeChoice::Value(
         alternatives::Child {
             value: 31,
@@ -119,6 +133,31 @@ fn main() {
     assert_eq!(
         enum_names::Choice::from(choice),
         enum_names::Choice::A { b_get_c: 13 }
+    );
+    let input = enum_accessors::ChoiceInput::Create { from: 7_u32 };
+    let mut choice = enum_accessors::ChoiceView::create_from(&input).unwrap();
+    choice.create_from_mut().unwrap().set(11);
+    assert!(matches!(
+        choice.variant(),
+        enum_accessors::ChoiceVariantView::Create { from: 11 }
+    ));
+    assert!(choice.replace_create_from(&13).unwrap());
+    assert!(matches!(
+        choice.variant(),
+        enum_accessors::ChoiceVariantView::Create { from: 13 }
+    ));
+    let mut renamed =
+        enum_keywords::ChoiceView::create_from(&enum_keywords::ChoiceInput::Data { wire_match: 7 })
+            .unwrap();
+    renamed.data_get_match_mut().unwrap().set(11);
+    assert!(renamed.replace_data_get_match(&13).unwrap());
+    assert!(matches!(
+        renamed.variant(),
+        enum_keywords::ChoiceVariantView::Data { wire_match: 13 }
+    ));
+    assert_eq!(
+        enum_keywords::Choice::from(renamed),
+        enum_keywords::Choice::Data { wire_match: 13 }
     );
     alias_names::run();
     {

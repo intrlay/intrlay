@@ -146,7 +146,111 @@ pub fn expand(model: &Model<'_>, data: &DataEnum) -> syn::Result<TokenStream> {
         &quote!(#path),
         &layout_validation,
     );
-    Ok(quote!(#tag_check #declaration #implementation))
+    let input = input(model, &generics, &fields, &variants)?;
+    Ok(quote!(#tag_check #declaration #implementation #input))
+}
+
+fn input(
+    model: &Model<'_>,
+    generics: &Generics,
+    fields: &[Field],
+    variants: &[Variant<'_>],
+) -> syn::Result<TokenStream> {
+    let name = crate::input::name(model)?;
+    let vis = model.visibility();
+    let source = &model.source;
+    let owned = crate::input::owned(model, generics);
+    if fields.is_empty() {
+        let alias_where = &generics.where_clause;
+        return Ok(quote! {
+            /// Payload-free enum inputs use the schema's native enum directly.
+            #[allow(type_alias_bounds, reason = "The alias preserves the schema declaration's resolved generic bounds")]
+            #vis type #name #generics #alias_where = #source;
+            #owned
+        });
+    }
+    let runtime = &model.runtime;
+    let parameters = crate::input::parameters(model, fields);
+    let source_generics = crate::input::generics(model, fields, &parameters);
+    let (implementation, _, predicates) = source_generics.split_for_impl();
+    let cursor = model.binding("cursor");
+    let writer = model.binding("writer");
+    let offset = model.binding("offset");
+    let payloads = variants
+        .iter()
+        .map(|variant| variant.layout(runtime))
+        .collect::<Vec<_>>();
+    let payload_offset = quote!(const { #runtime::layout::field_offset(&[#runtime::layout::Layout::new(4, 4), #runtime::layout::union(&[#(#payloads),*])], 1) });
+    let mut first = 0;
+    let declarations = variants
+        .iter()
+        .map(|variant| {
+            let variant_name = &variant.source.ident;
+            let docs = documentation(&variant.source.attrs);
+            let end = first + variant.fields.len();
+            let fields = crate::input::fields(
+                &variant.source.fields,
+                &variant.fields,
+                &parameters[first..end],
+            );
+            first = end;
+            quote!(#[doc = #docs] #variant_name #fields)
+        })
+        .collect::<Vec<_>>();
+    let measure = variants.iter().map(|variant| {
+        let pattern = variant.pattern(model, &quote!(Self));
+        let fields = variant.fields.iter().enumerate().map(|(index, field)| {
+            let binding = model.binding(&format!("__field_{index}"));
+            let codec = &field.codec;
+            quote!(#runtime::EncodeSource::<#codec>::measure(#binding, #cursor)?;)
+        });
+        quote!(#pattern => { #(#fields)* })
+    });
+    let write = variants.iter().map(|variant| {
+        let pattern = variant.pattern(model, &quote!(Self));
+        let tag = &variant.tag;
+        let layouts = variant.layouts(runtime);
+        let fields = variant.fields.iter().enumerate().map(|(index, field)| {
+            let binding = model.binding(&format!("__field_{index}"));
+            let codec = &field.codec;
+            quote!(#runtime::EncodeSource::<#codec>::write(#binding, #writer, #offset + #payload_offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) })?;)
+        });
+        quote!(#pattern => {
+            #writer.write(#offset, &(#tag as ::core::primitive::u32).to_le_bytes());
+            #(#fields)*
+        })
+    });
+    let implementation_tokens = crate::input::source_implementation(
+        model,
+        &name,
+        &parameters,
+        |name| {
+            quote! {
+                // SAFETY: Tags and payload offsets are identical to the owned codec;
+                // inactive bytes are initialized by the construction path.
+                #[automatically_derived]
+                unsafe impl #implementation #runtime::EncodeSource<#source> for #name<#(#parameters),*> #predicates {
+                    fn measure(&self, #cursor: &mut #runtime::SizeCursor) -> ::core::result::Result<(), #runtime::EncodeError> {
+                        match self { #(#measure),* }
+                        ::core::result::Result::Ok(())
+                    }
+                    fn write(&self, #writer: &mut #runtime::Writer<'_>, #offset: ::core::primitive::usize) -> ::core::result::Result<(), #runtime::EncodeError> {
+                        match self { #(#write),* }
+                        ::core::result::Result::Ok(())
+                    }
+                }
+            }
+        },
+    );
+    Ok(quote! {
+        /// Encoding input whose active payload can borrow existing storage.
+        /// Type parameters select each variant field's source representation.
+        #[derive(Clone, Copy, Debug)]
+        #[allow(dead_code, non_snake_case, reason = "Generated input fields and variants preserve source names and are independently usable") ]
+        #vis enum #name<#(#parameters),*> { #(#declarations),* }
+        #implementation_tokens
+        #owned
+    })
 }
 
 fn tag_validation(model: &Model<'_>, variants: &[Variant<'_>]) -> TokenStream {

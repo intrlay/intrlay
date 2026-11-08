@@ -7,6 +7,12 @@ use crate::{NameStyle, NamingPolicy, NamingRule, SymbolKind, SymbolSelector, Vis
 /// Object-like runtime macros expand in every identifier position.
 pub const OBJECT_MACROS: &[&str] = &["INTRLAY_RESTRICT"];
 
+/// Both generated declarations and original source-member mappings must survive
+/// the preprocessor and use ordinary C++ identifiers.
+pub fn is_reserved_identifier(name: &str) -> bool {
+    OBJECT_MACROS.contains(&name) || crate::name_validation::is_keyword(KEYWORDS, name)
+}
+
 pub fn policy() -> NamingPolicy {
     let mut policy = NamingPolicy::conventional(NameCase::SnakeCase);
     policy.rules.push(NamingRule {

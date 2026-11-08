@@ -7,6 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../target/naming/bindings.cs" Link="bindings.cs" />
+    <Compile Include="../../target/naming/omitted-factories.cs" Link="omitted-factories.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../packages/csharp/Intrlay.csproj" />

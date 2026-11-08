@@ -35,9 +35,9 @@ pub fn facade_name(plan: &TypeGraph) -> String {
     )
 }
 
-pub fn view_template(plan: &TypeGraph, custom_names: bool) -> String {
+pub fn view_template(plan: &TypeGraph, context: &super::Context, custom_names: bool) -> String {
     if custom_names {
-        super::qualified(plan, &format!("detail::{}", facade_name(plan)))
+        context.qualified(&format!("detail::{}", facade_name(plan)))
     } else {
         "::intrlay::ArrayView".into()
     }

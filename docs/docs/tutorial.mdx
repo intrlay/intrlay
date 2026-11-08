@@ -57,9 +57,14 @@ The generated file contains input types and buffer views. For example, the
 TypeScript input for `command` is a discriminated union:
 
 ```typescript
-type DrawingCommand =
-    | { readonly kind: "Clear" }
-    | { readonly kind: "DrawPoint"; readonly position: Point; readonly size: number };
+const enum DrawingCommandKind {
+    Clear = 0,
+    DrawPoint = 1
+}
+
+type DrawingCommandInput =
+    | { readonly kind: DrawingCommandKind.Clear }
+    | { readonly kind: DrawingCommandKind.DrawPoint; readonly position: PointInput; readonly size: number };
 ```
 
 This is an excerpt from the generated API, not another declaration to add to
@@ -71,10 +76,10 @@ reads the encoded tag and payload.
 Create `drawing-example.ts` beside `generated/`:
 
 ```typescript title="drawing-example.ts"
-import { DrawingView } from "./generated/drawing.js";
-import type { Drawing } from "./generated/drawing.js";
+import { DrawingCommandKind, DrawingView } from "./generated/drawing.js";
+import type { DrawingInput } from "./generated/drawing.js";
 
-const value: Drawing = {
+const value: DrawingInput = {
     title: "Sketch",
     points: [
         { x: 1, y: 2, z: 3 },
@@ -82,7 +87,7 @@ const value: Drawing = {
     ],
     selectedPoint: null,
     command: {
-        kind: "DrawPoint",
+        kind: DrawingCommandKind.DrawPoint,
         position: { x: 7, y: 8, z: 9 },
         size: 0.5
     }
@@ -133,7 +138,7 @@ the receiving view expects the complete encoding of the agreed schema.
 ```typescript
 drawing.points.get(0).x = 10;
 drawing.selectedPoint = 0;
-drawing.command.replace({ kind: "Clear" });
+drawing.command.replace({ kind: DrawingCommandKind.Clear });
 
 console.log(received.points.get(0).x);           // 10
 console.log(received.selectedPoint);            // 0

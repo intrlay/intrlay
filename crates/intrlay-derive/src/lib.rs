@@ -7,6 +7,7 @@
 
 mod attributes;
 mod enumeration;
+mod input;
 mod model;
 mod record;
 mod runtime_path;
@@ -14,7 +15,7 @@ mod view;
 
 use proc_macro::TokenStream;
 
-/// Generates an Intrlay codec and a sibling `TypeView<Buffer>` declaration.
+/// Generates an Intrlay codec, `TypeInput` encoding sources, and `TypeView<Buffer>`.
 #[proc_macro_derive(Intrlay, attributes(intrlay))]
 pub fn derive_intrlay(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);

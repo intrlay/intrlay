@@ -1,23 +1,26 @@
-use std::{collections::BTreeSet, fmt::Write};
+use std::fmt::Write;
 
 use intrlay_schema::{Exposure, Scalar};
 
 use crate::{
     GenerateError,
-    api::{Accessor, IndexedAccessors},
-    plan::{Field, GenerationPlan, Id, Kind, Node, TypeGraph},
+    api::{Accessor, CollectionAccessors, IndexedAccessors},
+    plan::{Field, GenerationPlan, Id, Kind, Node, TypeGraph, WriterParameters},
 };
 
+mod api;
 mod documentation;
 mod load;
 mod mutation;
+mod name_validation;
 mod names;
 
 pub const BACKEND: crate::backend::Backend = crate::backend::Backend {
     language: intrlay_schema::Language::Dart,
+    api: &api::Api,
     naming_policy: names::policy,
-    keywords: names::KEYWORDS,
     reserved_declarations: &["intrlay", "Some", "core", "typed", "convert"],
+    is_reserved_name: name_validation::is_reserved,
     generate,
     field_setter: crate::api::SetterSyntax::UntaggedProperty,
     root_setter: crate::api::SetterSyntax::Property,
@@ -27,51 +30,45 @@ pub const BACKEND: crate::backend::Backend = crate::backend::Backend {
     codec_function_modifiers: &[],
     fixed_array_api: crate::backend::FixedArrayApi::Numeric,
     native_numeric_array_views: true,
+    runtime_numeric_array_writers: true,
 };
 
-pub fn generate(generation: &GenerationPlan) -> Result<String, GenerateError> {
+pub fn generate(
+    generation: &GenerationPlan,
+    _options: &crate::GenerateOptions,
+) -> Result<String, GenerateError> {
+    name_validation::validate(generation)?;
     let plan = &generation.encoding.types;
     let mut output = String::from(include_str!("prelude.txt"));
-    let mut encoders = generation.encoding.encoders.clone();
-    // Numeric collections call runtime array writers instead of scalar helpers.
-    // Keep scalar helpers only for factories or enclosing fields that call them.
-    let mut direct_writers: BTreeSet<_> = generation
-        .encoding
-        .entry_points
-        .iter()
-        .copied()
-        .filter(|&id| plan.nodes[id].options.generation.create)
-        .collect();
-    for &id in &encoders {
-        match &plan.nodes[id].kind {
-            Kind::Record(fields) => direct_writers.extend(fields.iter().map(|field| field.ty)),
-            Kind::Enum(variants) => direct_writers.extend(
-                variants
-                    .iter()
-                    .flat_map(|variant| variant.fields.iter().map(|field| field.ty)),
-            ),
-            Kind::Optional { value, .. } | Kind::Boxed(value) => {
-                direct_writers.insert(*value);
-            }
-            _ => {}
-        }
+    let has_views = !generation.views.emitted.is_empty();
+    if has_views || plan.nodes.iter().any(Node::is_value_enum) {
+        writeln!(output, "import 'dart:core' as core;")?;
     }
-    encoders.retain(|&id| {
-        !matches!(plan.nodes[id].kind, Kind::Scalar(scalar) if scalar != Scalar::Bool)
-            || direct_writers.contains(&id)
-    });
-    if encoders
+    if has_views {
+        writeln!(
+            output,
+            "import 'dart:typed_data' as typed;\nimport 'package:intrlay/intrlay.dart' as intrlay;"
+        )?;
+    }
+    writeln!(output, "export 'package:intrlay/intrlay.dart' show Some;")?;
+    if generation
+        .encoding
+        .writers
         .iter()
         .any(|id| matches!(plan.nodes[*id].kind, Kind::String))
     {
         writeln!(output, "import 'dart:convert' as convert;")?;
     }
-    for node in &plan.nodes {
-        input(&mut output, plan, node)?;
+    for (id, node) in plan.nodes.iter().enumerate() {
+        if generation.encoding.needs_input(id) {
+            input(&mut output, plan, node)?;
+        }
     }
     for (id, node) in plan.nodes.iter().enumerate() {
-        if encoders.contains(&id) {
+        if generation.encoding.measures.contains(&id) {
             measure(&mut output, plan, id, node)?;
+        }
+        if generation.encoding.writers.contains(&id) {
             write(&mut output, plan, id, node)?;
         }
     }
@@ -82,8 +79,14 @@ pub fn generate(generation: &GenerationPlan) -> Result<String, GenerateError> {
         view(&mut output, view_plan, id, node, borrowed.contains(&id))?;
     }
     for (alias, id) in &plan.exports {
-        if *alias != plan.nodes[*id].name {
+        if *alias != plan.nodes[*id].name && generation.views.emitted.contains(id) {
             writeln!(output, "typedef {alias}View = {};", plan.view_name(*id))?;
+        }
+        if generation.encoding.needs_input(*id)
+            && (*alias != plan.nodes[*id].name
+                || !matches!(plan.nodes[*id].kind, Kind::Record(_) | Kind::Enum(_)))
+        {
+            writeln!(output, "typedef {alias}Input = {};", input_type(plan, *id))?;
         }
     }
     Ok(output)
@@ -96,30 +99,51 @@ fn input(output: &mut String, plan: &TypeGraph, node: &Node) -> Result<(), Gener
         writeln!(
             output,
             "typedef {} = {};",
-            node.name,
+            node.input_name(),
             input_type(plan, field.ty)
         )?;
         return Ok(());
     }
     match &node.kind {
         Kind::Record(fields) => {
-            input_record(output, plan, &node.name, fields, "", &node.docs)?;
+            input_record(output, plan, &node.input_name(), fields, "", &node.docs)?;
         }
         Kind::Enum(variants) => {
+            if node.is_value_enum() {
+                let name = node.input_name();
+                writeln!(output)?;
+                documentation::write(output, &node.docs, "")?;
+                writeln!(output, "enum {name} {{")?;
+                for (index, variant) in variants.iter().enumerate() {
+                    documentation::write(output, &variant.docs, "  ")?;
+                    let separator = if index + 1 == variants.len() {
+                        ";"
+                    } else {
+                        ","
+                    };
+                    writeln!(output, "  {}({}){separator}", variant.name, variant.tag)?;
+                }
+                writeln!(
+                    output,
+                    "\n  final core.int $[tag];\n\n  const {name}(this.$[tag]);\n}}"
+                )?;
+                return Ok(());
+            }
             writeln!(output)?;
             documentation::write(output, &node.docs, "")?;
             writeln!(
                 output,
                 "sealed class {} {{ const {}(); }}",
-                node.name, node.name
+                node.input_name(),
+                node.input_name()
             )?;
             for variant in variants {
                 input_record(
                     output,
                     plan,
-                    &format!("{}{}", node.name, variant.name),
+                    &node.variant_input_name(variant),
                     &variant.fields,
-                    &format!(" extends {}", node.name),
+                    &format!(" extends {}", node.input_name()),
                     &variant.docs,
                 )?;
             }
@@ -195,9 +219,10 @@ fn measure(
     if !plan.has_payload(id) {
         return Ok(());
     }
+    let value = plan.measure_parameter(id);
     writeln!(
         output,
-        "\nvoid $[measure:{id}]({} value, intrlay.Cursor cursor) {{",
+        "\nvoid $[measure:{id}]({} {value}, intrlay.Cursor cursor) {{",
         input_type(plan, id)
     )?;
     match &node.kind {
@@ -217,7 +242,11 @@ fn measure(
         }
         Kind::Enum(variants) => {
             for variant in variants {
-                writeln!(output, "  if (value is {}{}) {{", node.name, variant.name)?;
+                writeln!(
+                    output,
+                    "  if (value is {}) {{",
+                    node.variant_input_name(variant)
+                )?;
                 for field in variant
                     .fields
                     .iter()
@@ -276,19 +305,43 @@ fn measure(
     Ok(())
 }
 
-fn write(output: &mut String, plan: &TypeGraph, id: Id, node: &Node) -> Result<(), GenerateError> {
-    let optional = if plan.has_payload(id) { "" } else { "?" };
-    writeln!(
-        output,
-        "\nvoid $[write:{id}](intrlay.WriteStorage storage, core.int offset, {} value, intrlay.Cursor{optional} cursor) {{",
-        input_type(plan, id)
-    )?;
+fn initialize_fixed_array(
+    output: &mut String,
+    plan: &TypeGraph,
+    id: Id,
+    node: &Node,
+) -> Result<(), GenerateError> {
     if let Kind::Array { length, .. } = node.kind {
+        if plan.zeroable(id) {
+            writeln!(
+                output,
+                "  final items = value.values;\n  if (items == null) {{\n    storage.bytes.fillRange(offset, offset + {}, 0);\n    return;\n  }}",
+                node.layout.size()
+            )?;
+        }
+        let values = if plan.zeroable(id) { "items" } else { "value" };
         writeln!(
             output,
-            "  if (value.length != {length}) {{\n    throw core.ArgumentError('fixed array length');\n  }}"
+            "  if ({values}.length != {length}) {{\n    throw core.ArgumentError('fixed array length');\n  }}"
         )?;
     }
+    Ok(())
+}
+
+fn write(output: &mut String, plan: &TypeGraph, id: Id, node: &Node) -> Result<(), GenerateError> {
+    let optional = if plan.has_payload(id) { "" } else { "?" };
+    let WriterParameters {
+        storage,
+        offset,
+        value,
+        cursor,
+    } = plan.writer_parameters(id);
+    writeln!(
+        output,
+        "\nvoid $[write:{id}](intrlay.WriteStorage {storage}, core.int {offset}, {} {value}, intrlay.Cursor{optional} {cursor}) {{",
+        input_type(plan, id)
+    )?;
+    initialize_fixed_array(output, plan, id, node)?;
     match &node.kind {
         Kind::Scalar(scalar) => match scalar {
             Scalar::Bool => writeln!(output, "  storage.bytes[offset] = value ? 1 : 0;")?,
@@ -311,12 +364,16 @@ fn write(output: &mut String, plan: &TypeGraph, id: Id, node: &Node) -> Result<(
                 )?;
             }
         }
+        Kind::Enum(_) if node.is_value_enum() => {
+            writeln!(output, "  storage.writeUint32(offset, value.$[tag]);")?;
+        }
         Kind::Enum(variants) => {
             for variant in variants {
                 writeln!(
                     output,
-                    "  if (value is {}{}) {{\n    storage.writeUint32(offset, {});",
-                    node.name, variant.name, variant.tag
+                    "  if (value is {}) {{\n    storage.writeUint32(offset, {});",
+                    node.variant_input_name(variant),
+                    variant.tag
                 )?;
                 for field in &variant.fields {
                     writeln!(
@@ -329,28 +386,7 @@ fn write(output: &mut String, plan: &TypeGraph, id: Id, node: &Node) -> Result<(
             }
         }
         Kind::Sequence(element) | Kind::Array { element, .. } => {
-            if matches!(node.kind, Kind::Sequence(_)) {
-                writeln!(
-                    output,
-                    "  final payloadOffset = cursor.reserve(value.length * {}, {});\n  storage.writeUint32(offset, payloadOffset - offset);\n  storage.writeUint32(offset + 4, value.length);",
-                    plan.nodes[*element].layout.size(),
-                    plan.nodes[*element].layout.alignment()
-                )?;
-            } else {
-                writeln!(output, "  final payloadOffset = offset;")?;
-            }
-            match &plan.nodes[*element].kind {
-                Kind::Scalar(scalar) if *scalar != Scalar::Bool => writeln!(
-                    output,
-                    "  intrlay.write{}Array(storage, payloadOffset, value);",
-                    method(*scalar)
-                )?,
-                _ => writeln!(
-                    output,
-                    "  for (core.int index = 0; index < value.length; ++index) {{\n    $[write:{element}](storage, payloadOffset + index * {}, value[index], cursor);\n  }}",
-                    plan.nodes[*element].layout.size()
-                )?,
-            }
+            write_array(output, plan, id, node, *element)?;
         }
         Kind::Optional { value, offset } => {
             let payload = if plan.nullable_value(*value) {
@@ -371,6 +407,68 @@ fn write(output: &mut String, plan: &TypeGraph, id: Id, node: &Node) -> Result<(
         )?,
     }
     writeln!(output, "}}")?;
+    Ok(())
+}
+
+fn write_array(
+    output: &mut String,
+    plan: &TypeGraph,
+    id: Id,
+    node: &Node,
+    element: Id,
+) -> Result<(), GenerateError> {
+    if matches!(node.kind, Kind::Sequence(_)) {
+        writeln!(
+            output,
+            "  final payloadOffset = cursor.reserve(value.length * {}, {});\n  storage.writeUint32(offset, payloadOffset - offset);\n  storage.writeUint32(offset + 4, value.length);",
+            plan.nodes[element].layout.size(),
+            plan.nodes[element].layout.alignment()
+        )?;
+        if plan.zeroable(element) {
+            writeln!(
+                output,
+                "  final items = value.values;\n  if (items == null) {{\n    storage.bytes.fillRange(payloadOffset, payloadOffset + value.length * {}, 0);\n    return;\n  }}",
+                plan.nodes[element].layout.size()
+            )?;
+        }
+    } else {
+        writeln!(output, "  final payloadOffset = offset;")?;
+    }
+    let values = if plan.zeroable(element)
+        || (matches!(node.kind, Kind::Array { .. }) && plan.zeroable(id))
+    {
+        "items"
+    } else {
+        "value"
+    };
+    match &plan.nodes[element].kind {
+        Kind::Scalar(scalar) if *scalar != Scalar::Bool => {
+            let method = method(*scalar);
+            // Dart 3.13 AOT and dart2js have different range-copy setup costs.
+            // Keep these fixed-extent choices aligned with the runtime limits
+            // used when a sequence's length is only known during encoding.
+            let web_loop_limit = if scalar.layout().size() == 1 { 64 } else { 128 };
+            match node.kind {
+                Kind::Array { length, .. } if length <= 4 => writeln!(
+                    output,
+                    "  intrlay.write{method}ArrayElements(storage, payloadOffset, {values});"
+                )?,
+                Kind::Array { length, .. } if length <= web_loop_limit => writeln!(
+                    output,
+                    "  if (const core.bool.fromEnvironment('dart.library.js_interop')) {{\n    intrlay.write{method}ArrayElements(storage, payloadOffset, {values});\n  }} else {{\n    intrlay.write{method}Array(storage, payloadOffset, {values});\n  }}"
+                )?,
+                _ => writeln!(
+                    output,
+                    "  intrlay.write{method}Array(storage, payloadOffset, {values});"
+                )?,
+            }
+        }
+        _ => writeln!(
+            output,
+            "  for (core.int index = 0; index < {values}.length; ++index) {{\n    $[write:{element}](storage, payloadOffset + index * {}, {values}[index], cursor);\n  }}",
+            plan.nodes[element].layout.size()
+        )?,
+    }
     Ok(())
 }
 
@@ -418,9 +516,10 @@ fn view(
         } else {
             ""
         };
+        let offset = if uses_offset { "offset" } else { "_offset" };
         writeln!(
             output,
-            "\n  {name}(typed.Uint8List bytes, [core.int offset = 0]) : $[storage] = intrlay.Storage(bytes){initializer};"
+            "\n  {name}(typed.Uint8List bytes, [core.int {offset} = 0]) : $[storage] = intrlay.Storage(bytes){initializer};"
         )?;
         if borrowed || node.options.generation.create {
             let offset = if uses_offset {
@@ -525,6 +624,11 @@ fn construction(output: &mut String, plan: &TypeGraph, id: Id) -> Result<(), Gen
     let name = plan.view_name(id);
     let input = input_type(plan, id);
     let compute_size = compute_size(plan, id);
+    let measured_value = if plan.has_payload(id) {
+        "value"
+    } else {
+        "_value"
+    };
     let write = if plan.has_payload(id) {
         format!(
             "final cursor = intrlay.Cursor($[byte_size]);\n    $[write:{id}](storage, 0, value, cursor);\n    cursor.finish(storage.bytes.length);"
@@ -535,7 +639,7 @@ fn construction(output: &mut String, plan: &TypeGraph, id: Id) -> Result<(), Gen
     writeln!(
         output,
         r"
-  static core.int $[compute_byte_length]({input} value) {{
+  static core.int $[compute_byte_length]({input} {measured_value}) {{
     {compute_size}
   }}
 
@@ -566,14 +670,17 @@ fn sequence_view(
         ("$[element_offset]".into(), "$[element_count]".into())
     };
     writeln!(output, "\n  core.int get $[length] => {length};")?;
-    let has_getter = node.options.generation.getters
-        || (node.options.generation.setters && plan.borrows_content(element));
-    if has_getter {
+    let api = CollectionAccessors::new(plan, node, element);
+    if api.getter {
+        let index = load::index_parameter(plan, element, plan.nodes[element].options.exposure);
         writeln!(output)?;
         read_method(
             output,
             plan,
-            &format!("{} operator [](core.int index)", output_type(plan, element)),
+            &format!(
+                "{} operator [](core.int {index})",
+                output_type(plan, element)
+            ),
             &load::Read {
                 id: element,
                 offset: &format!(
@@ -585,11 +692,8 @@ fn sequence_view(
             },
         )?;
     }
-    if node.options.generation.setters
-        && plan.nodes[element].options.generation.setters
-        && let Some(mutation) = plan.mutation(element)
-    {
-        if !has_getter {
+    if let Some(mutation) = &api.setter {
+        if !api.getter {
             writeln!(output)?;
         }
         writeln!(
@@ -598,7 +702,7 @@ fn sequence_view(
             input_type(plan, mutation.value),
             mutation::body(
                 plan,
-                &mutation,
+                mutation,
                 &format!(
                     "({position}) + index * {}",
                     plan.nodes[element].layout.size()
@@ -618,12 +722,17 @@ fn sequence_view(
             let api = IndexedAccessors::new(plan, node, &plan.nodes[element], field);
             numeric_component_accessors(output, plan, &api, field, &offset)?;
             if let Some(getter) = &api.getter {
+                let index = load::index_parameter(plan, field.ty, field.options.exposure);
                 writeln!(output)?;
                 documentation::write(output, &crate::documentation::indexed(&field.docs), "  ")?;
                 read_method(
                     output,
                     plan,
-                    &format!("{} {}(core.int index)", output_type(plan, field.ty), getter),
+                    &format!(
+                        "{} {}(core.int {index})",
+                        output_type(plan, field.ty),
+                        getter
+                    ),
                     &load::Read {
                         id: field.ty,
                         offset: &offset,
@@ -797,9 +906,24 @@ fn input_type(plan: &TypeGraph, id: Id) -> String {
         Kind::Unit => "core.Null".into(),
         Kind::String => "core.String".into(),
         Kind::Record(_) | Kind::Enum(_) => plan.input_name(id),
-        Kind::Sequence(element) | Kind::Array { element, .. } => {
-            format!("core.List<{}>", input_type(plan, *element))
-        }
+        Kind::Sequence(element) => format!(
+            "{}<{}>",
+            if plan.zeroable(*element) {
+                "intrlay.SequenceInput"
+            } else {
+                "core.List"
+            },
+            input_type(plan, *element)
+        ),
+        Kind::Array { element, .. } => format!(
+            "{}<{}>",
+            if plan.zeroable(id) {
+                "intrlay.FixedArrayInput"
+            } else {
+                "core.List"
+            },
+            input_type(plan, *element)
+        ),
         Kind::Optional { value, .. } => optional_type(plan, *value, &input_type(plan, *value)),
         Kind::Boxed(value) => input_type(plan, *value),
     }

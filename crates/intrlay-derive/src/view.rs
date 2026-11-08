@@ -177,6 +177,27 @@ fn construction(model: &Model<'_>, generics: &Generics) -> TokenStream {
     quote! {
         #[automatically_derived]
         impl #implementation #view<#runtime::OwnedBuffer, #(#args),*> #predicates {
+            /// Computes allocation requirements from an independent encoding input.
+            ///
+            /// # Errors
+            /// Returns an error for unsupported sizes or inconsistent sequence lengths.
+            pub fn compute_layout_from(#value: &(impl #runtime::EncodeSource<#ident #types> + ?Sized)) -> ::core::result::Result<#runtime::BufferLayout, #runtime::EncodeError> {
+                #runtime::compute_layout_from::<#ident #types>(#value)
+            }
+            /// Constructs directly from recursively borrowed or generated inputs.
+            ///
+            /// # Errors
+            /// Returns an error for unsupported sizes or changing input layouts/counts.
+            pub fn create_from(#value: &(impl #runtime::EncodeSource<#ident #types> + ?Sized)) -> ::core::result::Result<Self, #runtime::EncodeError> {
+                ::core::result::Result::Ok(Self { storage: #runtime::ValueView::create_from(#value)? })
+            }
+            /// Writes an encoding input into storage owned by the caller.
+            ///
+            /// # Errors
+            /// Returns an error for insufficient/misaligned storage or changing inputs.
+            pub fn create_in_place_from<'__intrlay>(#value: &(impl #runtime::EncodeSource<#ident #types> + ?Sized), #buffer: &'__intrlay mut [::core::primitive::u8]) -> ::core::result::Result<#view<&'__intrlay mut [::core::primitive::u8], #(#args),*>, #runtime::EncodeError> {
+                ::core::result::Result::Ok(#view { storage: #runtime::ValueView::create_in_place_from(#value, #buffer)? })
+            }
             /// Computes exact byte length and payload alignment before allocation.
             ///
             /// # Errors

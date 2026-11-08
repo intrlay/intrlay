@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as intrlay from '../../target/node_modules/@intrlay/runtime/dist/index.js';
-import { FixtureView, DeepRootView, CachedRootView, ChoiceView } from '../../target/reference-fixes/bindings.ts';
+import { FixtureView, DeepRootView, CachedRootView, ChoiceView } from '../../target/reference-fixes/bindings.js';
 
 const some = value => ({ value });
 const input = {
     custom: { value: 1 }, deep: 7, nested: some(8), absent: null, missingInner: some(null),
     values: [9], items: [{ scalar: 10, child: some({ value: 11 }), projected: some(12) }],
     cached: some({ value: 13 }), projected: some(14), lanes: [15, 16],
-    choice: { kind: 'Selected', scalar: some(17), child: some({ value: 18 }) },
-    inactive: { kind: 'Empty' }, before: 19, empty: {}, after: 20,
+    choice: { kind: 1 /* ChoiceKind.Selected */, scalar: some(17), child: some({ value: 18 }) },
+    inactive: { kind: 0 /* ChoiceKind.Empty */ }, before: 19, empty: {}, after: 20,
     emptyItems: [{}, {}], readOnly: some(21),
 };
 const owned = FixtureView.create(input);
@@ -49,9 +49,9 @@ assert.equal(reads(0, () => view.lanes), lanes);
 assert.equal(view.choice.selectedScalar.value, 17);
 assert.equal(view.choice.selectedChild.value.value, 18);
 assert.equal(view.inactive.selectedChild, undefined);
-const noPayload = ChoiceView.create({ kind: 'Selected', scalar: null, child: null });
+const noPayload = ChoiceView.create({ kind: 1 /* ChoiceKind.Selected */, scalar: null, child: null });
 assert.equal(noPayload.selectedChild, null);
-const noInnerPayload = ChoiceView.create({ kind: 'Selected', scalar: some(null), child: some(null) });
+const noInnerPayload = ChoiceView.create({ kind: 1 /* ChoiceKind.Selected */, scalar: some(null), child: some(null) });
 assert.equal(noInnerPayload.selectedChild.value, null);
 assert.equal(noInnerPayload.selectedChild, noInnerPayload.selectedChild);
 assert.equal(view.empty.length, 0);

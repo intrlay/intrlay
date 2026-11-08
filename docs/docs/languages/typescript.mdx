@@ -12,14 +12,14 @@ Generate the [tutorial schema](../tutorial.mdx#1-define-the-message) with
 Construction takes structural input objects:
 
 ```typescript
-import { DrawingView } from "./generated/drawing.js";
-import type { Drawing } from "./generated/drawing.js";
+import { DrawingCommandKind, DrawingView } from "./generated/drawing.js";
+import type { DrawingInput } from "./generated/drawing.js";
 
-const value: Drawing = {
+const value: DrawingInput = {
     title: "Sketch",
     points: [{ x: 1, y: 2, z: 3 }],
     selectedPoint: null,
-    command: { kind: "DrawPoint", position: { x: 7, y: 8, z: 9 }, size: 0.5 }
+    command: { kind: DrawingCommandKind.DrawPoint, position: { x: 7, y: 8, z: 9 }, size: 0.5 }
 };
 const drawing = DrawingView.create(value);
 
@@ -34,7 +34,7 @@ if (position !== undefined) {
 
 drawing.points.get(0).x = 10;
 drawing.selectedPoint = 0;
-drawing.command.replace({ kind: "Clear" });
+drawing.command.replace({ kind: DrawingCommandKind.Clear });
 
 const received = new DrawingView(drawing.bytes);
 console.log(received.points.get(0).x);           // 10
@@ -45,6 +45,32 @@ The constructor borrows bytes. `create` encodes a native input into newly
 allocated storage. `drawing.bytes` exposes a `Uint8Array` over that storage.
 Scalar accessors use TypedArrays; strings are decoded to JavaScript strings
 when read. The runtime checks little-endian TypedArray storage once at load time.
+
+## Numeric array inputs
+
+Generate the [Samples schema](../concepts/buffers-and-views.mdx#numeric-arrays)
+with `--language typescript --output generated/samples.ts`. Existing TypedArrays
+can supply the numeric fields directly:
+
+```typescript
+import { SamplesView } from "./generated/samples.js";
+
+const values = new Float32Array([1, 2, 3]);
+const matrix = new Float32Array(16);
+matrix[0] = 1;
+
+const samples = SamplesView.create({ values, matrix });
+matrix[0] = 2;
+console.log(samples.matrix[0]); // 1: encoding copied the input.
+```
+
+Numeric array inputs accept `ArrayLike` values, so there is no need to convert
+an existing TypedArray with `Array.from` or spread syntax. TypedArray inputs use
+bulk `set` copies, including fixed arrays and nested numeric-array fields. Short
+fixed arrays use element loops to avoid the type-check and range-copy overhead.
+Ordinary arrays and other array-like objects use element writers. Differently
+typed numeric lanes retain JavaScript's numeric conversion rules; `i64` and
+`u64` inputs use `bigint` elements.
 
 ## Caller-provided buffers
 
@@ -63,8 +89,14 @@ larger allocation.
 
 ## Composite values
 
-Enum inputs use a `kind` discriminant. Variant-specific view getters return
-`undefined` for an inactive variant; `tag` exposes the encoded number. Optional
+Enums with payloads use a `kind` discriminant whose type is a generated numeric
+`const enum`, such as `DrawingCommandKind`. Payload-free enums use a numeric
+`const enum` input directly. Both preserve the declared wire tags. Compile these
+modules with TypeScript; Node.js type stripping alone does not transform enum
+declarations. Variant-specific view getters return
+`undefined` for an inactive variant. `tag` returns the encoded number with its
+enum type: `DrawingCommandKind` for a payload enum, or the native `ModeInput`
+enum for a payload-free `Mode`. This adds no runtime conversion. Optional
 values use nullable APIs; nested optional states that would otherwise collapse into `null`
 use a `Some<T>` presence wrapper. That distinction preserves `None`, `Some(None)`,
 and `Some(value)`.
@@ -101,3 +133,6 @@ the lower-level representation.
 are generation controls, not a readonly storage system. Returned TypedArrays
 retain their usual operations. See [Schema annotations](../reference/annotations.mdx)
 for scope, projection, and indexed-access rules.
+
+Input types are emitted only when construction or mutation needs them. Enum
+declarations remain available for reading tags even without a construction API.

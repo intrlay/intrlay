@@ -14,7 +14,7 @@ struct BufferLayout {
 /// Borrows a fixed array or a sequence header without creating native elements.
 /// Descriptor supplies its resolved layout, extent, codecs, and element access.
 /// Byte controls mutable/const access; Constructible enables buffer factories.
-template<class Descriptor, class Byte = std::byte, bool Constructible = true>
+template<class Descriptor, BufferByte Byte = std::byte, bool Constructible = true>
 class ArrayView {
     std::span<Byte> buffer_;
     std::size_t offset_;
@@ -35,7 +35,7 @@ public:
     /// Replaces an inline element or its existing fixed payload; length stays fixed.
     template<class Value>
     void set(std::size_t index, const Value& value) const
-        requires (!std::is_const_v<Byte> && requires {
+        requires (WritableBufferByte<Byte> && requires {
             Descriptor::set(buffer_, offset_, index, value);
         }) {
         Descriptor::set(buffer_, offset_, index, value);
@@ -43,23 +43,25 @@ public:
 
     template<class Value>
     void replace(const Value& value) const
-        requires (!std::is_const_v<Byte> && detail::fixed_encoding<Descriptor, Value>) {
+        requires (WritableBufferByte<Byte> && FixedEncodeSourceFor<Value, Descriptor>) {
         intrlay::replace<Descriptor>(buffer_, offset_, value);
     }
 
     template<class Value>
-    static std::size_t compute_byte_length(const Value& value) requires Constructible {
+    static std::size_t compute_byte_length(const Value& value)
+        requires (Constructible && EncodeSourceFor<Value, Descriptor>) {
         return ViewFactory<ArrayView, Descriptor, byte_size, alignment, Descriptor::fully_written>::compute_byte_length(value);
     }
 
     template<class Value>
-    static OwnedView<ArrayView> create(const Value& value) requires Constructible {
+    static OwnedView<ArrayView> create(const Value& value)
+        requires (Constructible && EncodeSourceFor<Value, Descriptor>) {
         return ViewFactory<ArrayView, Descriptor, byte_size, alignment, Descriptor::fully_written>::create(value);
     }
 
     template<class Value>
     static ArrayView create_in_place(std::span<std::byte> bytes, const Value& value)
-        requires Constructible {
+        requires (Constructible && EncodeSourceFor<Value, Descriptor>) {
         return ViewFactory<ArrayView, Descriptor, byte_size, alignment, Descriptor::fully_written>::create_in_place(bytes, value);
     }
 };

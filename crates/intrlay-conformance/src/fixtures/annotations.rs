@@ -323,6 +323,7 @@ fn rejects_generated_name_collisions_and_invalid_metadata() {
                     match language {
                         Language::Rust => "as_bytes",
                         Language::CSharp => "Bytes",
+                        Language::Python => "buffer",
                         _ => "bytes",
                     }
                     .into(),

@@ -5,12 +5,26 @@ import ctypes
 from pathlib import Path
 from typing import get_type_hints
 
-from edge_bindings import AccessModesView, NumericValuesView, OptionalPointsView, ScalarView
+from edge_bindings import (
+    AccessModesView, CreateOnlyView, NumericValuesView, OptionalPointsView,
+    ScalarView, UnitFieldsView,
+)
 
 scalar = ScalarView.create(1.5)
 assert scalar.value == 1.5
 scalar.value = 2.5
 assert scalar.value == 2.5
+
+# Public keyword names remain stable even when a layout does not use the input.
+assert ScalarView.compute_byte_length(value=1.5) == 4
+creation = CreateOnlyView.create({'count': 7, 'label': 'created', 'fixed': [2, 5], 'optional': 11})
+owner = bytearray(16) + bytes(creation.buffer)
+borrowed_creation = CreateOnlyView(buffer=owner, offset=16)
+assert borrowed_creation.buffer.obj is owner
+assert not hasattr(borrowed_creation, '_offset')
+unit_fields = UnitFieldsView.create([{'marker': None, 'value': 42}])
+assert unit_fields.get_marker(index=0) is None
+assert unit_fields.get_value(index=0) == 42
 
 access = AccessModesView.create({'read_only': 1, 'write_only': 2})
 assert access.read_only == 1
@@ -35,7 +49,7 @@ assert point is not None and point.x == 1.0
 point.y = 3.0
 assert OptionalPointsView(buffer)[1].y == 3.0
 
-# Nested views reuse the storage and its typed casts.
+# NestedInput views reuse the storage and its typed casts.
 assert point._storage is view._storage
 assert point._storage.f32 is view._storage.f32
 assert point._storage.f32.obj is buffer

@@ -1,5 +1,7 @@
 //! Replace inline values, or follow stable allocations to a replaceable payload.
 
+use intrlay_schema::Exposure;
+
 use super::{Id, Kind, TypeGraph};
 
 pub enum MutationStep {
@@ -57,6 +59,11 @@ impl TypeGraph {
     }
 
     pub fn native_value(&self, id: Id) -> bool {
+        // Numeric projections read borrowed lanes even when their transparent
+        // construction input is a scalar. They need a distinct setter method.
+        if matches!(self.nodes[id].options.exposure, Exposure::TypedArray(_)) {
+            return false;
+        }
         if let Some(field) = self.folded_field(id) {
             return self.native_value(field.ty);
         }

@@ -2,10 +2,10 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "target/replacement"))
-from bindings import MessageView, MaybeScalarView, NestedView, BoxedLeafView, NoFactoryView, EmptyPayloadsView
-from intrlay import Some
+from bindings import MessageView, MaybeScalarView, NestedView, BoxedLeafView, NoFactoryView, EmptyPayloadsView, ChoiceKind
+from intrlay import Some, zeroed
 
-view = MessageView.create(dict(before=123, fixed=dict(maybe=None, nested=Some(None), choice=dict(kind="Empty")), items=[None], text="preserved", after=456))
+view = MessageView.create(dict(before=123, fixed=dict(maybe=None, nested=Some(None), choice=dict(kind=ChoiceKind.Empty)), items=[None], text="preserved", after=456))
 alias = MessageView(view.buffer)
 fixed = alias.fixed
 assert fixed.maybe is None and fixed.nested.value is None
@@ -22,11 +22,11 @@ view.fixed.set_maybe(leaf)
 assert fixed.maybe.number == 7 and fixed.maybe is fixed.maybe
 view.fixed.set_nested(Some(leaf))
 assert fixed.nested.value.number == 7
-view.fixed.choice.replace(dict(kind="Child", leaf=leaf))
+view.fixed.choice.replace(dict(kind=ChoiceKind.Child, leaf=leaf))
 assert fixed.choice.child_leaf.number == 7
-view.fixed.choice.replace(dict(kind="Numbers", values=[1,2,3]))
+view.fixed.choice.replace(dict(kind=ChoiceKind.Numbers, values=[1,2,3]))
 assert fixed.choice.child_leaf is None and list(fixed.choice.numbers_values) == [1,2,3]
-view.fixed.choice.set_numbers_values(3)
+view.fixed.choice.set_numbers_values(zeroed())
 assert list(fixed.choice.numbers_values) == [0,0,0]
 view.fixed.set_maybe(None)
 view.fixed.set_nested(Some(None))
@@ -59,7 +59,7 @@ empty_payloads.replace(replacement)
 assert empty_alias.number == 2 and bytes(empty_alias.buffer) == b"\x02\x00\x00\x00"
 assert len(empty_alias.empty) == 0 and len(empty_alias.nested) == 2
 assert len(empty_alias.nested[1]) == 0
-view.fixed.choice.replace(dict(kind="EmptyArrays", data=replacement))
+view.fixed.choice.replace(dict(kind=ChoiceKind.EmptyArrays, data=replacement))
 assert fixed.choice.empty_arrays_data.number == 2
 assert alias.before == 123 and alias.after == 456 and alias.text == "preserved"
 print("Python: in-place replacement and shared view caches passed")

@@ -21,11 +21,14 @@ internal sealed partial class Emitter(Schema schema)
 
         InlineArrays();
         foreach (var node in schema.Nodes.Values.Where(node => node.Native)) Native(node);
+        foreach (var node in schema.Nodes.Values.Where(node => node.Native && node.SpanInputName.Length != 0)) SpanInput(node);
+        SourceInputs();
         Open($"internal static partial class {schema.Name}");
         foreach (var node in schema.Nodes.Values.Where(node => node.Encode))
         {
             if (node.HasPayload) Measure(node);
             Write(node);
+            if (ElementSource(node)) SourceCollectionCodec(node);
         }
         foreach (var node in schema.Nodes.Values.Where(node => node.NativeLayout)
             .GroupBy(node => node.NativeReadName).Select(group => group.First())) NativeRead(node);
@@ -49,7 +52,7 @@ internal sealed partial class Emitter(Schema schema)
     }
     private void Open(string declaration)
     {
-        Line(declaration);
+        if (declaration.Length != 0) Line(declaration);
         Line("{");
         ++indentation;
     }
@@ -67,7 +70,7 @@ internal sealed partial class Emitter(Schema schema)
         Line("/// </summary>");
     }
 
-    private string Input(int id)
+    private string Input(int id, bool qualified = false)
     {
         var node = Node(id);
         if (node.Scalar) return Scalar(node.Kind);
@@ -75,11 +78,11 @@ internal sealed partial class Emitter(Schema schema)
         {
             "Unit" => "global::System.ValueTuple",
             "String" => "string",
-            "Record" or "Enum" => node.Name,
-            "Sequence" => $"global::System.ReadOnlyMemory<{Input(node.Value)}>",
-            "Array" => $"{node.ArrayName}<{Input(node.Value)}>",
-            "Boxed" => $"global::Intrlay.Box<{Input(node.Value)}>",
-            "Optional" => OptionalType(node.Value, input: true, readOnly: false),
+            "Record" or "Enum" => qualified ? $"global::{schema.Namespace}.{node.Name}" : node.Name,
+            "Sequence" => $"global::System.ReadOnlyMemory<{Input(node.Value, qualified)}>",
+            "Array" => $"{(qualified && !node.ArrayName.StartsWith("global::") ? $"global::{schema.Namespace}." : "")}{node.ArrayName}<{Input(node.Value, qualified)}>",
+            "Boxed" => $"global::Intrlay.Box<{Input(node.Value, qualified)}>",
+            "Optional" => OptionalType(node.Value, input: true, readOnly: false, qualified),
             _ => throw new InvalidOperationException("Unknown wire kind " + node.Kind),
         };
     }
@@ -98,10 +101,10 @@ internal sealed partial class Emitter(Schema schema)
         };
     }
 
-    private string OptionalType(int value, bool input, bool readOnly)
+    private string OptionalType(int value, bool input, bool readOnly, bool qualified = false)
     {
         if (!input && scopedView && IsScopedOutput(value)) return ScopedOptionalName(value, readOnly);
-        var type = input ? Input(value) : Output(value, readOnly);
+        var type = input ? Input(value, qualified) : Output(value, readOnly);
         var payload = OptionalPayload(value, input);
         if (payload.Kind == "Optional") return $"global::Intrlay.Optional<{type}>";
         return payload.Kind is "String" or "Boxed" ? type + "?" : $"global::System.Nullable<{type}>";

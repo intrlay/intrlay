@@ -4,6 +4,11 @@ Intrlay's C++ runtime is a header-only C++20 library for little-endian hosts.
 Generated views use named accessors and compile-time metadata rather than
 interpreting a schema at runtime.
 
+For Clang, use version 19 or later. Generated input aliases support C++20 class
+template argument deduction, which Clang implements starting with version 19.
+See the [Clang C++ support table](https://clang.llvm.org/cxx_status.html#cxx20)
+for compiler feature support.
+
 ## Integrate the headers
 
 From a source checkout, use CMake:
@@ -71,7 +76,7 @@ create a second independently configurable identity for the same type.
 
 ## Use generated views
 
-The generated module supplies its own native input types in
+The generated module supplies its own encoding input types in
 `intrlay_generated::drawing`. A C++ `std::variant` retains each alternative's
 payload type. Alternative names are inferred from those types, so `DrawPoint`
 produces the accessor `as_draw_point()`.
@@ -83,11 +88,11 @@ produces the accessor `as_draw_point()`.
 int main() {
     using namespace intrlay_generated::drawing;
 
-    Drawing value{
+    DrawingInput<> value{
         "Sketch",
         {{1.0f, 2.0f, 3.0f}},
         std::nullopt,
-        DrawingCommand{DrawPoint{{7.0f, 8.0f, 9.0f}, 0.5f}}
+        DrawingCommandInput<>{DrawPointInput<>{{7.0f, 8.0f, 9.0f}, 0.5f}}
     };
     auto owner = DrawingView::create(value);
     auto drawing = owner.view();
@@ -100,8 +105,8 @@ int main() {
     }
 
     drawing.points().get(0).set_x(10.0f);
-    drawing.set_selected_point(0);
-    drawing.command().replace(DrawingCommand{Clear{}});
+    drawing.set_selected_point(0u);
+    drawing.command().replace(DrawingCommandInput<>{ClearInput<>{}});
 
     DrawingViewReadOnly received(owner.bytes());
     assert(received.points().get(0).x() == 10.0f);
@@ -112,8 +117,8 @@ int main() {
 `create` returns an owner; `view()` borrows its storage. Existing writable or const
 byte spans can be wrapped directly. A variant-specific accessor returns
 `std::optional`; an inactive payload is absent. `tag()` is available for numeric
-tag dispatch. The generated `DrawingCommand` contains
-`std::variant<Clear, DrawPoint> value`; the named outer type gives it its own
+tag dispatch. The generated `DrawingCommandInput<>` contains
+`std::variant<ClearInput<>, DrawPointInput<>> value`; the named outer type gives it its own
 identity and supports recursive declarations. The original C++ schema's values
 can also be passed directly to `create`, without conversion to generated inputs.
 
@@ -126,12 +131,12 @@ using Endpoint INTRLAY(
 ) = std::variant<Point, Point>;
 ```
 
-The generated input stores `std::variant<Point, Point> value`. Select an
+The generated input stores `std::variant<PointInput<>, PointInput<>> value`. Select an
 alternative by index:
 
 ```cpp
-Endpoint endpoint;
-endpoint.value.emplace<1>(Point{1.0f, 2.0f, 3.0f});
+EndpointInput<> endpoint;
+endpoint.value.emplace<1>(PointInput<>{1.0f, 2.0f, 3.0f});
 auto owner = EndpointView::create(endpoint);
 assert(owner.view().as_end()->x() == 1.0f);
 assert(!owner.view().as_start());
@@ -153,13 +158,73 @@ The record APIs are the same, but a Rust named enum carries its own variant and
 field names. Its C++ construction and payload access therefore look like this:
 
 ```cpp
-DrawingCommand command{DrawingCommandDrawPoint{{7.0f, 8.0f, 9.0f}, 0.5f}};
+DrawingCommandInput<> command{DrawingCommandDrawPointInput<>{{7.0f, 8.0f, 9.0f}, 0.5f}};
 auto owner = DrawingCommandView::create(command);
 assert(owner.view().draw_point_position()->x() == 7.0f);
 ```
 
 Use the view API generated from your chosen schema. Matching encoded fields does
 not require identical native declarations or identical payload accessor names.
+
+## Borrow encoding inputs
+
+`TypeInput<>` uses the default owned field types. Template argument deduction
+can instead select borrowed fields independently:
+
+```cpp
+PointInput<> points[] = {{1.0f, 2.0f, 3.0f}, {4.0f, 5.0f, 6.0f}};
+auto input = DrawingInput{
+    std::string_view("Sketch"),
+    std::span(points),
+    std::optional<std::uint32_t>{},
+    DrawingCommandInput<>{ClearInput<>{}}
+};
+auto owner = DrawingView::create(input);
+```
+
+This example uses the C++ schema above. Borrowed inputs can nest, and aliases
+retain the same input template parameters. `EncodeSourceFor<Source, Codec>`
+checks the required fields and elements before instantiating the writer body.
+The original C++ schema structs remain valid sources too, even when generated
+field names differ.
+
+Encoding sources must match the schema's scalar types, including collection
+elements and fields of nested inputs. Const, volatile, and reference qualifiers
+do not change the scalar type; volatile sources retain element-wise reads.
+For example, a `std::span<const float>` can supply an
+`f32` sequence; a `std::span<const double>` cannot. Both narrowing and widening
+numeric conversions must be explicit. A transformation view can convert
+elements without allocating an intermediate collection:
+
+```cpp
+const std::array<double, 3> values{1.25, 2.5, 3.75};
+auto floats = values | std::views::transform([](double value) {
+    return static_cast<float>(value);
+});
+```
+
+The resulting range supplies `float` elements to an `f32` array or sequence.
+Native C++ integer spellings with the same width and signedness are equivalent
+to the same schema scalar: for example, `long` maps to `i32` or `i64` according to
+the source ABI. This preserves direct encoding of original C++ schema structs.
+This restriction applies when the encoder receives a source; assigning to an
+already typed native field still follows ordinary C++ assignment rules.
+Setters and `replace` check the deduced source type before conversion as well.
+For example, an `f32` element accepts `set(index, 1.0f)`, but rejects
+`set(index, 1.0)` and `set(index, 1)`. Inline optionals accept `std::nullopt`
+or a matching payload; setters for indirect optionals only update an existing
+payload and cannot allocate a missing one.
+
+Fixed-layout replacement additionally requires `FixedEncodeSourceFor`; mutation
+forwarded to an existing field or payload uses `SetSourceFor`. These C++20
+constraints reject incompatible inputs at the call site, including collection
+setters and direct codec calls. They add no runtime checks. Sequence inputs must
+be const-iterable forward ranges with `std::size` and indexed access; measurement
+uses the same `std::ranges` customization points as the constraints.
+
+Sources must stay stable and repeatable through measurement and writing.
+Payload-free enums use `enum class TypeInput : std::uint32_t`; their values are
+wire tags rather than variant indices.
 
 ## Caller-provided storage
 
@@ -182,10 +247,12 @@ Generated `Metadata` describes fields and enum alternatives for the shared codec
 templates. Normal use does not require accessing it directly.
 
 Const and mutable views share an implementation, with mutation constrained by
-the byte type. Collections retain typed value-view access. Byte storage is not
+the `BufferByte` and `WritableBufferByte` concepts: only `std::byte` and
+`const std::byte` are view storage types, and only the former permits mutation.
+Collections retain typed value-view access. Byte storage is not
 silently reinterpreted as live native objects: generated access respects C++20
 object lifetime rules even for externally supplied read-only bytes.
 
 Keep owners alive and preserve the [mutation contract](../concepts/mutation.mdx).
 Default namespaces are `intrlay_generated::<module_name>`; override them with
-`cpp_namespace` in generation options.
+`cpp.namespace` in generation options.

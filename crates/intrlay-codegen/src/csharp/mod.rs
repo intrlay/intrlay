@@ -6,16 +6,24 @@ use crate::{
     plan::{Field, GenerationPlan, Id, Kind, Node, TypeGraph},
 };
 
+mod api;
 mod documentation;
+mod layout;
+mod name_validation;
 mod names;
+mod options;
+
+pub use options::CSharpOptions;
+use options::Context;
 
 pub(crate) use names::INTRINSIC_KEYWORDS;
 
 pub const BACKEND: crate::backend::Backend = crate::backend::Backend {
     language: intrlay_schema::Language::CSharp,
+    api: &api::Api,
     naming_policy: names::policy,
-    keywords: names::KEYWORDS,
     reserved_declarations: &[],
+    is_reserved_name: name_validation::is_reserved,
     generate,
     field_setter: crate::api::SetterSyntax::Method,
     root_setter: crate::api::SetterSyntax::Method,
@@ -25,27 +33,18 @@ pub const BACKEND: crate::backend::Backend = crate::backend::Backend {
     codec_function_modifiers: &[crate::Modifier::Static],
     fixed_array_api: crate::backend::FixedArrayApi::Structural,
     native_numeric_array_views: false,
+    runtime_numeric_array_writers: false,
 };
 
-pub fn generate(generation: &GenerationPlan) -> Result<String, GenerateError> {
+pub fn generate(
+    generation: &GenerationPlan,
+    options: &crate::GenerateOptions,
+) -> Result<String, GenerateError> {
     let source = &generation.encoding.types;
+    let context = Context::new(&options.csharp, options.module_name(), &source.names)?;
+    name_validation::validate(generation, &context)?;
     let mut output = String::from(include_str!("prelude.txt"));
-    let namespace = source.csharp_namespace.clone().unwrap_or_else(|| {
-        format!(
-            "IntrlayGenerated.{}",
-            source.names.type_name(&source.module_name)
-        )
-    });
-    for segment in namespace.split('.') {
-        if crate::plan::identifier(segment).is_err()
-            || INTRINSIC_KEYWORDS.contains(&segment)
-            || names::KEYWORDS
-                .split_whitespace()
-                .any(|keyword| keyword == segment)
-        {
-            return Err(GenerateError(format!("invalid C# namespace {namespace}")));
-        }
-    }
+    let namespace = &context.namespace;
     writeln!(
         output,
         "namespace {namespace};\n\n// Native values. Members, constructors, and buffer views are supplied by the source generator.\n"
@@ -56,16 +55,30 @@ pub fn generate(generation: &GenerationPlan) -> Result<String, GenerateError> {
 
     // Only resolved layout and API metadata cross into Roslyn. The generator
     // never infers wire offsets from CLR layout or repeats the layout algorithm.
+    let version = if context.language_version == 14 {
+        String::new()
+    } else {
+        format!("(CSharpLanguageVersion = {})", context.language_version)
+    };
     writeln!(
         output,
-        "// Resolved wire layout, consumed during compilation. Type IDs below refer to this schema.\n// WireType: id, kind, name, header size, header alignment, buffer alignment.\n// WireField: owner type, field type, native name, view property name, byte offset.\n// WireVariant: owner type, tag, name, factory name.\n[global::Intrlay.GenerateBindings]\n\n// Public API and storage names after applying the naming policy."
+        "// Resolved wire layout, consumed during compilation. Type IDs below refer to this schema.\n// WireType: id, kind, name, header size, header alignment, buffer alignment.\n// WireField: owner type, field type, native name, view property name, byte offset.\n// WireVariant: owner type, tag, name, factory name.\n[global::Intrlay.GenerateBindings{version}]\n\n// Public API and storage names after applying the naming policy."
     )?;
     binding_names(&mut output)?;
     let plan = &generation.views.types;
     let encoders = &generation.encoding.encoders;
     let views = &generation.views.emitted;
+    let source_inputs = source_input_nodes(source);
     for id in 0..plan.nodes.len() {
-        type_metadata(&mut output, source, plan, id, encoders, views)?;
+        type_metadata(
+            &mut output,
+            source,
+            plan,
+            id,
+            encoders,
+            views,
+            &source_inputs,
+        )?;
     }
     writeln!(
         output,
@@ -136,6 +149,7 @@ fn binding_names(output: &mut String) -> Result<(), GenerateError> {
         "first_element",
         "optional_storage",
         "length",
+        "from_sources",
     ] {
         writeln!(
             output,
@@ -148,16 +162,22 @@ fn binding_names(output: &mut String) -> Result<(), GenerateError> {
 
 fn input(output: &mut String, node: &Node) -> Result<(), GenerateError> {
     match &node.kind {
-        Kind::Record(_) => native_declaration(output, &node.name, &node.docs)?,
+        Kind::Record(_) => native_declaration(output, &node.input_name(), &node.docs)?,
         Kind::Enum(variants) => {
-            for variant in variants {
-                native_declaration(
-                    output,
-                    &format!("{}{}", node.name, variant.name),
-                    &variant.docs,
-                )?;
+            if node.is_value_enum() {
+                documentation::write(output, &node.docs, "")?;
+                writeln!(output, "public enum {} : uint {{", node.input_name())?;
+                for variant in variants {
+                    documentation::write(output, &variant.docs, "    ")?;
+                    writeln!(output, "    {} = {},", variant.name, variant.tag)?;
+                }
+                writeln!(output, "}}\n")?;
+                return Ok(());
             }
-            native_declaration(output, &node.name, &node.docs)?;
+            for variant in variants {
+                native_declaration(output, &node.variant_input_name(variant), &variant.docs)?;
+            }
+            native_declaration(output, &node.input_name(), &node.docs)?;
         }
         _ => {}
     }
@@ -170,6 +190,76 @@ fn native_declaration(output: &mut String, name: &str, docs: &str) -> Result<(),
     Ok(())
 }
 
+/// Borrowed inputs cover flat payloads; fixed native inputs keep their bulk-copy path.
+pub(crate) fn span_input_name(plan: &TypeGraph, id: Id) -> Option<String> {
+    let node = &plan.nodes[id];
+    let Kind::Record(fields) = &node.kind else {
+        return None;
+    };
+    if !plan.has_payload(id) {
+        return None;
+    }
+    let supported = fields.iter().all(|field| match plan.nodes[field.ty].kind {
+        Kind::String => true,
+        Kind::Sequence(element) | Kind::Array { element, .. } => {
+            matches!(plan.nodes[element].kind, Kind::Scalar(_) | Kind::Unit)
+                || plan.nodes[element].is_value_enum()
+                || layout::native_layout(plan, element)
+        }
+        _ => !plan.has_payload(field.ty),
+    });
+    supported.then(|| format!("{}SpanInput", node.name))
+}
+
+/// Source customization propagates through the type graph without expanding paths.
+pub(crate) fn source_input_nodes(plan: &TypeGraph) -> std::collections::BTreeSet<Id> {
+    let mut sources = plan
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(id, node)| match node.kind {
+            Kind::Sequence(element) | Kind::Array { element, .. } if plan.zeroable(element) => {
+                Some(id)
+            }
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    loop {
+        let previous = sources.len();
+        for (id, node) in plan.nodes.iter().enumerate() {
+            let contains = match &node.kind {
+                Kind::Record(fields) => fields.iter().any(|field| sources.contains(&field.ty)),
+                Kind::Enum(variants) => variants.iter().any(|variant| {
+                    variant
+                        .fields
+                        .iter()
+                        .any(|field| sources.contains(&field.ty))
+                }),
+                Kind::Sequence(value)
+                | Kind::Array { element: value, .. }
+                | Kind::Optional { value, .. }
+                | Kind::Boxed(value) => sources.contains(value),
+                _ => false,
+            };
+            if contains {
+                sources.insert(id);
+            }
+        }
+        if previous == sources.len() {
+            return sources;
+        }
+    }
+}
+
+pub(crate) fn source_input_name(plan: &TypeGraph, id: Id) -> String {
+    let node = &plan.nodes[id];
+    if matches!(node.kind, Kind::Record(_) | Kind::Enum(_)) {
+        node.input_name()
+    } else {
+        format!("{}Input", node.name)
+    }
+}
+
 fn type_metadata(
     output: &mut String,
     source: &TypeGraph,
@@ -177,6 +267,7 @@ fn type_metadata(
     id: Id,
     encoders: &std::collections::BTreeSet<Id>,
     views: &std::collections::BTreeSet<Id>,
+    source_inputs: &std::collections::BTreeSet<Id>,
 ) -> Result<(), GenerateError> {
     let node = &plan.nodes[id];
     writeln!(output, "\n// Type {id}: {}", node.name)?;
@@ -214,8 +305,9 @@ fn type_metadata(
         ("HasPayload", plan.has_payload(id)),
         ("Encode", encoders.contains(&id)),
         ("Native", id < source.nodes.len()),
-        ("NativeLayout", source.csharp_native_layout(encoding)),
+        ("NativeLayout", layout::native_layout(source, encoding)),
         ("FullyWritten", source.writes_all_bytes(encoding)),
+        ("Zeroable", source.zeroable(encoding)),
     ] {
         if value {
             attributes.push(format!("{name} = true"));
@@ -228,13 +320,14 @@ fn type_metadata(
             literal(&span_name(&view_name(plan, id)))?
         ));
     }
+    input_metadata(&mut attributes, source, encoding, source_inputs)?;
     if let Kind::Array { length, .. } = node.kind {
         attributes.push(format!(
             "ArrayName = {}",
             literal(&array_name(source, length))?
         ));
     }
-    if source.csharp_native_layout(encoding) {
+    if layout::native_layout(source, encoding) {
         attributes.push(format!(
             "NativeReadName = {}",
             literal(&crate::symbols::codec_function(
@@ -257,7 +350,11 @@ fn type_metadata(
         output,
         &format!(
             "WireType({id}, global::Intrlay.WireKind.{kind}, {}, {}, {}, {}",
-            literal(&node.name)?,
+            literal(&if matches!(node.kind, Kind::Record(_) | Kind::Enum(_)) {
+                node.input_name()
+            } else {
+                node.name.clone()
+            })?,
             node.layout.size(),
             node.layout.alignment(),
             node.buffer_alignment
@@ -265,6 +362,24 @@ fn type_metadata(
         &attributes,
     )?;
     member_metadata(output, plan, id, node)
+}
+
+fn input_metadata(
+    attributes: &mut Vec<String>,
+    source: &TypeGraph,
+    id: Id,
+    sources: &std::collections::BTreeSet<Id>,
+) -> Result<(), GenerateError> {
+    if let Some(name) = span_input_name(source, id) {
+        attributes.push(format!("SpanInputName = {}", literal(&name)?));
+    }
+    if sources.contains(&id) {
+        attributes.push(format!(
+            "SourceInputName = {}",
+            literal(&source_input_name(source, id))?
+        ));
+    }
+    Ok(())
 }
 
 fn member_metadata(
@@ -281,11 +396,15 @@ fn member_metadata(
         }
         Kind::Enum(variants) => {
             for variant in variants {
-                let docs = if variant.docs.is_empty() {
+                let mut docs = if variant.docs.is_empty() {
                     Vec::new()
                 } else {
                     vec![format!("Documentation = {}", literal(&variant.docs)?)]
                 };
+                docs.push(format!(
+                    "InputName = {}",
+                    literal(&node.variant_input_name(variant))?
+                ));
                 attribute(
                     output,
                     &format!(

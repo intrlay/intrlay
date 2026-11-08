@@ -26,7 +26,7 @@ nullable_value = dict(
     absent_unit=None, present_unit=some(None),
     nested_absent=None, nested_none=some(None), nested_value=some(7),
     boxed_none=some(None), triple=some(some(None)),
-    variants=[dict(kind="Empty"), dict(kind="Value", value=None), dict(kind="Value", value=9)],
+    variants=[dict(kind=bindings.NullableVariantKind.Empty), dict(kind=bindings.NullableVariantKind.Value, value=None), dict(kind=bindings.NullableVariantKind.Value, value=9)],
 )
 assert bytes(bindings.NullableCasesView.create(nullable_value).buffer) == nullable_bytes
 rust_bytes = (directory / "rust.bin").read_bytes()
@@ -44,7 +44,7 @@ value = dict(
     sequence=0x123456789abcdef0,
     title="fixture 🦀 한글",
     points=[dict(x=1, y=2, z=3), dict(x=4, y=5, z=6)],
-    commands=[dict(kind="Clear"), dict(kind="DrawPoint", position=dict(x=7, y=8, z=9), size=0.75, label="example")],
+    commands=[dict(kind=bindings.DrawingCommandKind.Clear), dict(kind=bindings.DrawingCommandKind.DrawPoint, position=dict(x=7, y=8, z=9), size=0.75, label="example")],
     tree=dict(id=7, next=dict(id=8, next=None)),
     optional=0,
     fixed=[10, 20, 30],

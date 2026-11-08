@@ -124,6 +124,8 @@ contains a complete source declaration and runtime integration example.
 ## Output options
 
 `--options options.json` accepts a serialized `GenerateOptions` value.
+Language-specific settings are grouped under `cpp` and `csharp`; each backend
+uses its own group. Unknown option names are rejected.
 `--module-name DrawingProtocol` names the generation unit independently of its
 exports and overrides `module_name` in the options file. The default is `Schema`.
 Adding or removing an export does not rename the module.
@@ -133,8 +135,8 @@ C++ uses `intrlay_generated::drawing_protocol` for that module name; C# uses
 
 ```json
 {
-  "cpp_namespace": "app::protocol",
-  "csharp_namespace": "App.Protocol"
+  "cpp": { "namespace": "app::protocol" },
+  "csharp": { "namespace": "App.Protocol" }
 }
 ```
 
@@ -142,6 +144,20 @@ Namespace segments must be ASCII identifiers, separated by `::` or `.`. Their
 spelling is preserved independently of the symbol naming policy. Each generation
 unit retains its own types and helpers; namespaces do not deduplicate shared
 types across generated files.
+
+For C#, `--csharp-language-version 15` enables union conversions and exhaustive
+typed patterns for payload-enum inputs. It requires C# 15 and .NET 11. The
+default is C# 14, which uses typed factories and getters on the same compact
+input storage. Both choices use the same wire layout.
+
+```sh
+intrlay generate schema.json --language csharp --csharp-language-version 15 --output generated/Bindings.cs
+```
+
+The options-file equivalent is `"csharp": { "language_version": 15 }`; the command-line
+flag overrides it. Versions below 14 are rejected. Versions 15 and later enable
+the union protocol and require a compiler supporting the selected version. See
+[C# union patterns](../languages/csharp.mdx#union-patterns-c-15).
 
 Module-wide naming policies select symbol kind, visibility, and modifiers such
 as `static` or `readonly`, then apply a casing preset and optional prefix/suffix.

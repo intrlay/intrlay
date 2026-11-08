@@ -1,0 +1,230 @@
+error[E0277]: the trait bound `u8: EncodeSource<bool>` is not satisfied
+  --> tests/ui/fail/scalar_input_types.rs:11:21
+   |
+11 |     accepts::<bool>(&1_u8);
+   |     --------------- ^^^^^ the trait `EncodeSource<bool>` is not implemented for `u8`
+   |     |
+   |     required by a bound introduced by this call
+   |
+help: the trait `EncodeSource<bool>` is not implemented for `u8`
+      but trait `EncodeSource<u8>` is implemented for it
+  --> $WORKSPACE/packages/rust/src/source/builtins.rs
+   |
+   |           unsafe impl EncodeSource<$ty> for $ty {
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+   | / owned!(
+   | |     (),
+   | |     bool,
+   | |     i8,
+...  |
+   | |     String
+   | | );
+   | |_- in this macro invocation
+   = help: for that trait implementation, expected `u8`, found `bool`
+note: required by a bound in `accepts`
+  --> tests/ui/fail/scalar_input_types.rs:8:33
+   |
+ 8 | fn accepts<C: Intrlay>(_: &impl EncodeSource<C>) {}
+   |                                 ^^^^^^^^^^^^^^^ required by this bound in `accepts`
+   = note: this error originates in the macro `owned` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `u32: EncodeSource<u64>` is not satisfied
+  --> tests/ui/fail/scalar_input_types.rs:12:20
+   |
+12 |     accepts::<u64>(&1_u32);
+   |     -------------- ^^^^^^ the trait `EncodeSource<u64>` is not implemented for `u32`
+   |     |
+   |     required by a bound introduced by this call
+   |
+help: the trait `EncodeSource<u64>` is not implemented for `u32`
+      but trait `EncodeSource<u32>` is implemented for it
+  --> $WORKSPACE/packages/rust/src/source/builtins.rs
+   |
+   |           unsafe impl EncodeSource<$ty> for $ty {
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+   | / owned!(
+   | |     (),
+   | |     bool,
+   | |     i8,
+...  |
+   | |     String
+   | | );
+   | |_- in this macro invocation
+   = help: for that trait implementation, expected `u32`, found `u64`
+note: required by a bound in `accepts`
+  --> tests/ui/fail/scalar_input_types.rs:8:33
+   |
+ 8 | fn accepts<C: Intrlay>(_: &impl EncodeSource<C>) {}
+   |                                 ^^^^^^^^^^^^^^^ required by this bound in `accepts`
+   = note: this error originates in the macro `owned` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `u16: EncodeSource<u32>` is not satisfied
+  --> tests/ui/fail/scalar_input_types.rs:13:25
+   |
+13 |     accepts::<Vec<u32>>(&vec![1_u16]);
+   |     ------------------- ^^^^^^^^^^^^ the trait `EncodeSource<u32>` is not implemented for `u16`
+   |     |
+   |     required by a bound introduced by this call
+   |
+help: the trait `EncodeSource<u32>` is not implemented for `u16`
+      but trait `EncodeSource<u16>` is implemented for it
+  --> $WORKSPACE/packages/rust/src/source/builtins.rs
+   |
+   |           unsafe impl EncodeSource<$ty> for $ty {
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+   | / owned!(
+   | |     (),
+   | |     bool,
+   | |     i8,
+...  |
+   | |     String
+   | | );
+   | |_- in this macro invocation
+   = help: for that trait implementation, expected `u16`, found `u32`
+   = note: required for `Vec<u16>` to implement `EncodeSource<Vec<u32>>`
+note: required by a bound in `accepts`
+  --> tests/ui/fail/scalar_input_types.rs:8:33
+   |
+ 8 | fn accepts<C: Intrlay>(_: &impl EncodeSource<C>) {}
+   |                                 ^^^^^^^^^^^^^^^ required by this bound in `accepts`
+   = note: this error originates in the macro `owned` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `f64: EncodeSource<f32>` is not satisfied
+  --> tests/ui/fail/scalar_input_types.rs:14:25
+   |
+14 |     accepts::<[f32; 2]>(&[1_f64, 2.0]);
+   |     ------------------- ^^^^^^^^^^^^^ the trait `EncodeSource<f32>` is not implemented for `f64`
+   |     |
+   |     required by a bound introduced by this call
+   |
+help: the trait `EncodeSource<f32>` is not implemented for `f64`
+      but trait `EncodeSource<f64>` is implemented for it
+  --> $WORKSPACE/packages/rust/src/source/builtins.rs
+   |
+   |           unsafe impl EncodeSource<$ty> for $ty {
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+   | / owned!(
+   | |     (),
+   | |     bool,
+   | |     i8,
+...  |
+   | |     String
+   | | );
+   | |_- in this macro invocation
+   = help: for that trait implementation, expected `f64`, found `f32`
+   = note: required for `[f64; 2]` to implement `EncodeSource<[f32; 2]>`
+note: required by a bound in `accepts`
+  --> tests/ui/fail/scalar_input_types.rs:8:33
+   |
+ 8 | fn accepts<C: Intrlay>(_: &impl EncodeSource<C>) {}
+   |                                 ^^^^^^^^^^^^^^^ required by this bound in `accepts`
+   = note: this error originates in the macro `owned` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `f64: EncodeSource<f32>` is not satisfied
+  --> tests/ui/fail/scalar_input_types.rs:15:26
+   |
+15 |     accepts::<Vec<Item>>(&vec![ItemInput { value: 1_f64 }]);
+   |     -------------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `EncodeSource<f32>` is not implemented for `f64`
+   |     |
+   |     required by a bound introduced by this call
+   |
+help: the trait `EncodeSource<f32>` is not implemented for `f64`
+      but trait `EncodeSource<f64>` is implemented for it
+  --> $WORKSPACE/packages/rust/src/source/builtins.rs
+   |
+   |           unsafe impl EncodeSource<$ty> for $ty {
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+   | / owned!(
+   | |     (),
+   | |     bool,
+   | |     i8,
+...  |
+   | |     String
+   | | );
+   | |_- in this macro invocation
+   = help: for that trait implementation, expected `f64`, found `f32`
+note: required for `ItemInput<f64>` to implement `EncodeSource<Item>`
+  --> tests/ui/fail/scalar_input_types.rs:3:10
+   |
+ 3 | #[derive(Intrlay)]
+   |          ^^^^^^^ type parameter would need to implement `EncodeSource<Item>`
+   = help: consider manually implementing `EncodeSource<Item>` to avoid undesired bounds
+   = note: 1 redundant requirement hidden
+   = note: required for `Vec<ItemInput<f64>>` to implement `EncodeSource<Vec<Item>>`
+note: required by a bound in `accepts`
+  --> tests/ui/fail/scalar_input_types.rs:8:33
+   |
+ 8 | fn accepts<C: Intrlay>(_: &impl EncodeSource<C>) {}
+   |                                 ^^^^^^^^^^^^^^^ required by this bound in `accepts`
+   = note: this error originates in the macro `owned` which comes from the expansion of the derive macro `Intrlay` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `u16: EncodeSource<u32>` is not satisfied
+  --> tests/ui/fail/scalar_input_types.rs:16:25
+   |
+16 |     accepts::<Vec<u32>>(&SequenceInput::new([1_u16].into_iter()));
+   |     ------------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `EncodeSource<u32>` is not implemented for `u16`
+   |     |
+   |     required by a bound introduced by this call
+   |
+help: the trait `EncodeSource<u32>` is not implemented for `u16`
+      but trait `EncodeSource<u16>` is implemented for it
+  --> $WORKSPACE/packages/rust/src/source/builtins.rs
+   |
+   |           unsafe impl EncodeSource<$ty> for $ty {
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+   | / owned!(
+   | |     (),
+   | |     bool,
+   | |     i8,
+...  |
+   | |     String
+   | | );
+   | |_- in this macro invocation
+   = help: for that trait implementation, expected `u16`, found `u32`
+   = note: required for `SequenceInput<std::array::IntoIter<u16, 1>>` to implement `EncodeSource<Vec<u32>>`
+note: required by a bound in `accepts`
+  --> tests/ui/fail/scalar_input_types.rs:8:33
+   |
+ 8 | fn accepts<C: Intrlay>(_: &impl EncodeSource<C>) {}
+   |                                 ^^^^^^^^^^^^^^^ required by this bound in `accepts`
+   = note: this error originates in the macro `owned` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `u16: EncodeSource<u32>` is not satisfied
+  --> tests/ui/fail/scalar_input_types.rs:17:33
+   |
+17 |     accepts::<Option<Box<u32>>>(&Some(BoxInput(1_u16)));
+   |     --------------------------- ^^^^^^^^^^^^^^^^^^^^^^ the trait `EncodeSource<u32>` is not implemented for `u16`
+   |     |
+   |     required by a bound introduced by this call
+   |
+help: the trait `EncodeSource<u32>` is not implemented for `u16`
+      but trait `EncodeSource<u16>` is implemented for it
+  --> $WORKSPACE/packages/rust/src/source/builtins.rs
+   |
+   |           unsafe impl EncodeSource<$ty> for $ty {
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+   | / owned!(
+   | |     (),
+   | |     bool,
+   | |     i8,
+...  |
+   | |     String
+   | | );
+   | |_- in this macro invocation
+   = help: for that trait implementation, expected `u16`, found `u32`
+   = note: required for `BoxInput<u16>` to implement `EncodeSource<Box<u32>>`
+   = note: 1 redundant requirement hidden
+   = note: required for `Option<BoxInput<u16>>` to implement `EncodeSource<Option<Box<u32>>>`
+note: required by a bound in `accepts`
+  --> tests/ui/fail/scalar_input_types.rs:8:33
+   |
+ 8 | fn accepts<C: Intrlay>(_: &impl EncodeSource<C>) {}
+   |                                 ^^^^^^^^^^^^^^^ required by this bound in `accepts`
+   = note: this error originates in the macro `owned` (in Nightly builds, run with -Z macro-backtrace for more info)

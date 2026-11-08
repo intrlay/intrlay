@@ -1,11 +1,64 @@
 """Exercise composed annotations through actual generated Python APIs."""
 import sys
 from pathlib import Path
+from collections.abc import Callable
+from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "target/compositions"))
-from bindings import RenamedListView, ProjectionSetView, WrappedScalarsView, CachedChildrenView, OptionalRootView, CachedRootView
-from intrlay import Some
+from bindings import RenamedListView, ProjectionSetView, WrappedScalarsView, CachedChildrenView, OptionalRootView, CachedRootView, CachedChoiceKind
+from intrlay import Some, zeroed
+from bindings import ZeroedArraysInput, ZeroedArraysView
 from bindings import NumericItemsView
+
+zero_input: ZeroedArraysInput = dict(id=73, points=zeroed(3), flags=zeroed(4), matrix=zeroed(),
+                                    present=zeroed(), nested=[zeroed(2), zeroed(0)], empty=zeroed())
+zero_expected = Path('target/compositions/zeroed.bin').read_bytes()
+zero_owner = bytearray([0xa5] * (len(zero_expected) + 32))
+zero_view = ZeroedArraysView.create_in_place(memoryview(zero_owner)[16:], zero_input)
+assert bytes(zero_view.buffer) == zero_expected
+assert bytes(ZeroedArraysView.create(zero_input).buffer) == zero_expected
+assert zero_owner[:16] == bytes([0xa5] * 16)
+assert zero_owner[16 + len(zero_expected):] == bytes([0xa5] * 16)
+for index in range(4):
+    zero_view.matrix[index] = 7
+zero_view.set_matrix(zeroed())
+assert bytes(zero_view.buffer) == zero_expected
+from value_enums import SparseStateInput, SparseStateView, StateAliasInput, StateAliasView, ValueChoiceAliasInput, ValueChoiceAliasKind, ValueChoiceAliasView, ValueChoiceKind, ValueEnumsInput, ValueEnumsView
+
+enum_input: ValueEnumsInput = {
+    "choice": {
+        "kind": ValueChoiceKind.Present, "state": SparseStateInput.Last, "optional": SparseStateInput.Middle,
+        "fixed": [SparseStateInput.First, SparseStateInput.Last],
+        "states": [SparseStateInput.Middle, SparseStateInput.First], "text": "hello",
+    },
+}
+enum_view = ValueEnumsView.create(enum_input)
+enum_alias: ValueChoiceAliasInput = {"kind": ValueChoiceAliasKind.Empty}
+assert ValueChoiceAliasView.create(enum_alias).tag == 9 and enum_view.choice.tag == 91
+if enum_input["choice"]["kind"] == ValueChoiceKind.Present:
+    assert enum_input["choice"]["state"] == SparseStateInput.Last
+assert bytes(enum_view.buffer) == (Path(__file__).resolve().parents[2] / "target/compositions/value-enums.bin").read_bytes()
+assert enum_view.choice.present_state is not None
+assert enum_view.choice.present_state.tag == 0xffffffff
+assert enum_view.choice.present_optional is not None and enum_view.choice.present_optional.value is not None
+assert enum_view.choice.present_optional.value.tag == 37
+assert enum_view.choice.present_fixed is not None and enum_view.choice.present_states is not None
+assert enum_view.choice.present_fixed[1].tag == 0xffffffff
+assert enum_view.choice.present_states[1].tag == 3
+enum_state = SparseStateView.create(SparseStateInput.Last)
+enum_state.replace(SparseStateInput.Middle)
+assert enum_state.tag == 37 and StateAliasView.create(StateAliasInput.First).tag == 3
+invalid_enums: list[Callable[[], object]] = [
+    lambda: SparseStateView.create(cast(SparseStateInput, 0)),
+    lambda: ValueChoiceAliasView.create(cast(ValueChoiceAliasInput, {"kind": 0})),
+]
+for invalid_enum in invalid_enums:
+    try:
+        invalid_enum()
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unknown enum tag was accepted")
 
 numeric = NumericItemsView.create({'items': [{'id': 7, 'position': [1., 2., 3.], 'matrix': [[4., 5.], [6., 7.]], 'padded': 8., 'weights': [9., 10.], 'wide': [11, 12], 'read_only': [13., 14.], 'write_only': [15, 16]}]})
 owner = bytearray(16) + numeric.buffer
@@ -65,7 +118,7 @@ for item in root_items:
     root.set(9)
     assert root.value is None if item is None else root.value is not None and root.value.value == 9
 
-cached = CachedChildrenView.create({"child": {"value": 1}, "absent": None, "boxed": {"value": 2}, "nested": Some({"value": 3}), "choice": {"kind": "Value", "child": {"value": 4}}})
+cached = CachedChildrenView.create({"child": {"value": 1}, "absent": None, "boxed": {"value": 2}, "nested": Some({"value": 3}), "choice": {"kind": CachedChoiceKind.Value, "child": {"value": 4}}})
 assert cached.child is cached.child and cached.child is not None
 assert cached.absent is None and cached.boxed is cached.boxed
 assert cached.nested is cached.nested and cached.nested is not None and cached.nested.value is not None

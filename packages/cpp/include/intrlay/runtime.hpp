@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -30,6 +31,14 @@
 
 namespace intrlay {
 static_assert(std::endian::native == std::endian::little, "Intrlay requires little-endian storage");
+
+/// Views borrow byte storage; const bytes expose the same read operations.
+template<class T>
+concept BufferByte = std::same_as<T, std::byte> || std::same_as<T, const std::byte>;
+
+/// Mutation requires writable bytes, independently of the view object's constness.
+template<class T>
+concept WritableBufferByte = std::same_as<T, std::byte>;
 
 namespace detail {
 template<class T> struct NativeArray : std::false_type {};
@@ -78,12 +87,15 @@ inline std::size_t array_bytes(std::size_t count, std::size_t stride) {
 }
 
 template<class T>
+    requires (std::is_trivially_copyable_v<T> && std::default_initializable<T>
+        && std::same_as<T, std::remove_cv_t<T>>)
 T load(std::span<const std::byte> bytes, std::size_t offset) {
     T value;
     std::memcpy(&value, bytes.data() + offset, sizeof(T));
     return value;
 }
 template<class T>
+    requires std::is_trivially_copyable_v<T>
 void store(std::span<std::byte> bytes, std::size_t offset, T value) {
     std::memcpy(bytes.data() + offset, &value, sizeof(T));
 }
@@ -136,7 +148,7 @@ public:
 
     std::span<std::byte> bytes() { return {storage_.get(), size_}; }
     std::span<const std::byte> bytes() const { return {storage_.get(), size_}; }
-    View view() { return View(bytes()); }
+    View view() requires std::constructible_from<View, std::span<std::byte>> { return View(bytes()); }
 };
 
 } // namespace intrlay

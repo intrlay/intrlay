@@ -104,18 +104,33 @@ fn generate_nested_native_unions(fixtures: &mut Fixtures) -> Result<(), Box<dyn 
     registry.export::<Mixed>("Mixed");
     registry.export::<OptionalStates>("OptionalStates");
     registry.export::<TransferParent>("TransferParent");
-    fixtures.insert(
-        directory.join("bindings.cs"),
-        generate_with_options(
-            &registry.finish(),
-            Language::CSharp,
-            GenerateOptions {
-                csharp_namespace: Some("NativeUnionDepth.Generated".into()),
-                ..Default::default()
-            },
-        )?,
-    )?;
+    let schema = registry.finish();
+    for version in [14, 15] {
+        let destination = if version == 14 {
+            directory.clone()
+        } else {
+            "native-union-depth-csharp15".into()
+        };
+        fixtures.insert(
+            destination.join("bindings.cs"),
+            generate_with_options(
+                &schema,
+                Language::CSharp,
+                GenerateOptions {
+                    csharp: intrlay_codegen::CSharpOptions {
+                        namespace: Some("NativeUnionDepth.Generated".into()),
+                        language_version: Some(version),
+                    },
+                    ..Default::default()
+                },
+            )?,
+        )?;
+    }
+    Ok(())
+}
 
+fn write_nested_union_values(fixtures: &mut Fixtures) -> Result<(), Box<dyn Error>> {
+    let directory = std::path::PathBuf::from("native-union-depth");
     for selected_b in [false, true] {
         let suffix = if selected_b { "b" } else { "a" };
         let values = vec![10, 20];
@@ -195,5 +210,6 @@ fn generate_nested_native_unions(fixtures: &mut Fixtures) -> Result<(), Box<dyn 
 
 pub(super) fn collect(fixtures: &mut Fixtures) -> Result<(), Box<dyn std::error::Error>> {
     generate_nested_native_unions(fixtures)?;
+    write_nested_union_values(fixtures)?;
     Ok(())
 }

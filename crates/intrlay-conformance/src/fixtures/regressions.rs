@@ -256,7 +256,68 @@ fn nonconstructible_graphs_do_not_emit_unused_encoders() -> Result<(), Box<dyn E
     Ok(())
 }
 
+#[test]
+fn short_fixed_arrays_omit_bulk_dispatch() -> Result<(), Box<dyn Error>> {
+    let mut registry = Registry::new();
+    registry.export::<[f32; 2]>("Values");
+    let short = registry.finish();
+    let mut registry = Registry::new();
+    registry.export::<[f32; 16]>("Values");
+    let medium = registry.finish();
+    for (language, dispatch) in [
+        (Language::TypeScript, "globalThis.ArrayBuffer.isView(value)"),
+        (Language::Python, "_intrlay.try_copy_numeric_array("),
+        (
+            Language::Dart,
+            "core.bool.fromEnvironment('dart.library.js_interop')",
+        ),
+    ] {
+        assert!(!generate(&short, language)?.contains(dispatch));
+        assert!(generate(&medium, language)?.contains(dispatch));
+    }
+    let source = generate(&short, Language::Dart)?;
+    assert!(source.contains("intrlay.writeFloat32ArrayElements("));
+    assert!(!source.contains("intrlay.writeFloat32Array("));
+    Ok(())
+}
+
 pub(super) fn collect(fixtures: &mut Fixtures) -> Result<(), Box<dyn std::error::Error>> {
     write_cross_language_regressions(fixtures)?;
+    write_numeric_copy_cases(fixtures)?;
+    Ok(())
+}
+
+fn write_numeric_copy_cases(fixtures: &mut Fixtures) -> Result<(), Box<dyn Error>> {
+    let mut registry = Registry::new();
+    registry.export::<Vec<i8>>("I8");
+    registry.export::<Vec<u8>>("U8");
+    registry.export::<Vec<i16>>("I16");
+    registry.export::<Vec<u16>>("U16");
+    registry.export::<Vec<i32>>("I32");
+    registry.export::<Vec<u32>>("U32");
+    registry.export::<Vec<i64>>("I64");
+    registry.export::<Vec<u64>>("U64");
+    registry.export::<Vec<f32>>("F32");
+    registry.export::<Vec<f64>>("F64");
+    registry.export::<[f32; 2]>("FixedShort");
+    registry.export::<[f32; 16]>("FixedMedium");
+    registry.export::<[f32; 128]>("FixedLong");
+    registry.export::<[f32; 512]>("FixedBulk");
+    registry.export::<[u8; 2]>("FixedBytesShort");
+    registry.export::<[u8; 128]>("FixedBytesLong");
+    registry.export::<[i64; 2]>("FixedWideShort");
+    registry.export::<[i64; 16]>("FixedWideLong");
+    registry.export::<[[f32; 128]; 2]>("Nested");
+    let schema = registry.finish();
+    for (language, extension) in [
+        (Language::TypeScript, "ts"),
+        (Language::Python, "py"),
+        (Language::Dart, "dart"),
+    ] {
+        fixtures.insert(
+            format!("regressions/numeric-copy.{extension}"),
+            generate_with_options(&schema, language, GenerateOptions::default())?,
+        )?;
+    }
     Ok(())
 }

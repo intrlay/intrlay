@@ -21,7 +21,9 @@ impl<'a> Model<'a> {
         let source = &self.source;
         let runtime = &self.runtime;
         let view = &self.view;
-        let references = quote!(#input #source #runtime #view #references);
+        // Attribute strings are literals in `input`; include their parsed names too.
+        let bounds = self.options.bounds.iter().flatten();
+        let references = quote!(#input #source #runtime #view #(#bounds)* #references);
         let mut name = name.to_owned();
         while contains_ident(references.clone(), &name) {
             name.push('_');
@@ -163,14 +165,14 @@ fn mentions_type(ty: &Type, ident: &Ident, allow_self_path: bool) -> bool {
             // cover self references spelled through other modules or aliases.
             let named = path.path.leading_colon.is_none()
                 && first.is_some_and(|segment| {
-                    segment.ident == *ident
+                    segment.ident.unraw() == ident.unraw()
                         || (allow_self_path
                             && segment.ident == "self"
                             && path
                                 .path
                                 .segments
                                 .get(1)
-                                .is_some_and(|segment| segment.ident == *ident))
+                                .is_some_and(|segment| segment.ident.unraw() == ident.unraw()))
                 });
             let qualified = path
                 .qself

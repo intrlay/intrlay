@@ -7,7 +7,8 @@ constructors, views, and codecs.
 
 ## Installation
 
-Requires .NET 8 or later and C# 12 or later.
+Requires .NET 10 or later and C# 14 or later.
+Optional C# 15 union-pattern generation requires C# 15 and .NET 11.
 
 ```sh
 dotnet add package Intrlay
@@ -21,7 +22,7 @@ After generating `Point.cs` with `--language csharp --module-name example`:
 using System;
 using IntrlayGenerated.Example;
 
-var value = new Point(1, 2, 3);
+var value = new PointInput(1, 2, 3);
 var point = PointView.Create(in value);
 point.SetX(4);
 

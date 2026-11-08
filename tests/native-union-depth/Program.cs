@@ -9,6 +9,11 @@ using NativeUnionDepth.Generated;
 static class Program
 {
     private const string Fixture = "target/native-union-depth/";
+#if INTRLAY_CSHARP15
+    private const string Bindings = "target/native-union-depth-csharp15/";
+#else
+    private const string Bindings = Fixture;
+#endif
 
     private static void Check(bool condition, string message)
     {
@@ -25,6 +30,7 @@ static class Program
         Variants(memory, manager, false);
         Variants(memory, manager, true);
         Owners();
+        ZeroedPayload();
         Allocation(memory, manager);
         SourceGrowth();
         Console.WriteLine("C# nested native unions: depths 2-7 copy/read 0 owners, terminal read 1 owner, exact bytes and linear source passed");
@@ -32,14 +38,14 @@ static class Program
 
     private static void Variants(ReadOnlyMemory<uint> memory, CountingManager manager, bool selectedB)
     {
-        var one = selectedB ? Level1.FromB(memory, "leaf") : Level1.FromA(memory, "leaf");
+        var one = selectedB ? Level1Input.FromB(memory, "leaf") : Level1Input.FromA(memory, "leaf");
         manager.Calls = 0;
-        var two = selectedB ? Level2.FromB(one) : Level2.FromA(one);
-        var three = selectedB ? Level3.FromB(two) : Level3.FromA(two);
-        var four = selectedB ? Level4.FromB(three) : Level4.FromA(three);
-        var five = selectedB ? Level5.FromB(four) : Level5.FromA(four);
-        var six = selectedB ? Level6.FromB(five) : Level6.FromA(five);
-        var seven = selectedB ? Level7.FromB(six) : Level7.FromA(six);
+        var two = selectedB ? Level2Input.FromB(one) : Level2Input.FromA(one);
+        var three = selectedB ? Level3Input.FromB(two) : Level3Input.FromA(two);
+        var four = selectedB ? Level4Input.FromB(three) : Level4Input.FromA(three);
+        var five = selectedB ? Level5Input.FromB(four) : Level5Input.FromA(four);
+        var six = selectedB ? Level6Input.FromB(five) : Level6Input.FromA(five);
+        var seven = selectedB ? Level7Input.FromB(six) : Level7Input.FromA(six);
         Check(manager.Calls == 0, "constructing nested enums must not restore owners");
         uint tag = selectedB ? 1u : 0u;
         OuterRead(manager, () => selectedB ? two.B.Child.Tag : two.A.Child.Tag, tag, 2);
@@ -64,9 +70,9 @@ static class Program
         Bytes(Level6View.Create(six).Bytes, $"level6-{suffix}.bin");
         Bytes(Level7View.Create(seven).Bytes, $"level7-{suffix}.bin");
 
-        var first = Level3.FromA(Level2.FromB(Level1.FromB(new uint[] { 31, 32 }, "first")));
-        var extra = Level2.FromA(Level1.FromA(new uint[] { 51 }, "extra"));
-        var mixed = Mixed.FromPair("prefix", new Payload(selectedB ? first : null, three, 0x1122334455667788), selectedB ? extra : null);
+        var first = Level3Input.FromA(Level2Input.FromB(Level1Input.FromB(new uint[] { 31, 32 }, "first")));
+        var extra = Level2Input.FromA(Level1Input.FromA(new uint[] { 51 }, "extra"));
+        var mixed = MixedInput.FromPair("prefix", new PayloadInput(selectedB ? first : null, three, 0x1122334455667788), selectedB ? extra : null);
         manager.Calls = 0;
         var pair = mixed.Pair;
         Check(manager.Calls == 0 && pair.Payload.Second.Tag == tag, "record/optional transfers restore owners");
@@ -79,22 +85,22 @@ static class Program
             Check(restoredFirst.Label == "first" && restoredFirst.Values.Span.SequenceEqual(new uint[] { 31, 32 }), "first sibling slots");
             Check(restoredExtra.Label == "extra" && restoredExtra.Values.Span[0] == 51, "extra sibling slots");
         }
-        Check(mixed.Scalar.Value == 0 && Mixed.FromScalar(12.5).Pair.Prefix is null, "inactive payloads");
+        Check(mixed.Scalar.Value == 0 && MixedInput.FromScalar(12.5).Pair.Prefix is null, "inactive payloads");
         Bytes(MixedView.Create(mixed).Bytes, $"mixed-{suffix}.bin");
-        Bytes(MixedView.Create(Mixed.FromScalar(12.5)).Bytes, "mixed-scalar.bin");
-        var optional = OptionalStates.FromValues(default, new Intrlay.Optional<Level3?>(null), new Intrlay.Optional<Level3?>(three));
+        Bytes(MixedView.Create(MixedInput.FromScalar(12.5)).Bytes, "mixed-scalar.bin");
+        var optional = OptionalStatesInput.FromValues(default, new Intrlay.Optional<Level3Input?>(null), new Intrlay.Optional<Level3Input?>(three));
         manager.Calls = 0;
         var states = optional.Values;
         Check(!states.OuterAbsent.HasValue && states.InnerAbsent.HasValue && !states.InnerAbsent.Value.HasValue
             && states.Present.Value!.Value.Tag == tag && manager.Calls == 0, "nested optional enum presence/storage");
         Bytes(OptionalStatesView.Create(optional).Bytes, $"optional-{suffix}.bin");
-        var readName = TransferParent.FromValue(TransferNames.FromReadStorage(two));
-        var copyName = TransferParent.FromValue(TransferNames.FromCopyStorage(two));
+        var readName = TransferParentInput.FromValue(TransferNamesInput.FromReadStorage(two));
+        var copyName = TransferParentInput.FromValue(TransferNamesInput.FromCopyStorage(two));
         Check(readName.Value.Child.ReadStorage.storage.Tag == tag && copyName.Value.Child.CopyStorage.data.Tag == tag,
             "transfer helpers collide with source variant/field names");
 
-        int[] sizes = { Unsafe.SizeOf<Level1>(), Unsafe.SizeOf<Level2>(), Unsafe.SizeOf<Level3>(), Unsafe.SizeOf<Level4>(),
-            Unsafe.SizeOf<Level5>(), Unsafe.SizeOf<Level6>(), Unsafe.SizeOf<Level7>() };
+        int[] sizes = { Unsafe.SizeOf<Level1Input>(), Unsafe.SizeOf<Level2Input>(), Unsafe.SizeOf<Level3Input>(), Unsafe.SizeOf<Level4Input>(),
+            Unsafe.SizeOf<Level5Input>(), Unsafe.SizeOf<Level6Input>(), Unsafe.SizeOf<Level7Input>() };
         for (int i = 1; i < sizes.Length; ++i)
             Check(sizes[i] >= sizes[i - 1] && sizes[i] - sizes[i - 1] <= 8, "nested native size must grow linearly");
         Check(sizes[^1] <= sizes[0] + 32, "nested alternatives must share native storage");
@@ -113,16 +119,26 @@ static class Program
         Check(read().Equals(expected) && manager.Calls == 1, $"depth {depth} must restore one terminal owner");
     }
 
-    private static Level7 Nest(Level1 leaf) =>
-        Level7.FromA(Level6.FromA(Level5.FromA(Level4.FromA(Level3.FromA(Level2.FromA(leaf))))));
+    private static Level7Input Nest(Level1Input leaf) =>
+        Level7Input.FromA(Level6Input.FromA(Level5Input.FromA(Level4Input.FromA(Level3Input.FromA(Level2Input.FromA(leaf))))));
 
-    private static Level1 Leaf(Level2 value) => value.Tag == 0 ? value.A.Child : value.B.Child;
-    private static Level1 Leaf(Level3 value) => Leaf(value.Tag == 0 ? value.A.Child : value.B.Child);
-    private static Level1 Leaf(Level4 value) => Leaf(value.Tag == 0 ? value.A.Child : value.B.Child);
-    private static Level1 Leaf(Level5 value) => Leaf(value.Tag == 0 ? value.A.Child : value.B.Child);
-    private static Level1 Leaf(Level6 value) => Leaf(value.Tag == 0 ? value.A.Child : value.B.Child);
-    private static Level1 Leaf(Level7 value) => Leaf(value.Tag == 0 ? value.A.Child : value.B.Child);
-    private static ReadOnlyMemory<uint> Values(Level1 value) => value.Tag == 0 ? value.A.Values : value.B.Values;
+    private static Level1Input Leaf(Level2Input value) => value.Tag == 0 ? value.A.Child : value.B.Child;
+    private static Level1Input Leaf(Level3Input value) => Leaf(value.Tag == 0 ? value.A.Child : value.B.Child);
+    private static Level1Input Leaf(Level4Input value) => Leaf(value.Tag == 0 ? value.A.Child : value.B.Child);
+    private static Level1Input Leaf(Level5Input value) => Leaf(value.Tag == 0 ? value.A.Child : value.B.Child);
+    private static Level1Input Leaf(Level6Input value) => Leaf(value.Tag == 0 ? value.A.Child : value.B.Child);
+    private static Level1Input Leaf(Level7Input value) => Leaf(value.Tag == 0 ? value.A.Child : value.B.Child);
+    private static ReadOnlyMemory<uint> Values(Level1Input value) => value.Tag == 0 ? value.A.Values : value.B.Values;
+
+    private static void ZeroedPayload()
+    {
+        var zeroed = Level7AInput.FromSources(Level6AInput.FromSources(Level5AInput.FromSources(
+            Level4AInput.FromSources(Level3AInput.FromSources(Level2AInput.FromSources(
+                Level1AInput.FromSources(new Intrlay.ZeroedSequence<uint>(3), "zero")))))));
+        var values = Nest(Level1Input.FromA(new uint[3], "zero"));
+        Check(Level7View.Create(in zeroed).Bytes.Span.SequenceEqual(Level7View.Create(in values).Bytes.Span),
+            "nested zero requests match ordinary element inputs");
+    }
 
     private static void Owners()
     {
@@ -132,7 +148,7 @@ static class Program
             foreach (int length in new[] { 0, 2 })
             {
                 ReadOnlyMemory<uint> memory = manager.Memory.Slice(1, length);
-                var restored = Leaf(Nest(Level1.FromA(memory, "owner"))).A.Values;
+                var restored = Leaf(Nest(Level1Input.FromA(memory, "owner"))).A.Values;
                 Check(restored.Equals(memory), "manager owner/slice identity");
                 Check(MemoryMarshal.TryGetMemoryManager<uint, MemoryManager<uint>>(restored, out var owner)
                     && ReferenceEquals(owner, manager), "manager owner replaced during storage transfer");
@@ -140,8 +156,8 @@ static class Program
         }
         ReadOnlyMemory<uint> array = new uint[] { 0, 10, 20 };
         array = array.Slice(1, 2);
-        Check(Leaf(Nest(Level1.FromA(array, "array"))).A.Values.Equals(array), "array slice identity");
-        Check(Leaf(Nest(Level1.FromA(default, "default"))).A.Values.Equals(default(ReadOnlyMemory<uint>)), "default memory identity");
+        Check(Leaf(Nest(Level1Input.FromA(array, "array"))).A.Values.Equals(array), "array slice identity");
+        Check(Leaf(Nest(Level1Input.FromA(default, "default"))).A.Values.Equals(default(ReadOnlyMemory<uint>)), "default memory identity");
         foreach (int length in new[] { 0, 2 })
         {
             var (value, owner, label) = Retained(length);
@@ -156,16 +172,16 @@ static class Program
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static (Level7 Value, WeakReference Owner, WeakReference Label) Retained(int length)
+    private static (Level7Input Value, WeakReference Owner, WeakReference LabelInput) Retained(int length)
     {
         var manager = new CountingManager(new uint[] { 0, 10, 20 }, true);
         string label = new("managed".ToCharArray());
-        return (Nest(Level1.FromA(manager.Memory.Slice(1, length), label)), new WeakReference(manager), new WeakReference(label));
+        return (Nest(Level1Input.FromA(manager.Memory.Slice(1, length), label)), new WeakReference(manager), new WeakReference(label));
     }
 
     private static void Allocation(ReadOnlyMemory<uint> memory, CountingManager manager)
     {
-        var leaf = Level1.FromA(memory, "leaf");
+        var leaf = Level1Input.FromA(memory, "leaf");
         _ = UseDeep(leaf, 10000);
         manager.Calls = 0;
         long before = GC.GetAllocatedBytesForCurrentThread();
@@ -177,7 +193,7 @@ static class Program
     }
 
     [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
-    private static long UseDeep(Level1 leaf, int count)
+    private static long UseDeep(Level1Input leaf, int count)
     {
         long total = 0;
         for (int i = 0; i < count; ++i)
@@ -190,13 +206,13 @@ static class Program
 
     private static void SourceGrowth()
     {
-        string file = Directory.GetFiles(Fixture + "expanded",
+        string file = Directory.GetFiles(Bindings + "expanded",
             "*.g.cs", SearchOption.AllDirectories).Single();
         string source = File.ReadAllText(file).Replace("\r", "");
         int[] lengths = new int[6];
         for (int depth = 2; depth <= 7; ++depth)
         {
-            int start = source.IndexOf($"public readonly partial struct Level{depth}\n", StringComparison.Ordinal);
+            int start = source.IndexOf($"public readonly partial struct Level{depth}Input", StringComparison.Ordinal);
             Check(start >= 0, "missing native declaration");
             int end = source.IndexOf('{', start), nesting = 1;
             while (nesting != 0)
@@ -207,7 +223,12 @@ static class Program
             }
             string body = source.Substring(start, end - start + 1);
             Check(!body.Contains(".As<", StringComparison.Ordinal), "nested native access must reuse child storage");
+#if INTRLAY_CSHARP15
+            Check(body.Split("switch", StringSplitOptions.None).Length == 2,
+                "only the IUnion object projection dispatches alternatives");
+#else
             Check(!body.Contains("switch", StringComparison.Ordinal), "nested alternatives were expanded again");
+#endif
             lengths[depth - 2] = body.Length;
         }
         Check(lengths.Max() - lengths.Min() < 400, "per-level native implementation must stay bounded");

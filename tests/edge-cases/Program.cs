@@ -16,7 +16,9 @@ static uint ReadNested(NestedView view, int count)
 }
 
 var values = new[] { "", "hello", "\uFEFF", "\uFEFFhello", "\uFEFF\uFEFFhello", "a\uFEFFb", "한글😀" };
-var text = TextView.Create(new Text(values));
+var text = TextView.Create(new TextInput(values));
+var availableNames = EdgeCases.OmittedApis.AvailableNamesView.Create(new EdgeCases.OmittedApis.AvailableNamesInput(7, "ok"));
+Check(availableNames.TryGetNativeSpan == 7 && availableNames.ToValue == "ok" && availableNames.AsSpan().ToValue == "ok");
 Check(text.Bytes.Span.SequenceEqual(Read("text")));
 var root = new EdgeCasesView(Read("golden"));
 for (int i = 0; i < values.Length; ++i) Check(text.Values[i] == values[i] && root.Text.Values[i] == values[i]);
@@ -33,7 +35,7 @@ Check(!new NestedView(Read("absent-1")).Child.Value.HasValue);
 Check(!new NestedView(Read("absent-2")).Child.Value.Value.HasValue);
 Check(EdgeCases.Scalar.IntrlayU32View.Create(123).Value == 123);
 
-var intrinsics = new EdgeCases.Intrinsics.IntrinsicProperties(1, 2, 3, 4);
+var intrinsics = new EdgeCases.Intrinsics.IntrinsicPropertiesInput(1, 2, 3, 4);
 var intrinsicView = EdgeCases.Intrinsics.IntrinsicPropertiesView.Create(intrinsics);
 Check(intrinsicView.@__arglist == 1 && intrinsicView.@__makeref == 2);
 Check(intrinsicView.@__reftype == 3 && intrinsicView.@__refvalue == 4);
@@ -41,11 +43,11 @@ Check(intrinsicView.@__reftype == 3 && intrinsicView.@__refvalue == 4);
 var names = new EdgeCases.Hygiene.HygieneView(Read("hygiene"));
 Check(names.Result.Value == 1 && names.Selected!.Value.Value == 8);
 Check(names.Unit.Equals(default(ValueTuple)) && names.Text == "standard names");
-var nativeNames = new EdgeCases.Hygiene.Hygiene(
-    new EdgeCases.Hygiene.BinaryPrimitives(1), new EdgeCases.Hygiene.Encoding(2),
-    new EdgeCases.Hygiene.ValueTuple(3), new EdgeCases.Hygiene.ArgumentException(4),
-    new EdgeCases.Hygiene.System(5), default(ValueTuple), "standard names", new uint[] { 6, 7 },
-    new EdgeCases.Hygiene.BinaryPrimitives(8));
+var nativeNames = new EdgeCases.Hygiene.HygieneInput(
+    new EdgeCases.Hygiene.BinaryPrimitivesInput(1), new EdgeCases.Hygiene.EncodingInput(2),
+    new EdgeCases.Hygiene.ValueTupleInput(3), new EdgeCases.Hygiene.ArgumentExceptionInput(4),
+    new EdgeCases.Hygiene.SystemInput(5), default(ValueTuple), "standard names", new uint[] { 6, 7 },
+    new EdgeCases.Hygiene.BinaryPrimitivesInput(8));
 Check(EdgeCases.Hygiene.HygieneView.Create(nativeNames).Bytes.Span.SequenceEqual(Read("hygiene")));
 
 using var owner = new CountingMemoryManager(Read("golden"));

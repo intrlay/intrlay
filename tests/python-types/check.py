@@ -24,6 +24,9 @@ subprocess.run(
     [*command, str(generated / 'bindings.py'), str(edge_cases / 'edge_bindings.py'),
      str(root / 'target/regressions/private_names.py'), str(root / 'target/regressions/private_helpers.py'),
      str(root / 'target/regressions/scalar_setters.py'),
+     str(root / 'target/regressions/input_emission.py'),
+     str(root / 'target/regressions/storage_emission.py'),
+     str(root / 'target/regressions/view_emission.py'),
      str(fixtures / 'valid.py')],
     cwd=root, env=environment, check=True,
 )

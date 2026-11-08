@@ -35,7 +35,7 @@ pub fn expand(model: &Model<'_>, shape: &Fields) -> syn::Result<TokenStream> {
         .collect();
     let alignment = model.options.alignment;
     let native = native_layout(model, &fields);
-    let (payload, in_place) = replacement_properties(model, &fields);
+    let (payload, in_place, zeroable) = encoding_properties(model, &fields);
     let fixed = fields.iter().map(|field| {
         let codec = &field.codec;
         quote!(<#codec as #runtime::Intrlay>::WRITES_FIXED_LAYOUT)
@@ -59,8 +59,10 @@ pub fn expand(model: &Model<'_>, shape: &Fields) -> syn::Result<TokenStream> {
     let (getters, mutators) = accessors(model, &fields, &layouts);
     let declaration = view::declaration(model, &generics, &getters, &mutators);
     let metadata = metadata(model, &fields);
+    let input = crate::input::record(model, shape, &fields, &layouts)?;
     Ok(quote! {
         #declaration
+        #input
         #[automatically_derived]
         impl #implementation #runtime::schema::Describe for #ident #types #predicates {
             fn describe(#registry: &mut #runtime::schema::Registry) -> #runtime::schema::Type { #metadata }
@@ -73,6 +75,7 @@ pub fn expand(model: &Model<'_>, shape: &Fields) -> syn::Result<TokenStream> {
             type ViewMut<'__intrlay> = #view_name<&'__intrlay mut [::core::primitive::u8], #(#args),*>;
             const LAYOUT: #runtime::layout::Layout = #runtime::layout::record(&[#(#layouts),*], #alignment);
             const NATIVE_LAYOUT: ::core::primitive::bool = #native;
+            const ZEROABLE: ::core::primitive::bool = #zeroable;
             const HAS_PAYLOAD: ::core::primitive::bool =  #payload;
             const IN_PLACE_WRITE: ::core::primitive::bool = #in_place;
             const WRITES_FIXED_LAYOUT: ::core::primitive::bool = true #(&& #fixed)*
@@ -128,7 +131,10 @@ fn validate_fields(model: &Model<'_>, shape: &Fields, fields: &[Field]) -> syn::
     Ok(())
 }
 
-fn replacement_properties(model: &Model<'_>, fields: &[Field]) -> (TokenStream, TokenStream) {
+fn encoding_properties(
+    model: &Model<'_>,
+    fields: &[Field],
+) -> (TokenStream, TokenStream, TokenStream) {
     let runtime = &model.runtime;
     let direct = model.options.from.is_none();
     let payloads = fields.iter().map(|field| {
@@ -140,9 +146,14 @@ fn replacement_properties(model: &Model<'_>, fields: &[Field]) -> (TokenStream, 
         let direct = field.options.getter.is_none();
         quote!(#direct && <#codec as #runtime::Intrlay>::IN_PLACE_WRITE)
     });
+    let zeroable = fields.iter().map(|field| {
+        let codec = &field.codec;
+        quote!(<#codec as #runtime::Intrlay>::ZEROABLE)
+    });
     (
         quote!(false #(|| #payloads)*),
         quote!(#direct #(&& (#in_place))*),
+        quote!(true #(&& #zeroable)*),
     )
 }
 

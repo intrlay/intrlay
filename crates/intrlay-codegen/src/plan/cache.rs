@@ -1,7 +1,6 @@
 //! Cached views retain their identity while discriminants are read from storage.
 
 use super::{Id, Kind, TypeGraph};
-use intrlay_schema::Language;
 
 pub struct ViewCache {
     pub value: String,
@@ -12,16 +11,7 @@ impl TypeGraph {
     pub fn view_cache(&self, id: Id, name: &str, tagged: bool) -> ViewCache {
         let field = |suffix: &str| {
             let name = format!("cached_{name}{suffix}");
-            if self.backend.language == Language::Python {
-                format!("_{name}")
-            } else {
-                self.names.symbol(
-                    &name,
-                    crate::SymbolKind::Field,
-                    Some(crate::Visibility::Private),
-                    &[],
-                )
-            }
+            self.backend.api.cache_field(&self.names, &name)
         };
         ViewCache {
             value: field(""),

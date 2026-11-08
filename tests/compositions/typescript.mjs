@@ -1,8 +1,23 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { zeroed } from "../../packages/typescript/dist/index.js";
+import { ZeroedArraysView } from "../../target/compositions/bindings.js";
 import { runInNewContext } from "node:vm";
-import { NumericItemsView } from "../../target/compositions/bindings.ts";
+import { NumericItemsView } from "../../target/compositions/bindings.js";
 import { EncodingBuffer } from "../../packages/typescript/dist/index.js";
-import { RenamedListView, ProjectionSetView, WrappedScalarsView, CachedChildrenView, OptionalRootView, CachedRootView } from "../../target/compositions/bindings.ts";
+import { RenamedListView, ProjectionSetView, WrappedScalarsView, CachedChildrenView, OptionalRootView, CachedRootView } from "../../target/compositions/bindings.js";
+
+const zeroInput = { id: 73, points: zeroed(3), flags: zeroed(4), matrix: zeroed(), present: zeroed(), nested: [zeroed(2), zeroed(0)], empty: zeroed() };
+const zeroExpected = new Uint8Array(readFileSync("target/compositions/zeroed.bin"));
+const zeroOwner = new Uint8Array(zeroExpected.length + 32).fill(0xa5);
+const zeroView = ZeroedArraysView.createInPlace(zeroOwner.subarray(16), zeroInput);
+assert.deepEqual(zeroView.bytes, zeroExpected);
+assert.deepEqual(ZeroedArraysView.create(zeroInput).bytes, zeroExpected);
+assert.ok(zeroOwner.subarray(0, 16).every(value => value === 0xa5));
+assert.ok(zeroOwner.subarray(16 + zeroExpected.length).every(value => value === 0xa5));
+zeroView.matrix.fill(7);
+zeroView.setMatrix(zeroed());
+assert.deepEqual(zeroView.bytes, zeroExpected);
 
 const renamed = RenamedListView.create({ items: [{ first: 11, second: 22 }] });
 assert.equal(renamed.items.getFirst(0), 11);
@@ -44,7 +59,7 @@ for (const value of [null, { value: null }, { value: 2 }]) {
     assert.deepEqual(root.value, value === null ? null : { value: 9 });
 }
 
-const cached = CachedChildrenView.create({ child: { value: 1 }, absent: null, boxed: { value: 2 }, nested: { value: { value: 3 } }, choice: { kind: "Value", child: { value: 4 } } });
+const cached = CachedChildrenView.create({ child: { value: 1 }, absent: null, boxed: { value: 2 }, nested: { value: { value: 3 } }, choice: { kind: 1 /* CachedChoiceKind.Value */, child: { value: 4 } } });
 assert.equal(cached.child, cached.child);
 assert.equal(cached.absent, null);
 assert.equal(cached.boxed, cached.boxed);

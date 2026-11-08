@@ -10,6 +10,7 @@ internal sealed class Schema
 {
     public string Namespace = "";
     public string Name = "";
+    public int CSharpLanguageVersion = 14;
     public readonly Dictionary<string, string> Names = new();
     public readonly Dictionary<int, Node> Nodes = new();
     public readonly List<View> Views = new();
@@ -22,7 +23,11 @@ internal sealed class Schema
         foreach (var attribute in attributes)
         {
             var data = new Metadata(attribute);
-            if (data.Is("WireType"))
+            if (data.Is("GenerateBindings"))
+            {
+                schema.CSharpLanguageVersion = data.Named("CSharpLanguageVersion", 14);
+            }
+            else if (data.Is("WireType"))
             {
                 var node = new Node
                 {
@@ -34,8 +39,11 @@ internal sealed class Schema
                     Encode = data.Named("Encode", false), Native = data.Named("Native", false),
                     NativeLayout = data.Named("NativeLayout", false),
                     FullyWritten = data.Named("FullyWritten", false),
+                    Zeroable = data.Named("Zeroable", false),
                     ViewName = data.Named("ViewName", ""), MeasureName = data.Named("MeasureName", ""),
                     SpanName = data.Named("SpanName", ""), ArrayName = data.Named("ArrayName", ""),
+                    SpanInputName = data.Named("SpanInputName", ""),
+                    SourceInputName = data.Named("SourceInputName", ""),
                     NativeReadName = data.Named("NativeReadName", ""),
                     WriteName = data.Named("WriteName", ""), Docs = data.Named("Documentation", ""),
                 };
@@ -64,6 +72,7 @@ internal sealed class Schema
                 schema.Nodes[data.At<int>(0)].Variants.Add(new Variant
                 {
                     Tag = data.At<uint>(1), Name = data.At<string>(2), Factory = data.At<string>(3),
+                    InputName = data.Named("InputName", ""),
                     Docs = data.Named("Documentation", ""),
                 });
             }
@@ -81,9 +90,12 @@ internal sealed class Node
     public int Id, Size, Alignment, BufferAlignment, Value, Argument;
     public string Kind = "", Name = "", ViewName = "", MeasureName = "", WriteName = "", Docs = "";
     public string SpanName = "", ArrayName = "", NativeReadName = "";
-    public bool Read, Write, Create, HasPayload, Encode, Native, NativeLayout, FullyWritten;
+    public string SpanInputName = "";
+    public string SourceInputName = "";
+    public bool Read, Write, Create, HasPayload, Encode, Native, NativeLayout, FullyWritten, Zeroable;
     public readonly List<Field> Fields = new();
     public readonly List<Variant> Variants = new();
+    public bool ValueEnum => Kind == "Enum" && Fields.Count == 0;
     public bool Scalar => Kind is "Bool" or "I8" or "U8" or "I16" or "U16" or "I32" or "U32" or "I64" or "U64" or "F32" or "F64";
 }
 
@@ -99,7 +111,7 @@ internal sealed class Field
 internal sealed class Variant
 {
     public uint Tag;
-    public string Name = "", Factory = "", Docs = "";
+    public string Name = "", Factory = "", Docs = "", InputName = "";
 }
 
 internal sealed class View

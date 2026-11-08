@@ -4,20 +4,22 @@ use intrlay_schema::{Exposure, Scalar};
 
 use crate::{
     GenerateError,
-    api::{Accessor, IndexedAccessors},
-    plan::{Field, GenerationPlan, Id, Kind, Node, TypeGraph},
+    api::{Accessor, CollectionAccessors, IndexedAccessors},
+    plan::{Field, GenerationPlan, Id, Kind, Node, TypeGraph, Variant, WriterParameters},
 };
 
 mod documentation;
 mod load;
 mod mutation;
+mod name_validation;
 mod names;
 
 pub const BACKEND: crate::backend::Backend = crate::backend::Backend {
     language: intrlay_schema::Language::TypeScript,
+    api: &crate::api::DefaultApi,
     naming_policy: names::policy,
-    keywords: names::KEYWORDS,
     reserved_declarations: &["intrlay", "Some", "globalThis"],
+    is_reserved_name: name_validation::is_reserved,
     generate,
     field_setter: crate::api::SetterSyntax::PropertyWithGetter,
     root_setter: crate::api::SetterSyntax::Property,
@@ -27,20 +29,37 @@ pub const BACKEND: crate::backend::Backend = crate::backend::Backend {
     codec_function_modifiers: &[],
     fixed_array_api: crate::backend::FixedArrayApi::Numeric,
     native_numeric_array_views: true,
+    runtime_numeric_array_writers: false,
 };
 
-pub fn generate(generation: &GenerationPlan) -> Result<String, GenerateError> {
+pub fn generate(
+    generation: &GenerationPlan,
+    _options: &crate::GenerateOptions,
+) -> Result<String, GenerateError> {
+    name_validation::validate(generation)?;
     let plan = &generation.encoding.types;
     let mut output = String::from(include_str!("prelude.txt"));
-    let encoders = &generation.encoding.encoders;
+    if !generation.views.emitted.is_empty() {
+        writeln!(output, "import * as intrlay from \"@intrlay/runtime\";")?;
+    }
+    writeln!(output, "export type {{ Some }} from \"@intrlay/runtime\";")?;
     for (id, node) in plan.nodes.iter().enumerate() {
         if matches!(node.kind, Kind::Record(_) | Kind::Enum(_)) {
-            input(&mut output, plan, id, node)?;
+            input(
+                &mut output,
+                plan,
+                id,
+                node,
+                generation.encoding.needs_input(id),
+            )?;
         }
     }
     for (id, node) in plan.nodes.iter().enumerate() {
-        if encoders.contains(&id) {
-            construction(&mut output, plan, id, node)?;
+        if generation.encoding.measures.contains(&id) {
+            measure(&mut output, plan, id, node)?;
+        }
+        if generation.encoding.writers.contains(&id) {
+            write_function(&mut output, plan, id, node)?;
         }
     }
     let view_plan = &generation.views.types;
@@ -50,22 +69,53 @@ pub fn generate(generation: &GenerationPlan) -> Result<String, GenerateError> {
     }
     for (alias, id) in &plan.exports {
         if *alias != plan.nodes[*id].name {
-            writeln!(
-                output,
-                "export {{ {} as {alias}View }};",
-                plan.view_name(*id)
-            )?;
+            if generation.views.emitted.contains(id) {
+                writeln!(
+                    output,
+                    "export {{ {} as {alias}View }};",
+                    plan.view_name(*id)
+                )?;
+            }
+            if matches!(plan.nodes[*id].kind, Kind::Enum(_)) && !plan.nodes[*id].is_value_enum() {
+                writeln!(
+                    output,
+                    "export {{ {} as {alias}Kind }};",
+                    plan.nodes[*id].kind_name()
+                )?;
+            }
         }
-        if *alias != plan.nodes[*id].name
-            || !matches!(plan.nodes[*id].kind, Kind::Record(_) | Kind::Enum(_))
+        if generation.encoding.needs_input(*id)
+            && (*alias != plan.nodes[*id].name
+                || !matches!(plan.nodes[*id].kind, Kind::Record(_) | Kind::Enum(_)))
         {
-            writeln!(output, "export type {alias} = {};", input_type(plan, *id))?;
+            if plan.nodes[*id].is_value_enum() {
+                writeln!(
+                    output,
+                    "export {{ {} as {alias}Input }};",
+                    input_type(plan, *id)
+                )?;
+            } else {
+                writeln!(
+                    output,
+                    "export type {alias}Input = {};",
+                    input_type(plan, *id)
+                )?;
+            }
         }
     }
     Ok(output)
 }
 
-fn input(output: &mut String, plan: &TypeGraph, id: Id, node: &Node) -> Result<(), GenerateError> {
+fn input(
+    output: &mut String,
+    plan: &TypeGraph,
+    id: Id,
+    node: &Node,
+    needed: bool,
+) -> Result<(), GenerateError> {
+    if !needed && !matches!(node.kind, Kind::Enum(_)) {
+        return Ok(());
+    }
     let name = plan.input_name(id);
     writeln!(output)?;
     documentation::write(output, &node.docs, "")?;
@@ -92,11 +142,23 @@ fn input(output: &mut String, plan: &TypeGraph, id: Id, node: &Node) -> Result<(
             writeln!(output, "}}")?;
         }
         Kind::Enum(variants) => {
+            let kind = node.tag_type_name();
+            writeln!(output, "export const enum {kind} {{")?;
+            for variant in variants {
+                documentation::write(output, &variant.docs, "    ")?;
+                writeln!(output, "    {} = {},", variant.name, variant.tag)?;
+            }
+            writeln!(output, "}}")?;
+            if node.is_value_enum() || !needed {
+                return Ok(());
+            }
+            writeln!(output)?;
+            documentation::write(output, &node.docs, "")?;
             writeln!(output, "export type {name} =")?;
             for variant in variants {
                 writeln!(output, "    | {{")?;
                 documentation::write(output, &variant.docs, "        ")?;
-                writeln!(output, "        readonly kind: \"{}\";", variant.name)?;
+                writeln!(output, "        readonly kind: {kind}.{};", variant.name)?;
                 for field in &variant.fields {
                     documentation::write(output, &field.docs, "        ")?;
                     writeln!(
@@ -115,18 +177,16 @@ fn input(output: &mut String, plan: &TypeGraph, id: Id, node: &Node) -> Result<(
     Ok(())
 }
 
-fn construction(
+fn measure(
     output: &mut String,
     plan: &TypeGraph,
     id: Id,
     node: &Node,
 ) -> Result<(), GenerateError> {
-    if !plan.has_payload(id) {
-        return write_function(output, plan, id, node);
-    }
+    let value = plan.measure_parameter(id);
     writeln!(
         output,
-        "\nfunction $[measure:{id}](value: {}, cursor: intrlay.Cursor): void {{",
+        "\nfunction $[measure:{id}]({value}: {}, cursor: intrlay.Cursor): void {{",
         input_type(plan, id)
     )?;
     match &node.kind {
@@ -144,7 +204,12 @@ fn construction(
         Kind::Enum(variants) => {
             writeln!(output, "    switch (value.kind) {{")?;
             for variant in variants {
-                writeln!(output, "        case \"{}\":", variant.name)?;
+                writeln!(
+                    output,
+                    "        case {}.{}:",
+                    node.kind_name(),
+                    variant.name
+                )?;
                 for field in variant
                     .fields
                     .iter()
@@ -203,7 +268,29 @@ fn construction(
         _ => {}
     }
     writeln!(output, "}}")?;
-    write_function(output, plan, id, node)
+    Ok(())
+}
+
+fn initialize_fixed_array(
+    output: &mut String,
+    plan: &TypeGraph,
+    id: Id,
+    node: &Node,
+) -> Result<(), GenerateError> {
+    if let Kind::Array { length, .. } = node.kind {
+        if plan.zeroable(id) {
+            writeln!(
+                output,
+                "    if (typeof value === \"symbol\") {{\n        storage.u8.fill(0, offset, offset + {});\n        return;\n    }}",
+                node.layout.size()
+            )?;
+        }
+        writeln!(
+            output,
+            "    if (value.length !== {length}) {{\n        throw new globalThis.RangeError(\"fixed array length\");\n    }}"
+        )?;
+    }
+    Ok(())
 }
 
 fn write_function(
@@ -217,23 +304,24 @@ fn write_function(
     } else {
         " | undefined"
     };
+    let WriterParameters {
+        storage,
+        offset,
+        value,
+        cursor,
+    } = plan.writer_parameters(id);
     writeln!(
         output,
-        "\nfunction $[write:{id}](storage: intrlay.Storage, offset: number, value: {}, cursor: intrlay.Cursor{optional}): void {{",
+        "\nfunction $[write:{id}]({storage}: intrlay.Storage, {offset}: number, {value}: {}, {cursor}: intrlay.Cursor{optional}): void {{",
         input_type(plan, id)
     )?;
-    if let Kind::Array { length, .. } = node.kind {
-        writeln!(
-            output,
-            "    if ((typeof value === \"number\" ? value : value.length) !== {length}) {{\n        throw new globalThis.RangeError(\"fixed array length\");\n    }}"
-        )?;
-    }
+    initialize_fixed_array(output, plan, id, node)?;
     match &node.kind {
         Kind::Scalar(scalar) => writeln!(output, "    {};", store(*scalar, "offset", "value"))?,
         Kind::Unit | Kind::Array { length: 0, .. } => {}
         Kind::String => writeln!(
             output,
-            "    const length = intrlay.utf8Length(value);\n    const payloadOffset = cursor.reserve(length, 1);\n    storage.u32[offset / 4] = payloadOffset - offset;\n    storage.u32[offset / 4 + 1] = length;\n    intrlay.encodeString(value, storage.bytes.subarray(payloadOffset, payloadOffset + length));"
+            "    const length = intrlay.utf8Length(value);\n    const payloadOffset = cursor.reserve(length, 1);\n    storage.u32[offset >>> 2] = payloadOffset - offset;\n    storage.u32[(offset >>> 2) + 1] = length;\n    intrlay.encodeString(value, storage.bytes.subarray(payloadOffset, payloadOffset + length));"
         )?,
         Kind::Record(fields) => {
             for field in fields {
@@ -246,25 +334,7 @@ fn write_function(
                 )?;
             }
         }
-        Kind::Enum(variants) => {
-            writeln!(output, "    switch (value.kind) {{")?;
-            for variant in variants {
-                writeln!(
-                    output,
-                    "        case \"{}\":\n            storage.u32[offset / 4] = {};",
-                    variant.name, variant.tag
-                )?;
-                for field in &variant.fields {
-                    writeln!(
-                        output,
-                        "            $[write:{}](storage, offset + {}, value.{}, cursor);",
-                        field.ty, field.offset, field.name
-                    )?;
-                }
-                writeln!(output, "            break;")?;
-            }
-            writeln!(output, "    }}")?;
-        }
+        Kind::Enum(variants) => write_enum(output, node, variants)?,
         Kind::Sequence(element) | Kind::Array { element, .. } => {
             write_array(output, plan, node, *element)?;
         }
@@ -283,13 +353,55 @@ fn write_function(
             let child = &plan.nodes[*value];
             writeln!(
                 output,
-                "    const payloadOffset = cursor.reserve({}, {});\n    storage.u32[offset / 4] = payloadOffset - offset;\n    $[write:{value}](storage, payloadOffset, value, cursor);",
+                "    const payloadOffset = cursor.reserve({}, {});\n    storage.u32[offset >>> 2] = payloadOffset - offset;\n    $[write:{value}](storage, payloadOffset, value, cursor);",
                 child.layout.size(),
                 child.layout.alignment()
             )?;
         }
     }
     writeln!(output, "}}")?;
+    Ok(())
+}
+
+fn write_enum(output: &mut String, node: &Node, variants: &[Variant]) -> Result<(), GenerateError> {
+    if node.is_value_enum() {
+        writeln!(output, "    switch (value) {{")?;
+        for variant in variants {
+            writeln!(
+                output,
+                "        case {}.{}:",
+                node.input_name(),
+                variant.name
+            )?;
+        }
+        writeln!(
+            output,
+            "            storage.u32[offset >>> 2] = value;\n            break;"
+        )?;
+    } else {
+        writeln!(output, "    switch (value.kind) {{")?;
+        for variant in variants {
+            writeln!(
+                output,
+                "        case {}.{}:\n            storage.u32[offset >>> 2] = {};",
+                node.kind_name(),
+                variant.name,
+                variant.tag
+            )?;
+            for field in &variant.fields {
+                writeln!(
+                    output,
+                    "            $[write:{}](storage, offset + {}, value.{}, cursor);",
+                    field.ty, field.offset, field.name
+                )?;
+            }
+            writeln!(output, "            break;")?;
+        }
+    }
+    writeln!(
+        output,
+        "        default: throw new globalThis.RangeError(\"Unknown enum tag.\");\n    }}"
+    )?;
     Ok(())
 }
 
@@ -303,30 +415,56 @@ fn write_array(
     if matches!(node.kind, Kind::Sequence(_)) {
         writeln!(
             output,
-            "    const length = intrlay.count(value);\n    const payloadOffset = cursor.reserve(length * {}, {});\n    storage.u32[offset / 4] = payloadOffset - offset;\n    storage.u32[offset / 4 + 1] = length;",
+            "    const length = intrlay.count(value);\n    const payloadOffset = cursor.reserve(length * {}, {});\n    storage.u32[offset >>> 2] = payloadOffset - offset;\n    storage.u32[(offset >>> 2) + 1] = length;",
             element_node.layout.size(),
             element_node.layout.alignment()
         )?;
     } else {
         writeln!(output, "    const payloadOffset = offset;")?;
     }
-    writeln!(
-        output,
-        "    if (typeof value !== \"number\") {{\n        for (let index = 0; index < value.length; ++index) {{\n            $[write:{element}](storage, payloadOffset + index * {}, value[index]!, cursor);\n        }}\n    }}",
-        element_node.layout.size()
-    )?;
-    if matches!(node.kind, Kind::Array { .. }) && plan.zeroable(element) {
+    let bulk_scalar = match element_node.kind {
+        Kind::Scalar(scalar) if scalar != Scalar::Bool => {
+            // Node 24 / V8: set dispatch costs more than a short fixed loop.
+            // Byte loops remain competitive longer than wider numeric lanes.
+            let loop_limit = if scalar.layout().size() == 1 { 16 } else { 8 };
+            if matches!(node.kind, Kind::Array { length, .. } if length <= loop_limit) {
+                None
+            } else {
+                Some(scalar)
+            }
+        }
+        _ => None,
+    };
+    writeln!(output, "    if (typeof value !== \"number\") {{")?;
+    let indent = if let Some(scalar) = bulk_scalar {
+        // The input contract already requires ArrayLike. ArrayBuffer views here
+        // are typed arrays; set also preserves conversion between numeric lanes.
         writeln!(
             output,
-            "    else {{\n        storage.u8.fill(0, offset, offset + {});\n    }}",
-            node.layout.size()
+            "        if (globalThis.ArrayBuffer.isView(value)) {{\n            storage.{}.set(value, {});\n        }} else {{",
+            storage_name(scalar),
+            storage_index(scalar, "payloadOffset")
         )?;
+        "            "
+    } else {
+        "        "
+    };
+    writeln!(
+        output,
+        "{indent}for (let index = 0; index < value.length; ++index) {{\n{indent}    $[write:{element}](storage, payloadOffset + index * {}, value[index]!, cursor);\n{indent}}}",
+        element_node.layout.size()
+    )?;
+    if bulk_scalar.is_some() {
+        writeln!(output, "        }}")?;
     }
+    writeln!(output, "    }}")?;
     Ok(())
 }
 
 fn view(output: &mut String, plan: &TypeGraph, id: Id, node: &Node) -> Result<(), GenerateError> {
     let name = plan.view_name(id);
+    let mut members = String::new();
+    view_members(&mut members, plan, id, node)?;
     writeln!(output)?;
     documentation::write(
         output,
@@ -336,24 +474,37 @@ fn view(output: &mut String, plan: &TypeGraph, id: Id, node: &Node) -> Result<()
         ),
         "",
     )?;
-    let (collection_fields, collection_init) = if matches!(node.kind, Kind::Sequence(_)) {
+    // Keep storage only for emitted operations, not for disabled accessors.
+    let mut fields = String::new();
+    let mut initializers = String::new();
+    for (key, value) in [
+        ("offset", "offset"),
         (
-            "\n    private readonly $[element_offset]: number;\n    private readonly $[element_count]: number;",
-            "\n        this.$[element_offset] = offset + this.$[storage].u32[offset / 4]!;\n        this.$[element_count] = this.$[storage].u32[offset / 4 + 1]!;",
-        )
+            "element_offset",
+            "offset + this.$[storage].u32[offset >>> 2]!",
+        ),
+        ("element_count", "this.$[storage].u32[(offset >>> 2) + 1]!"),
+    ] {
+        if members.contains(&format!("$[{key}]")) {
+            write!(fields, "\n    private readonly $[{key}]: number;")?;
+            write!(initializers, "\n        this.$[{key}] = {value};")?;
+        }
+    }
+    let offset = if initializers.is_empty() {
+        "_offset"
     } else {
-        ("", "")
+        "offset"
     };
     writeln!(
         output,
-        "export class {name} {{\n    public static readonly $[byte_size] = {};\n    public static readonly $[alignment] = {};\n    private readonly $[storage]: intrlay.Storage;\n    private readonly $[offset]: number;{collection_fields}\n\n    public constructor(bytes: globalThis.Uint8Array | intrlay.Storage, offset = 0) {{\n        this.$[storage] = bytes instanceof intrlay.Storage ? bytes : new intrlay.Storage(bytes);\n        this.$[offset] = offset;{collection_init}\n    }}\n\n    public get $[bytes](): globalThis.Uint8Array {{ return this.$[storage].bytes; }}",
+        "export class {name} {{\n    public static readonly $[byte_size] = {};\n    public static readonly $[alignment] = {};\n    private readonly $[storage]: intrlay.Storage;{fields}\n\n    public constructor(bytes: globalThis.Uint8Array | intrlay.Storage, {offset} = 0) {{\n        this.$[storage] = bytes instanceof intrlay.Storage ? bytes : new intrlay.Storage(bytes);{initializers}\n    }}\n\n    public get $[bytes](): globalThis.Uint8Array {{ return this.$[storage].bytes; }}",
         node.layout.size(),
         node.buffer_alignment
     )?;
     if node.options.generation.create {
         construction_methods(output, plan, id)?;
     }
-    view_members(output, plan, id, node)?;
+    output.push_str(&members);
     writeln!(output, "}}")?;
     Ok(())
 }
@@ -366,6 +517,11 @@ fn construction_methods(
     let name = plan.view_name(id);
     let input = input_type(plan, id);
     let compute_size = compute_size(plan, id);
+    let measured_value = if plan.has_payload(id) {
+        "value"
+    } else {
+        "_value"
+    };
     let measure = if plan.has_payload(id) {
         format!("$[measure:{id}](value, cursor);")
     } else {
@@ -379,7 +535,7 @@ fn construction_methods(
     writeln!(
         output,
         r"
-    public static $[compute_byte_length](value: {input}): number {{
+    public static $[compute_byte_length]({measured_value}: {input}): number {{
         {compute_size}
     }}
 
@@ -430,7 +586,9 @@ fn view_members(
             if node.options.generation.getters {
                 writeln!(
                     output,
-                    "\n    public get $[tag](): number {{ return this.$[storage].u32[this.$[offset] / 4]!; }}"
+                    "\n    public get $[tag](): {} {{ return this.$[storage].u32[this.$[offset] >>> 2]! as {}; }}",
+                    node.tag_type_name(),
+                    node.tag_type_name(),
                 )?;
             }
             for variant in variants {
@@ -504,7 +662,9 @@ fn field_view(
     if let Some(setter) = &api.setter {
         let mutation = &setter.mutation;
         let guard = tag.map_or(String::new(), |tag| {
-            format!("if (this.$[storage].u32[this.$[offset] / 4] !== {tag}) {{\n    return;\n}}\n")
+            format!(
+                "if (this.$[storage].u32[this.$[offset] >>> 2] !== {tag}) {{\n    return;\n}}\n"
+            )
         });
         let signature = if setter.property {
             format!(
@@ -609,10 +769,20 @@ fn store(scalar: Scalar, offset: &str, value: &str) -> String {
         value.into()
     };
     format!(
-        "storage.{}[({offset}) / {}] = {value}",
+        "storage.{}[{}] = {value}",
         storage_name(scalar),
-        scalar.layout().size()
+        storage_index(scalar, offset)
     )
+}
+
+fn storage_index(scalar: Scalar, offset: &str) -> String {
+    // Encoded byte offsets use the full u32 range, including its sign bit.
+    let shift = scalar.layout().size().trailing_zeros();
+    if shift == 0 {
+        offset.into()
+    } else {
+        format!("({offset}) >>> {shift}")
+    }
 }
 
 fn storage_name(scalar: Scalar) -> &'static str {
@@ -656,14 +826,25 @@ fn input_type(plan: &TypeGraph, id: Id) -> String {
         Kind::Unit => "null".into(),
         Kind::String => "string".into(),
         Kind::Record(_) | Kind::Enum(_) => plan.input_name(id),
-        Kind::Sequence(element) | Kind::Array { element, .. } => {
+        Kind::Sequence(element) => {
             let count = if plan.zeroable(*element) {
-                " | number"
+                " | intrlay.ZeroedSequence"
             } else {
                 ""
             };
             format!(
                 "globalThis.ArrayLike<{}>{count}",
+                input_type(plan, *element)
+            )
+        }
+        Kind::Array { element, .. } => {
+            let zeroed = if plan.zeroable(id) {
+                " | intrlay.Zeroed"
+            } else {
+                ""
+            };
+            format!(
+                "globalThis.ArrayLike<{}>{zeroed}",
                 input_type(plan, *element)
             )
         }
@@ -698,14 +879,14 @@ fn sequence_view(
         output,
         "\n    public get $[length](): number {{ return {length}; }}"
     )?;
-    let has_getter = node.options.generation.getters
-        || (node.options.generation.setters && plan.borrows_content(element));
-    if has_getter {
+    let api = CollectionAccessors::new(plan, node, element);
+    if api.getter {
+        let index = load::index_parameter(plan, element, child.options.exposure);
         writeln!(output)?;
         method(
             output,
             &format!(
-                "public $[get](index: number): {}",
+                "public $[get]({index}: number): {}",
                 output_type(plan, element, child.options.exposure)
             ),
             &load::body(
@@ -721,11 +902,8 @@ fn sequence_view(
             "",
         )?;
     }
-    if node.options.generation.setters
-        && plan.nodes[element].options.generation.setters
-        && let Some(mutation) = plan.mutation(element)
-    {
-        if !has_getter {
+    if let Some(mutation) = &api.setter {
+        if !api.getter {
             writeln!(output)?;
         }
         method(
@@ -736,7 +914,7 @@ fn sequence_view(
             ),
             &mutation::body(
                 plan,
-                &mutation,
+                mutation,
                 &format!("({position}) + index * {}", child.layout.size()),
             ),
             "",
@@ -767,11 +945,12 @@ fn indexed_fields(
             let api = IndexedAccessors::new(plan, node, &plan.nodes[element], field);
             numeric_component_accessors(output, plan, &api, field, &p)?;
             if let Some(getter) = &api.getter {
+                let index = load::index_parameter(plan, field.ty, field.options.exposure);
                 writeln!(output)?;
                 method(
                     output,
                     &format!(
-                        "public {}(index: number): {}",
+                        "public {}({index}: number): {}",
                         getter,
                         output_type(plan, field.ty, field.options.exposure)
                     ),
@@ -837,12 +1016,12 @@ fn numeric_component_accessors(
     if let Some(scalar) = plan.component_scalar(field) {
         let mut prefix = format!("let position = {offset};\n");
         if matches!(plan.nodes[field.ty].kind, Kind::Sequence(_)) {
-            prefix.push_str("position += this.$[storage].u32[position / 4]!;\n");
+            prefix.push_str("position += this.$[storage].u32[position >>> 2]!;\n");
         }
         let lane = format!(
-            "this.$[storage].{}[position / {} + component]",
+            "this.$[storage].{}[({}) + component]",
             storage_name(scalar),
-            scalar.layout().size()
+            storage_index(scalar, "position")
         );
         let docs = crate::documentation::indexed_component(&field.docs);
         if let Some(getter) = &api.component_getter {

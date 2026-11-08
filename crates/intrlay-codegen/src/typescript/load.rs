@@ -11,6 +11,21 @@ pub(super) struct Read<'a> {
     pub tag: Option<u32>,
 }
 
+/// Unit values and empty numeric regions do not consult the collection index.
+pub(super) fn index_parameter(plan: &TypeGraph, id: Id, exposure: Exposure) -> &'static str {
+    let read = Read {
+        id,
+        exposure,
+        offset: "$[argument:index]",
+        tag: None,
+    };
+    if body(plan, &read, None).contains("$[argument:index]") {
+        "index"
+    } else {
+        "_index"
+    }
+}
+
 pub(super) fn body(plan: &TypeGraph, read: &Read<'_>, cache: Option<&ViewCache>) -> String {
     let mut lines = Vec::new();
     if let Some(cache) = cache.filter(|cache| cache.state.is_none()) {
@@ -22,7 +37,7 @@ pub(super) fn body(plan: &TypeGraph, read: &Read<'_>, cache: Option<&ViewCache>)
     if let Some(tag) = read.tag {
         let absent = finish("undefined", 0, cache, usize::MAX).replace('\n', "\n    ");
         lines.push(format!(
-            "if (this.$[storage].u32[this.$[offset] / 4] !== {tag}) {{\n    {absent}\n}}"
+            "if (this.$[storage].u32[this.$[offset] >>> 2] !== {tag}) {{\n    {absent}\n}}"
         ));
     }
     if let Some(value) = expression(plan, read.id, read.offset, read.exposure) {
@@ -63,9 +78,9 @@ fn follow(
         let Kind::Sequence(element) = plan.nodes[id].kind else {
             unreachable!("fixed numeric regions are expressions")
         };
-        lines.push("const payloadOffset = position + this.$[storage].u32[position / 4]!;".into());
+        lines.push("const payloadOffset = position + this.$[storage].u32[position >>> 2]!;".into());
         lines.push(format!(
-            "const length = this.$[storage].u32[position / 4 + 1]! * {};",
+            "const length = this.$[storage].u32[(position >>> 2) + 1]! * {};",
             plan.nodes[element].layout.size() / scalar.layout().size()
         ));
         lines.push(finish(
@@ -78,7 +93,7 @@ fn follow(
     }
     match plan.nodes[id].kind {
         Kind::Boxed(value) => {
-            lines.push("position += this.$[storage].u32[position / 4]!;".into());
+            lines.push("position += this.$[storage].u32[position >>> 2]!;".into());
             follow(
                 plan,
                 value,
@@ -128,9 +143,9 @@ fn expression(plan: &TypeGraph, id: Id, offset: &str, exposure: Exposure) -> Opt
     Some(match node.kind {
         Kind::Scalar(scalar) => {
             let value = format!(
-                "this.$[storage].{}[({offset}) / {}]!",
+                "this.$[storage].{}[{}]!",
                 super::storage_name(scalar),
-                scalar.layout().size()
+                super::storage_index(scalar, offset)
             );
             if scalar == intrlay_schema::Scalar::Bool {
                 format!("({value} !== 0)")

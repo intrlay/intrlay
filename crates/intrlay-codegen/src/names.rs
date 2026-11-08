@@ -190,24 +190,6 @@ impl NamingPolicy {
     }
 }
 
-/// Settings applied to the entire output module.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct GenerateOptions {
-    /// Stable name of this generation unit, independent of its exported types.
-    /// Defaults to `Schema`. C++/C# place declarations in a namespace derived
-    /// from this name; file-scoped languages already have their own module.
-    pub module_name: Option<String>,
-    /// Override the output language's conventional naming policy.
-    pub naming: Option<NamingPolicy>,
-    /// Full namespace for C++ declarations, such as `app::protocol`.
-    /// Overrides the default `intrlay_generated::<module_name>` namespace.
-    pub cpp_namespace: Option<String>,
-    /// Full namespace for C# declarations, such as `App.Protocol`.
-    /// Overrides the default `IntrlayGenerated.<ModuleName>` namespace.
-    pub csharp_namespace: Option<String>,
-}
-
 #[derive(Clone)]
 pub struct Names {
     pub policy: NamingPolicy,

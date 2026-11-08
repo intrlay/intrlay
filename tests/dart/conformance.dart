@@ -1,3 +1,4 @@
+import 'package:intrlay/intrlay.dart' as intrlay;
 import 'dart:io';
 import 'dart:typed_data';
 import '../../target/conformance/bindings.dart';
@@ -20,12 +21,12 @@ void main(List<String> arguments) {
   check(nullable.variants[0].valueValue == null, 'inactive nullable variant');
   check(nullable.variants[1].valueValue != null && nullable.variants[1].valueValue!.value == null, 'active nullable variant');
   check(nullable.variants[2].valueValue!.value == 9, 'active variant value');
-  const nullableValue = NullableCases(
+  const nullableValue = NullableCasesInput(
     absent: null, zero: 0, text: '', missingText: null,
     absentUnit: null, presentUnit: Some(null),
     nestedAbsent: null, nestedNone: Some(null), nestedValue: Some(7),
     boxedNone: Some(null), triple: Some(Some(null)),
-    variants: [NullableVariantEmpty(), NullableVariantValue(value: null), NullableVariantValue(value: 9)],
+    variants: [NullableVariantEmptyInput(), NullableVariantValueInput(value: null), NullableVariantValueInput(value: 9)],
   );
   final nullableCreated = NullableCasesView.create(nullableValue);
   check(nullableCreated.bytes.length == nullableBytes.length, 'nullable length');
@@ -42,14 +43,14 @@ void main(List<String> arguments) {
   check(view.commands[1].drawPointSize == 0.75, 'variant');
   check(view.tree.next!.id == 8 && view.tree.next!.next == null, 'recursive box');
   check(view.optional == 0, 'Some(0)');
-  const value = Message(
+  const value = MessageInput(
     sequence: 0x123456789abcdef0,
     title: 'fixture 🦀 한글',
-    points: [Point(x: 1, y: 2, z: 3), Point(x: 4, y: 5, z: 6)],
-    commands: [DrawingCommandClear(), DrawingCommandDrawPoint(position: Point(x: 7, y: 8, z: 9), size: 0.75, label: 'example')],
-    tree: Link(id: 7, next: Link(id: 8, next: null)),
+    points: intrlay.SequenceInput.from([PointInput(x: 1, y: 2, z: 3), PointInput(x: 4, y: 5, z: 6)]),
+    commands: [DrawingCommandClearInput(), DrawingCommandDrawPointInput(position: PointInput(x: 7, y: 8, z: 9), size: 0.75, label: 'example')],
+    tree: LinkInput(id: 7, next: LinkInput(id: 8, next: null)),
     optional: 0,
-    fixed: [10, 20, 30],
+    fixed: intrlay.FixedArrayInput.from([10, 20, 30]),
   );
   final created = MessageView.create(value);
   check(created.bytes.length == bytes.length, 'length');

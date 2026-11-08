@@ -1,11 +1,12 @@
 //! Workspace checks and executable consumers for every generated language.
 
 mod conformance;
+mod csharp_unions;
 
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 
 use crate::process::{CommandExt, Workspace, diagnostics, sources};
 use crate::release;
@@ -185,13 +186,19 @@ fn check_typescript(workspace: &Workspace) -> Result<()> {
             "./packages/typescript",
         ])
         .run()?;
-    for arguments in [&["ci"][..], &["run", "check"], &["test"]] {
+    for arguments in [&["ci"][..], &["run", "check"]] {
         workspace
             .command("npm")?
             .args(arguments)
             .current_dir(workspace.path("tests/typescript"))
             .run()?;
     }
+    compile_typescript_fixtures(workspace)?;
+    workspace
+        .command("npm")?
+        .arg("test")
+        .current_dir(workspace.path("tests/typescript"))
+        .run()?;
     for fixture in ["naming", "regressions", "annotations"] {
         workspace
             .command("node")?
@@ -199,6 +206,39 @@ fn check_typescript(workspace: &Workspace) -> Result<()> {
             .run()?;
     }
     Ok(())
+}
+
+fn generated_sources(workspace: &Workspace, extension: &str) -> Result<Vec<std::path::PathBuf>> {
+    let directory = workspace.path("target");
+    let manifest: Vec<std::path::PathBuf> =
+        serde_json::from_slice(&fs::read(directory.join("intrlay-fixtures.json"))?)?;
+    Ok(manifest
+        .into_iter()
+        .filter(|path| path.extension().is_some_and(|value| value == extension))
+        .map(|path| directory.join(path))
+        .collect())
+}
+
+fn compile_typescript_fixtures(workspace: &Workspace) -> Result<()> {
+    // Compile const enum declarations before executing JavaScript consumers;
+    // Node's type stripping cannot transform these TypeScript declarations.
+    workspace
+        .command("node")?
+        .args([
+            "tests/typescript/node_modules/typescript/bin/tsc",
+            "--strict",
+            "--noUnusedLocals",
+            "--noUnusedParameters",
+            "--target",
+            "ES2022",
+            "--module",
+            "ESNext",
+            "--moduleResolution",
+            "Bundler",
+            "--noEmitOnError",
+        ])
+        .args(generated_sources(workspace, "ts")?)
+        .run()
 }
 
 fn check_python(workspace: &Workspace) -> Result<()> {
@@ -214,6 +254,7 @@ fn check_python(workspace: &Workspace) -> Result<()> {
             "tests/python-types/requirements.txt",
         ])
         .run()?;
+    check_python_arguments(workspace)?;
     workspace
         .python()?
         .args(["tests/python.py", "target/conformance"])
@@ -228,12 +269,47 @@ fn check_python(workspace: &Workspace) -> Result<()> {
     Ok(())
 }
 
+fn check_python_arguments(workspace: &Workspace) -> Result<()> {
+    let target = workspace.path("target");
+    let mut sources = Vec::new();
+    for source in generated_sources(workspace, "py")? {
+        let destination = target
+            .join("python-unused-arguments")
+            .join(source.strip_prefix(&target)?);
+        fs::create_dir_all(destination.parent().context("generated source directory")?)?;
+        // Keep consumer-facing lint suppression in generated files. These test
+        // copies retain only narrow exceptions for public keyword parameters.
+        let code = fs::read_to_string(source)?.replacen("# flake8: noqa", "", 1);
+        fs::write(&destination, code)?;
+        sources.push(destination);
+    }
+    workspace
+        .python()?
+        .args([
+            "-m",
+            "ruff",
+            "check",
+            "--isolated",
+            "--select",
+            "ARG,RUF100",
+            "--cache-dir",
+            "target/ruff-cache",
+        ])
+        .args(sources)
+        .run()
+}
+
 fn check_dart(workspace: &Workspace) -> Result<()> {
     let directory = workspace.path("tests/dart");
     workspace
         .command("dart")?
         .args(["pub", "get"])
         .current_dir(&directory)
+        .run()?;
+    workspace
+        .command("dart")?
+        .args([DART_PACKAGES, "analyze"])
+        .args(generated_sources(workspace, "dart")?)
         .run()?;
     workspace
         .command("dart")?
@@ -262,6 +338,7 @@ fn check_dart(workspace: &Workspace) -> Result<()> {
     }
     for fixture in [
         "construction-extents",
+        "regressions",
         "private-fields",
         "tagged-scalars",
         "runtime",
@@ -342,7 +419,8 @@ fn check_csharp(workspace: &Workspace) -> Result<()> {
         ))
         .arg(format!("-p:RestorePackagesPath={}", cache.path().display()))
         .args(["--", "target/conformance"])
-        .run()
+        .run()?;
+    csharp_unions::run(workspace)
 }
 
 fn check_cpp(workspace: &Workspace) -> Result<()> {
@@ -354,6 +432,7 @@ fn check_cpp(workspace: &Workspace) -> Result<()> {
             &[&format!("target/{fixture}")],
         )?;
     }
+    check_cpp_source_diagnostics(workspace)?;
     workspace
         .command("cmake")?
         .args(["-S", "packages/cpp", "-B", "target/cmake-runtime"])
@@ -399,12 +478,56 @@ fn check_cpp(workspace: &Workspace) -> Result<()> {
     Ok(())
 }
 
+fn check_cpp_source_diagnostics(workspace: &Workspace) -> Result<()> {
+    let compiler = std::env::var_os("CXX").unwrap_or_else(|| "clang++".into());
+    for (fixture, source, definition, expected) in [
+        (
+            "replacement",
+            "tests/replacement/cpp.cpp",
+            "INTRLAY_TEST_INVALID_MUTATIONS",
+            &[
+                "constraints not satisfied",
+                "SetSourceFor",
+                "FixedEncodeSourceFor",
+                "set_number",
+                "set_numbers_values",
+            ][..],
+        ),
+        (
+            "cpp-metadata",
+            "tests/cpp-metadata/main.cpp",
+            "INTRLAY_TEST_INVALID_SOURCES",
+            &[
+                "constraints not satisfied",
+                "EncodeSourceFor",
+                "PolymorphicBitfieldChild",
+            ][..],
+        ),
+    ] {
+        let result = workspace
+            .command(&compiler)?
+            .args(["-std=c++20", "-fsyntax-only", "-Ipackages/cpp/include"])
+            .arg(format!("-D{definition}"))
+            .arg(format!("-Itarget/{fixture}"))
+            .arg(source)
+            .capture()?;
+        let messages = diagnostics(&result);
+        ensure!(
+            !result.status.success() && expected.iter().all(|expected| messages.contains(expected)),
+            "expected {fixture} source constraint diagnostics:\n{messages}"
+        );
+    }
+    Ok(())
+}
+
 fn typescript(workspace: &Workspace, sources: &[impl AsRef<Path>]) -> Result<()> {
     workspace
         .command("node")?
         .args([
             "tests/typescript/node_modules/typescript/bin/tsc",
             "--strict",
+            "--noUnusedLocals",
+            "--noUnusedParameters",
             "--noEmit",
             "--target",
             "ES2022",

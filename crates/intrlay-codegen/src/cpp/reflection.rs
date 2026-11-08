@@ -17,7 +17,7 @@ pub fn name(plan: &TypeGraph, id: Id) -> String {
 }
 
 /// Primitive fields use shared descriptors; they do not need generated types.
-pub fn reference(plan: &TypeGraph, id: Id, qualified: bool) -> String {
+pub fn reference(plan: &TypeGraph, id: Id, context: Option<&super::Context>) -> String {
     match plan.nodes[id].kind {
         Kind::Scalar(intrlay_schema::Scalar::Bool) => {
             "::intrlay::Scalar<bool, ::std::uint8_t>".into()
@@ -25,8 +25,10 @@ pub fn reference(plan: &TypeGraph, id: Id, qualified: bool) -> String {
         Kind::Scalar(scalar) => format!("::intrlay::Scalar<{}>", super::scalar_type(scalar)),
         Kind::Unit => "::intrlay::Unit".into(),
         Kind::String => "::intrlay::String".into(),
-        _ if qualified => super::qualified(plan, &format!("detail::{}", name(plan, id))),
-        _ => name(plan, id),
+        _ => context.map_or_else(
+            || name(plan, id),
+            |context| context.qualified(&format!("detail::{}", name(plan, id))),
+        ),
     }
 }
 
@@ -45,7 +47,11 @@ pub fn declarations(output: &mut String, plan: &TypeGraph) -> Result<(), Generat
     Ok(())
 }
 
-pub fn generate(output: &mut String, plan: &TypeGraph) -> Result<(), GenerateError> {
+pub fn generate(
+    output: &mut String,
+    plan: &TypeGraph,
+    context: &super::Context,
+) -> Result<(), GenerateError> {
     writeln!(
         output,
         "\n// Resolved wire layouts and native member mappings.\nnamespace detail {{"
@@ -56,11 +62,11 @@ pub fn generate(output: &mut String, plan: &TypeGraph) -> Result<(), GenerateErr
         let members = format!("members::{}", name(plan, id));
         writeln!(output)?;
         write!(output, "struct {} : ", name(plan, id))?;
-        let view = super::qualified(plan, &format!("Basic{}", plan.view_name(id)));
+        let view = context.qualified(&format!("Basic{}", plan.view_name(id)));
         match &node.kind {
             Kind::Record(fields) => {
                 write!(output, "::intrlay::Record<{view}, {}", node.layout.size())?;
-                fields_metadata(output, plan, fields, &node.name, &members, false, "    ")?;
+                fields_metadata(output, plan, fields, &members, false, "    ")?;
                 if !fields.is_empty() {
                     writeln!(output)?;
                 }
@@ -74,7 +80,6 @@ pub fn generate(output: &mut String, plan: &TypeGraph) -> Result<(), GenerateErr
                         output,
                         plan,
                         &variant.fields,
-                        &format!("{}{}", node.name, variant.name),
                         &members,
                         variant.synthetic_payload,
                         "        ",
@@ -89,25 +94,25 @@ pub fn generate(output: &mut String, plan: &TypeGraph) -> Result<(), GenerateErr
             Kind::Sequence(element) => write!(
                 output,
                 "::intrlay::Sequence<\n    {view},\n    {}, {}, {}\n>",
-                reference(plan, *element, false),
+                reference(plan, *element, None),
                 plan.nodes[*element].layout.size(),
                 plan.nodes[*element].layout.alignment()
             )?,
             Kind::Array { element, length } => write!(
                 output,
                 "::intrlay::Array<\n    {view},\n    {}, {}, {length}\n>",
-                reference(plan, *element, false),
+                reference(plan, *element, None),
                 plan.nodes[*element].layout.size()
             )?,
             Kind::Optional { value, offset } => write!(
                 output,
                 "::intrlay::Optional<{}, {offset}>",
-                reference(plan, *value, false)
+                reference(plan, *value, None)
             )?,
             Kind::Boxed(value) => write!(
                 output,
                 "::intrlay::Box<{}, {}, {}>",
-                reference(plan, *value, false),
+                reference(plan, *value, None),
                 plan.nodes[*value].layout.size(),
                 plan.nodes[*value].layout.alignment()
             )?,
@@ -122,7 +127,11 @@ pub fn generate(output: &mut String, plan: &TypeGraph) -> Result<(), GenerateErr
                 plan.writes_all_bytes(id)
             )?;
         }
-        writeln!(output, " {{}};")?;
+        writeln!(
+            output,
+            " {{\n    static constexpr bool zeroable = {};\n}};",
+            plan.zeroable(id)
+        )?;
     }
     writeln!(output, "}} // namespace detail\n")?;
     Ok(())
@@ -134,11 +143,15 @@ fn member_accessors(output: &mut String, plan: &TypeGraph) -> Result<(), Generat
     for id in descriptors(plan) {
         let mut members = BTreeSet::new();
         match &plan.nodes[id].kind {
-            Kind::Record(fields) => members.extend(fields.iter().map(source_member)),
+            Kind::Record(fields) => {
+                members.extend(fields.iter().map(source_member));
+                members.extend(fields.iter().map(|field| field.name.as_str()));
+            }
             Kind::Enum(variants) => {
                 for variant in variants {
                     if !variant.synthetic_payload {
                         members.extend(variant.fields.iter().map(source_member));
+                        members.extend(variant.fields.iter().map(|field| field.name.as_str()));
                     }
                 }
             }
@@ -163,12 +176,9 @@ fn member_accessors(output: &mut String, plan: &TypeGraph) -> Result<(), Generat
 }
 
 fn source_member(field: &Field) -> &str {
-    if super::names::KEYWORDS
-        .split_whitespace()
-        .any(|keyword| keyword == field.source_name)
-    {
-        // A source-language keyword (e.g. Rust's r#class) cannot name a C++
-        // member. Only the explicitly renamed API is usable in that case.
+    if super::names::is_reserved_identifier(&field.source_name) {
+        // Another source language may use C++ keywords or runtime macro names.
+        // Only the resolved C++ spelling can name a member in that case.
         &field.name
     } else {
         &field.source_name
@@ -179,7 +189,6 @@ fn fields_metadata(
     output: &mut String,
     plan: &TypeGraph,
     fields: &[Field],
-    native: &str,
     members: &str,
     synthetic_payload: bool,
     indent: &str,
@@ -190,16 +199,16 @@ fn fields_metadata(
             ",\n{indent}::intrlay::Field<\"{}\", {}, {}, ",
             field.name,
             field.offset,
-            reference(plan, field.ty, false)
+            reference(plan, field.ty, None)
         )?;
-        let member = format!("&{}::{}", super::qualified(plan, native), field.name);
         let source = source_member(field);
         if synthetic_payload {
             write!(output, "::intrlay::AlternativeValue{{}}")?;
         } else if field.name != source {
             write!(
                 output,
-                "::intrlay::MappedMember<{member}, {members}::{source}>{{}}"
+                "::intrlay::MappedMember<{members}::{}, {members}::{source}>{{}}",
+                field.name
             )?;
         } else {
             write!(output, "{members}::{source}")?;

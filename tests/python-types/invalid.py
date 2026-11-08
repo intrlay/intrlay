@@ -1,12 +1,21 @@
 """Each marked statement must fail; generated annotations must not leak Any."""
 
-from bindings import DrawingCommand, MessageView, Point
+from bindings import DrawingCommandInput, MessageView, PointInput
 from edge_bindings import AccessModesView, ScalarView
+from bindings import MessageInput
+from intrlay import zeroed
+
+
+def invalid_zeroed(value: MessageInput) -> None:
+    value['points'] = 3  # EXPECT: typeddict-item
+    value['fixed'] = zeroed(3)  # EXPECT: typeddict-item
+    value['points'] = zeroed()  # EXPECT: typeddict-item
+    value['commands'] = zeroed(3)  # EXPECT: typeddict-item
 
 
 def invalid_inputs() -> None:
-    point: Point = {'x': 'not a float', 'y': 0.0, 'z': 0.0}  # EXPECT: typeddict-item
-    command: DrawingCommand = {'kind': 'Missing'}  # EXPECT: typeddict-item
+    point: PointInput = {'x': 'not a float', 'y': 0.0, 'z': 0.0}  # EXPECT: typeddict-item
+    command: DrawingCommandInput = {'kind': 'Missing'}  # EXPECT: typeddict-item
     ScalarView.create('not a float')  # EXPECT: arg-type
 
 

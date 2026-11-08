@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { EdgeCasesView, NestedView, TextView } from "../../target/edge-cases/bindings.ts";
-import { IntrlayU32View } from "../../target/edge-cases/scalar.ts";
+import { EdgeCasesView, NestedView, TextView } from "../../target/edge-cases/bindings.js";
+import { IntrlayU32View } from "../../target/edge-cases/scalar.js";
 
 const read = name => new Uint8Array(readFileSync(new URL(`../../target/edge-cases/${name}.bin`, import.meta.url)));
 const values = ["", "hello", "\uFEFF", "\uFEFFhello", "\uFEFF\uFEFFhello", "a\uFEFFb", "한글😀"];

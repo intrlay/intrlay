@@ -146,8 +146,8 @@ fn generate_edge_cases(fixtures: &mut Fixtures) -> Result<(), Box<dyn Error>> {
     let schema = registry.finish();
     for (language, extension) in TARGETS {
         let mut options = options();
-        options.cpp_namespace = Some("edge_scalar".into());
-        options.csharp_namespace = Some("EdgeCases.Scalar".into());
+        options.cpp.namespace = Some("edge_scalar".into());
+        options.csharp.namespace = Some("EdgeCases.Scalar".into());
         fixtures.insert(
             directory.join(format!("scalar.{extension}")),
             generate_with_options(&schema, language, options)?,
@@ -237,8 +237,13 @@ fn write_values(fixtures: &mut Fixtures, directory: &Path) -> Result<(), Box<dyn
 
 fn options() -> GenerateOptions {
     GenerateOptions {
-        cpp_namespace: Some("edge_cases".into()),
-        csharp_namespace: Some("EdgeCases.Generated".into()),
+        cpp: intrlay_codegen::CppOptions {
+            namespace: Some("edge_cases".into()),
+        },
+        csharp: intrlay_codegen::CSharpOptions {
+            namespace: Some("EdgeCases.Generated".into()),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }

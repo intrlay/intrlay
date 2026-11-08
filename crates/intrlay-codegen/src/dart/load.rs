@@ -11,6 +11,21 @@ pub(super) struct Read<'a> {
     pub tag: Option<u32>,
 }
 
+/// Unit values and empty numeric regions do not consult the collection index.
+pub(super) fn index_parameter(plan: &TypeGraph, id: Id, exposure: Exposure) -> &'static str {
+    let read = Read {
+        id,
+        exposure,
+        offset: "$[argument:index]",
+        tag: None,
+    };
+    if body(plan, &read).contains("$[argument:index]") {
+        "index"
+    } else {
+        "_index"
+    }
+}
+
 pub(super) fn value(plan: &TypeGraph, read: &Read<'_>) -> Option<String> {
     let value = expression(plan, read.id, read.offset, read.exposure)?;
     Some(if let Some(tag) = read.tag {

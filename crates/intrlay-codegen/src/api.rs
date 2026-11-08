@@ -3,7 +3,10 @@
 //! These are API decisions, not a target-language syntax tree. Backends retain
 //! their own method bodies and optimized load/store implementations.
 
-use intrlay_schema::{ApiGeneration, Language, NameCase};
+mod policy;
+pub use policy::{AccessorContext, ApiPolicy, DefaultApi, ViewName};
+
+use intrlay_schema::ApiGeneration;
 
 use crate::{
     GenerateError,
@@ -46,46 +49,20 @@ impl Accessor {
     pub fn field(plan: &TypeGraph, node: &Node, field: &Field, variant: Option<&Variant>) -> Self {
         let name = variant.map_or_else(
             || field.property_name.clone(),
-            |variant| match plan.backend.language {
-                Language::Rust if variant.synthetic_payload => {
-                    format!("{}_field_0", NameCase::SnakeCase.apply(&variant.name))
-                }
-                Language::Cpp if variant.synthetic_payload => {
-                    plan.names.member(&format!("as_{}", variant.name))
-                }
-                Language::CSharp if variant.synthetic_payload => {
-                    plan.names.property(&variant.name, true)
-                }
-                _ if variant.synthetic_payload => plan.names.member(&variant.name),
-                Language::Rust => format!(
-                    "{}_{}",
-                    NameCase::SnakeCase.apply(&variant.name),
-                    field.property_name
-                ),
-                Language::CSharp => plan
-                    .names
-                    .property(&format!("{}_{}", variant.name, field.name), true),
-                _ => plan
-                    .names
-                    .member(&format!("{}_{}", variant.name, field.name)),
-            },
+            |variant| plan.backend.api.variant_accessor(plan, field, variant),
         );
         let generation = field_generation(node, field);
-        let mut accessor = Self::new(
+        let mut accessor = Self::new(plan, field.ty, name, generation, variant.is_some(), false);
+        plan.backend.api.customize_accessor(
             plan,
-            field.ty,
-            name,
-            generation,
-            field.options.exposure,
-            variant.is_some(),
-            false,
+            &mut accessor,
+            AccessorContext {
+                ty: field.ty,
+                exposure: field.options.exposure,
+                variant,
+                root: false,
+            },
         );
-        if plan.backend.language == Language::Cpp
-            && let Some(variant) = variant.filter(|variant| variant.synthetic_payload)
-            && let Some(setter) = &mut accessor.setter
-        {
-            setter.name = plan.names.method(&format!("set_{}", variant.name), false);
-        }
         accessor
     }
 
@@ -96,7 +73,6 @@ impl Accessor {
             id,
             symbols::runtime_symbol(plan, "value")?,
             node.options.generation,
-            node.options.exposure,
             false,
             true,
         );
@@ -105,6 +81,16 @@ impl Accessor {
         {
             setter.name = symbols::runtime_symbol(plan, "set")?;
         }
+        plan.backend.api.customize_accessor(
+            plan,
+            &mut accessor,
+            AccessorContext {
+                ty: id,
+                exposure: node.options.exposure,
+                variant: None,
+                root: true,
+            },
+        );
         Ok(accessor)
     }
 
@@ -113,7 +99,6 @@ impl Accessor {
         id: Id,
         name: String,
         generation: ApiGeneration,
-        exposure: intrlay_schema::Exposure,
         tagged: bool,
         root: bool,
     ) -> Self {
@@ -137,10 +122,8 @@ impl Accessor {
                 name.clone()
             } else if root {
                 String::new() // Resolved by `root` through the runtime naming role.
-            } else if plan.backend.language == Language::Cpp {
-                format!("set_{name}")
             } else {
-                plan.names.method(&format!("set_{name}"), false)
+                plan.backend.api.setter_name(plan, &name)
             };
             Setter {
                 name: setter_name,
@@ -148,25 +131,17 @@ impl Accessor {
                 mutation,
             }
         });
-        let rust = plan.backend.language == Language::Rust && generation.setters && !root;
         let cache = (getter && !plan.backend.language.has_value_types() && plan.caches_view(id))
             .then(|| plan.view_cache(id, &name, tagged));
-        let loader = if plan.backend.language == Language::Dart
-            && let Some(cache) = &cache
-        {
-            crate::dart::cached_loader_name(plan, id, &name, exposure, cache)
-        } else {
-            None
-        };
         Self {
-            mutable: rust.then(|| format!("{name}_mut")),
-            replace: rust.then(|| format!("replace_{name}")),
+            mutable: None,
+            replace: None,
             name,
             generation,
             getter,
             setter,
             cache,
-            loader,
+            loader: None,
         }
     }
 
@@ -199,6 +174,28 @@ impl Accessor {
             members.push((loader, "cached child loader"));
         }
         members
+    }
+}
+
+/// Element access shared by collection emission and target-specific name checks.
+/// Backends choose named methods, operators, or language-defined special methods.
+pub struct CollectionAccessors {
+    pub getter: bool,
+    pub setter: Option<Mutation>,
+}
+
+impl CollectionAccessors {
+    pub fn new(plan: &TypeGraph, owner: &Node, element: Id) -> Self {
+        Self {
+            getter: owner.options.generation.getters
+                || (owner.options.generation.setters && plan.borrows_content(element)),
+            setter: owner
+                .options
+                .generation
+                .setters
+                .then(|| plan.mutation(element))
+                .flatten(),
+        }
     }
 }
 

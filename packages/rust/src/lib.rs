@@ -24,15 +24,20 @@ mod codec;
 mod exports;
 mod initialization;
 mod sequence;
+mod source;
 mod value_view;
 
 pub use buffer::{BufferLayout, EncodeError, OwnedBuffer, SizeCursor, Writer};
 pub use builtins::{Scalar, ScalarMut};
-pub use codec::{Intrlay, compute_layout, create, create_in_place, write_into};
+pub use codec::{
+    Intrlay, compute_layout, compute_layout_from, create, create_from, create_in_place,
+    create_in_place_from, write_from, write_into,
+};
 pub use initialization::Initialization;
 pub use intrlay_layout as layout;
 pub use intrlay_schema as schema;
 pub use sequence::{SequenceMut, SequenceView};
+pub use source::{BoxInput, EncodeSource, SequenceInput, ValueSource, Zeroed, ZeroedSequence};
 pub use value_view::ValueView;
 
 #[cfg(feature = "derive")]

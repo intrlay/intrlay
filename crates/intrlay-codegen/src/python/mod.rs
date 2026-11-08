@@ -4,22 +4,33 @@ use intrlay_schema::{Exposure, Scalar};
 
 use crate::{
     GenerateError,
-    api::{Accessor, IndexedAccessors},
-    plan::{Field, GenerationPlan, Id, Kind, Node, TypeGraph},
+    api::{Accessor, CollectionAccessors, IndexedAccessors},
+    plan::{Field, GenerationPlan, Id, Kind, Node, TypeGraph, WriterParameters},
 };
 
+mod api;
 mod documentation;
 mod load;
 mod mutation;
+mod name_validation;
 mod names;
 
 pub(crate) use names::reference as reference_name;
 
 pub const BACKEND: crate::backend::Backend = crate::backend::Backend {
     language: intrlay_schema::Language::Python,
+    api: &api::Api,
     naming_policy: names::policy,
-    keywords: names::KEYWORDS,
-    reserved_declarations: &["_intrlay", "Some", "_abc", "_typing", "_builtins", "super"],
+    reserved_declarations: &[
+        "_intrlay",
+        "Some",
+        "_abc",
+        "_typing",
+        "_builtins",
+        "_enum",
+        "super",
+    ],
+    is_reserved_name: name_validation::is_reserved,
     generate,
     field_setter: crate::api::SetterSyntax::PropertyWithGetter,
     root_setter: crate::api::SetterSyntax::PropertyWithGetter,
@@ -29,18 +40,31 @@ pub const BACKEND: crate::backend::Backend = crate::backend::Backend {
     codec_function_modifiers: &[],
     fixed_array_api: crate::backend::FixedArrayApi::Numeric,
     native_numeric_array_views: true,
+    runtime_numeric_array_writers: false,
 };
 
-pub fn generate(generation: &GenerationPlan) -> Result<String, GenerateError> {
+pub fn generate(
+    generation: &GenerationPlan,
+    _options: &crate::GenerateOptions,
+) -> Result<String, GenerateError> {
+    name_validation::validate(generation)?;
     let plan = &generation.encoding.types;
     let mut output = String::from(include_str!("prelude.txt"));
-    let encoders = &generation.encoding.encoders;
-    for node in &plan.nodes {
-        input(&mut output, plan, node)?;
+    if plan
+        .nodes
+        .iter()
+        .any(|node| matches!(node.kind, Kind::Enum(_)))
+    {
+        writeln!(output, "import enum as _enum")?;
     }
     for (id, node) in plan.nodes.iter().enumerate() {
-        if encoders.contains(&id) {
+        input(&mut output, plan, node, generation.encoding.needs_input(id))?;
+    }
+    for (id, node) in plan.nodes.iter().enumerate() {
+        if generation.encoding.measures.contains(&id) {
             measure(&mut output, id, node, plan)?;
+        }
+        if generation.encoding.writers.contains(&id) {
             write(&mut output, id, node, plan)?;
         }
     }
@@ -54,12 +78,26 @@ pub fn generate(generation: &GenerationPlan) -> Result<String, GenerateError> {
     }
     for (name, id) in &plan.exports {
         if *name != plan.nodes[*id].name {
-            writeln!(output, "{name}View = {}", plan.view_name(*id))?;
+            if generation.views.emitted.contains(id) {
+                writeln!(output, "{name}View = {}", plan.view_name(*id))?;
+            }
+            if matches!(plan.nodes[*id].kind, Kind::Enum(_)) && !plan.nodes[*id].is_value_enum() {
+                writeln!(
+                    output,
+                    "{name}Kind = {}",
+                    names::reference(&plan.nodes[*id].kind_name())
+                )?;
+            }
         }
-        if *name != plan.nodes[*id].name
-            || !matches!(plan.nodes[*id].kind, Kind::Record(_) | Kind::Enum(_))
+        if generation.encoding.needs_input(*id)
+            && (*name != plan.nodes[*id].name
+                || !matches!(plan.nodes[*id].kind, Kind::Record(_) | Kind::Enum(_)))
         {
-            writeln!(output, "type {name} = {}", input_type(plan, *id))?;
+            if plan.nodes[*id].is_value_enum() {
+                writeln!(output, "{name}Input = {}", input_type(plan, *id))?;
+            } else {
+                writeln!(output, "type {name}Input = {}", input_type(plan, *id))?;
+            }
         }
     }
     Ok(output)
@@ -74,8 +112,12 @@ pub(crate) fn private_aliases(
     let mut declarations = plan
         .nodes
         .iter()
-        .filter(|node| matches!(node.kind, Kind::Record(_) | Kind::Enum(_)))
-        .map(|node| node.name.clone())
+        .enumerate()
+        .filter(|(id, node)| {
+            generation.encoding.needs_input(*id)
+                && matches!(node.kind, Kind::Record(_) | Kind::Enum(_))
+        })
+        .map(|(_, node)| node.input_name())
         .chain(
             generation
                 .views
@@ -84,11 +126,18 @@ pub(crate) fn private_aliases(
                 .map(|&id| views.view_name(id)),
         )
         .collect::<Vec<_>>();
-    for &id in &generation.encoding.encoders {
-        for operation in ["measure", "write"] {
-            if operation == "write" || plan.has_payload(id) {
-                declarations.push(crate::symbols::codec_function(plan, operation, id)?);
-            }
+    declarations.extend(
+        plan.nodes
+            .iter()
+            .filter(|node| matches!(node.kind, Kind::Enum(_)) && !node.is_value_enum())
+            .map(Node::kind_name),
+    );
+    for (operation, helpers) in [
+        ("measure", &generation.encoding.measures),
+        ("write", &generation.encoding.writers),
+    ] {
+        for &id in helpers {
+            declarations.push(crate::symbols::codec_function(plan, operation, id)?);
         }
     }
     Ok(declarations
@@ -100,27 +149,47 @@ pub(crate) fn private_aliases(
         .collect())
 }
 
-fn input(output: &mut String, plan: &TypeGraph, node: &Node) -> Result<(), GenerateError> {
+fn input(
+    output: &mut String,
+    plan: &TypeGraph,
+    node: &Node,
+    needed: bool,
+) -> Result<(), GenerateError> {
+    if !needed && !matches!(node.kind, Kind::Enum(_)) {
+        return Ok(());
+    }
     if let Some(field) = plan.folded_node(node) {
         writeln!(
             output,
             "\ntype {} = {}",
-            node.name,
+            node.input_name(),
             input_type(plan, field.ty)
         )?;
         documentation::write(output, &node.docs, "")?;
         return Ok(());
     }
     match &node.kind {
-        Kind::Record(fields) => input_record(output, plan, &node.name, fields, None, &node.docs)?,
+        Kind::Record(fields) => {
+            input_record(output, plan, &node.input_name(), fields, None, &node.docs)?;
+        }
         Kind::Enum(variants) => {
+            let kind = node.tag_type_name();
+            writeln!(output, "\n\nclass {kind}(_enum.IntEnum):")?;
+            documentation::write(output, &node.docs, "    ")?;
+            for variant in variants {
+                writeln!(output, "    {} = {}", variant.name, variant.tag)?;
+                documentation::write(output, &variant.docs, "    ")?;
+            }
+            if node.is_value_enum() || !needed {
+                return Ok(());
+            }
             for variant in variants {
                 input_record(
                     output,
                     plan,
-                    &format!("{}{}", node.name, variant.name),
+                    &node.variant_input_name(variant),
                     &variant.fields,
-                    Some(&variant.name),
+                    Some(&format!("{}.{}", names::reference(&kind), variant.name)),
                     &variant.docs,
                 )?;
             }
@@ -129,11 +198,11 @@ fn input(output: &mut String, plan: &TypeGraph, node: &Node) -> Result<(), Gener
             } else {
                 variants
                     .iter()
-                    .map(|variant| format!("{}{}", node.name, variant.name))
+                    .map(|variant| node.variant_input_name(variant))
                     .collect::<Vec<_>>()
                     .join(" | ")
             };
-            writeln!(output, "\n\ntype {} = {variants}", node.name)?;
+            writeln!(output, "\n\ntype {} = {variants}", node.input_name())?;
             documentation::write(output, &node.docs, "")?;
         }
         _ => {}
@@ -157,7 +226,7 @@ fn input_record(
         // String annotations also retain forward and recursive references.
         writeln!(output, "\n\n{name} = _typing.TypedDict('{name}', {{")?;
         if let Some(variant) = variant {
-            writeln!(output, "    'kind': \"_typing.Literal['{variant}']\",")?;
+            writeln!(output, "    'kind': \"_typing.Literal[{variant}]\",")?;
         }
         for field in fields {
             for line in crate::documentation::escape_symbols(&field.docs).lines() {
@@ -174,7 +243,7 @@ fn input_record(
     writeln!(output, "\n\nclass {name}(_typing.TypedDict):")?;
     documentation::write(output, docs, "    ")?;
     if let Some(variant) = variant {
-        writeln!(output, "    kind: _typing.Literal['{variant}']")?;
+        writeln!(output, "    kind: _typing.Literal[{variant}]")?;
     } else if fields.is_empty() && docs.is_empty() {
         writeln!(output, "    pass")?;
     }
@@ -194,9 +263,10 @@ fn measure(
     if !plan.has_payload(id) {
         return Ok(());
     }
+    let value = plan.measure_parameter(id);
     writeln!(
         output,
-        "\n\ndef $[measure:{id}](value: {}, cursor: _intrlay.Cursor) -> None:",
+        "\n\ndef $[measure:{id}]({value}: {}, cursor: _intrlay.Cursor) -> None:",
         input_type(plan, id)
     )?;
     match &node.kind {
@@ -226,7 +296,12 @@ fn measure(
                 .enumerate()
             {
                 let branch = if index == 0 { "if" } else { "elif" };
-                writeln!(output, "    {branch} value['kind'] == '{}':", variant.name)?;
+                writeln!(
+                    output,
+                    "    {branch} value['kind'] == {}.{}:",
+                    names::reference(&node.kind_name()),
+                    variant.name
+                )?;
                 for field in variant
                     .fields
                     .iter()
@@ -285,15 +360,29 @@ fn measure(
 
 fn write(output: &mut String, id: Id, node: &Node, plan: &TypeGraph) -> Result<(), GenerateError> {
     let optional = if plan.has_payload(id) { "" } else { " | None" };
+    let WriterParameters {
+        storage,
+        offset,
+        value,
+        cursor,
+    } = plan.writer_parameters(id);
     writeln!(
         output,
-        "\n\ndef $[write:{id}](\n    storage: _intrlay.Storage, offset: _builtins.int, value: {}, cursor: _intrlay.Cursor{optional}\n) -> None:",
+        "\n\ndef $[write:{id}](\n    {storage}: _intrlay.Storage, {offset}: _builtins.int, {value}: {}, {cursor}: _intrlay.Cursor{optional}\n) -> None:",
         input_type(plan, id)
     )?;
     if let Kind::Array { length, .. } = node.kind {
+        if plan.zeroable(id) {
+            writeln!(
+                output,
+                "    if _builtins.isinstance(value, _intrlay.Zeroed):\n        storage.u8[offset:offset + {}] = _builtins.bytes({})\n        return",
+                node.layout.size(),
+                node.layout.size()
+            )?;
+        }
         writeln!(
             output,
-            "    if _intrlay.count(value) != {length}:\n        raise _builtins.ValueError('fixed array length')"
+            "    if _builtins.len(value) != {length}:\n        raise _builtins.ValueError('fixed array length')"
         )?;
     }
     match &node.kind {
@@ -321,47 +410,26 @@ fn write(output: &mut String, id: Id, node: &Node, plan: &TypeGraph) -> Result<(
                 )?;
             }
         }
-        Kind::Enum(variants) => {
+        Kind::Enum(variants) if node.is_value_enum() => {
+            writeln!(output, "    if (")?;
             for (index, variant) in variants.iter().enumerate() {
-                let branch = if index == 0 { "if" } else { "elif" };
+                let conjunction = if index == 0 { "" } else { "and " };
                 writeln!(
                     output,
-                    "    {branch} value['kind'] == '{}':\n        storage.u32[offset // 4] = {}",
-                    variant.name, variant.tag
+                    "        {conjunction}value != {}.{}",
+                    names::reference(&node.input_name()),
+                    variant.name
                 )?;
-                for field in &variant.fields {
-                    writeln!(
-                        output,
-                        "        $[write:{}](storage, offset + {}, value['{}'], cursor)",
-                        field.ty, field.offset, field.name
-                    )?;
-                }
-            }
-        }
-        Kind::Sequence(element) | Kind::Array { element, .. } => {
-            if matches!(node.kind, Kind::Sequence(_)) {
-                writeln!(
-                    output,
-                    "    length = _intrlay.count(value)\n    payload_offset = cursor.reserve(length * {}, {})\n    storage.u32[offset // 4] = payload_offset - offset\n    storage.u32[offset // 4 + 1] = length",
-                    plan.nodes[*element].layout.size(),
-                    plan.nodes[*element].layout.alignment()
-                )?;
-            } else {
-                writeln!(output, "    payload_offset = offset")?;
             }
             writeln!(
                 output,
-                "    if not _builtins.isinstance(value, _builtins.int):\n        for index, item in _builtins.enumerate(value):\n            $[write:{element}](storage, payload_offset + index * {}, item, cursor)",
-                plan.nodes[*element].layout.size()
+                "    ):\n        raise _builtins.ValueError('Unknown enum tag.')"
             )?;
-            if matches!(node.kind, Kind::Array { .. }) && plan.zeroable(*element) {
-                writeln!(
-                    output,
-                    "    else:\n        storage.u8[offset:offset + {}] = _builtins.bytes({})",
-                    node.layout.size(),
-                    node.layout.size()
-                )?;
-            }
+            writeln!(output, "    storage.u32[offset // 4] = value")?;
+        }
+        Kind::Enum(variants) => write_enum(output, node, variants)?,
+        Kind::Sequence(element) | Kind::Array { element, .. } => {
+            write_array(output, plan, node, *element)?;
         }
         Kind::Optional { value, offset } => {
             let payload = if plan.nullable_value(*value) {
@@ -385,9 +453,86 @@ fn write(output: &mut String, id: Id, node: &Node, plan: &TypeGraph) -> Result<(
     Ok(())
 }
 
+fn write_array(
+    output: &mut String,
+    plan: &TypeGraph,
+    node: &Node,
+    element: Id,
+) -> Result<(), GenerateError> {
+    let element_node = &plan.nodes[element];
+    if matches!(node.kind, Kind::Sequence(_)) {
+        writeln!(
+            output,
+            "    length = _intrlay.count(value)\n    payload_offset = cursor.reserve(length * {}, {})\n    storage.u32[offset // 4] = payload_offset - offset\n    storage.u32[offset // 4 + 1] = length",
+            element_node.layout.size(),
+            element_node.layout.alignment()
+        )?;
+    } else {
+        writeln!(output, "    payload_offset = offset")?;
+    }
+    writeln!(
+        output,
+        "    if not _builtins.isinstance(value, _builtins.int):"
+    )?;
+    // CPython 3.13: dispatch has no consistent win for 1–2 lanes.
+    if let Kind::Scalar(scalar) = element_node.kind
+        && scalar != Scalar::Bool
+        && !matches!(node.kind, Kind::Array { length, .. } if length <= 2)
+    {
+        writeln!(
+            output,
+            "        if _intrlay.try_copy_numeric_array(storage.{}, payload_offset // {}, value):\n            return",
+            format!("{scalar:?}").to_lowercase(),
+            scalar.layout().size(),
+        )?;
+    }
+    writeln!(
+        output,
+        "        for index, item in _builtins.enumerate(value):\n            $[write:{element}](storage, payload_offset + index * {}, item, cursor)",
+        element_node.layout.size()
+    )?;
+    Ok(())
+}
+
+fn write_enum(
+    output: &mut String,
+    node: &Node,
+    variants: &[crate::plan::Variant],
+) -> Result<(), GenerateError> {
+    for (index, variant) in variants.iter().enumerate() {
+        let branch = if index == 0 { "if" } else { "elif" };
+        writeln!(
+            output,
+            "    {branch} value['kind'] == {}.{}:\n        storage.u32[offset // 4] = {}",
+            names::reference(&node.kind_name()),
+            variant.name,
+            variant.tag
+        )?;
+        for field in &variant.fields {
+            writeln!(
+                output,
+                "        $[write:{}](storage, offset + {}, value['{}'], cursor)",
+                field.ty, field.offset, field.name
+            )?;
+        }
+    }
+    writeln!(
+        output,
+        "    else:\n        raise _builtins.ValueError('Unknown enum tag.')"
+    )?;
+    Ok(())
+}
+
 fn view(output: &mut String, id: Id, node: &Node, plan: &TypeGraph) -> Result<(), GenerateError> {
     let name = plan.view_name(id);
-    writeln!(output, "\n\nclass {name}(_intrlay.View):")?;
+    let mut members = String::new();
+    let descriptors = view_members(&mut members, id, node, plan)?;
+    let base = if descriptors || members.contains("self._offset") {
+        "View"
+    } else {
+        "BufferView"
+    };
+    writeln!(output, "\n\nclass {name}(_intrlay.{base}):")?;
     documentation::write(output, &node.docs, "    ")?;
     let fields: Vec<_> = match &node.kind {
         Kind::Record(fields) => fields.iter().map(|field| (field, None)).collect(),
@@ -421,10 +566,15 @@ fn view(output: &mut String, id: Id, node: &Node, plan: &TypeGraph) -> Result<()
     {
         cached.push((cache, output_type(plan, id)));
     }
-    view_storage(output, node, &cached)?;
+    view_storage(output, node, &cached, &members)?;
     if node.options.generation.create {
         let input = input_type(plan, id);
         let compute_size = compute_size(plan, id)?;
+        let unused_value = if plan.has_payload(id) {
+            ""
+        } else {
+            "  # noqa: ARG004 - Keep the public value keyword for fixed-size inputs."
+        };
         let writer = names::reference(&crate::symbols::codec_function(plan, "write", id)?);
         let check_extent = if plan.has_payload(id) {
             ", check_extent=True"
@@ -435,7 +585,7 @@ fn view(output: &mut String, id: Id, node: &Node, plan: &TypeGraph) -> Result<()
             output,
             r"
     @_builtins.staticmethod
-    def $[compute_byte_length](value: {input}) -> _builtins.int:
+    def $[compute_byte_length](value: {input}) -> _builtins.int:{unused_value}
         {compute_size}
 
     @_builtins.classmethod
@@ -454,7 +604,7 @@ fn view(output: &mut String, id: Id, node: &Node, plan: &TypeGraph) -> Result<()
         )"
         )?;
     }
-    view_members(output, id, node, plan)?;
+    output.push_str(&members);
     Ok(())
 }
 
@@ -462,6 +612,7 @@ fn view_storage(
     output: &mut String,
     node: &Node,
     cached: &[(crate::plan::ViewCache, String)],
+    members: &str,
 ) -> Result<(), GenerateError> {
     let mut slots = cached
         .iter()
@@ -469,9 +620,12 @@ fn view_storage(
         .map(|name| format!("\"{name}\","))
         .collect::<Vec<_>>()
         .join(" ");
-    let sequence = matches!(node.kind, Kind::Sequence(_));
-    if sequence {
-        slots.push_str(" \"$[element_offset]\", \"$[element_count]\",");
+    let collection_fields: Vec<_> = ["element_offset", "element_count"]
+        .into_iter()
+        .filter(|key| members.contains(&format!("$[{key}]")))
+        .collect();
+    for key in &collection_fields {
+        write!(slots, " \"$[{key}]\",")?;
     }
     writeln!(
         output,
@@ -479,13 +633,10 @@ fn view_storage(
         node.layout.size(),
         node.buffer_alignment
     )?;
-    if sequence {
-        writeln!(
-            output,
-            "    $[element_offset]: _builtins.int\n    $[element_count]: _builtins.int"
-        )?;
+    for key in &collection_fields {
+        writeln!(output, "    $[{key}]: _builtins.int")?;
     }
-    if sequence || !cached.is_empty() {
+    if !collection_fields.is_empty() || !cached.is_empty() {
         for (cache, ty) in cached {
             writeln!(output, "    {}: {ty} | _intrlay.CacheState", cache.value)?;
             if let Some(state) = &cache.state {
@@ -496,10 +647,16 @@ fn view_storage(
             output,
             "\n    def __init__(self, buffer: _abc.Buffer | _intrlay.Storage, offset: _builtins.int = 0) -> None:\n        super().__init__(buffer, offset)"
         )?;
-        if sequence {
+        if collection_fields.contains(&"element_offset") {
             writeln!(
                 output,
-                "        self.$[element_offset] = offset + self._storage.u32[offset // 4]\n        self.$[element_count] = self._storage.u32[offset // 4 + 1]"
+                "        self.$[element_offset] = offset + self._storage.u32[offset // 4]"
+            )?;
+        }
+        if collection_fields.contains(&"element_count") {
+            writeln!(
+                output,
+                "        self.$[element_count] = self._storage.u32[offset // 4 + 1]"
             )?;
         }
         for (cache, _) in cached {
@@ -521,7 +678,9 @@ fn view_members(
     id: Id,
     node: &Node,
     plan: &TypeGraph,
-) -> Result<(), GenerateError> {
+) -> Result<bool, GenerateError> {
+    // Runtime property descriptors read the record offset indirectly.
+    let mut descriptors = false;
     if node.options.generation.setters && !plan.has_payload(id) {
         let writer = names::reference(&crate::symbols::codec_function(plan, "write", node.codec)?);
         writeln!(
@@ -534,7 +693,7 @@ fn view_members(
         Kind::Record(fields) => {
             for field in fields {
                 let api = Accessor::field(plan, node, field, None);
-                property(output, plan, field, &api, None)?;
+                descriptors |= property(output, plan, field, &api, None)?;
             }
         }
         Kind::Enum(variants) => {
@@ -547,7 +706,7 @@ fn view_members(
             for variant in variants {
                 for field in &variant.fields {
                     let api = Accessor::field(plan, node, field, Some(variant));
-                    property(output, plan, field, &api, Some(variant.tag))?;
+                    descriptors |= property(output, plan, field, &api, Some(variant.tag))?;
                 }
             }
         }
@@ -593,7 +752,7 @@ fn view_members(
             }
         }
     }
-    Ok(())
+    Ok(descriptors)
 }
 
 fn sequence_view(
@@ -614,9 +773,8 @@ fn sequence_view(
         output,
         "\n    def __len__(self) -> _builtins.int:\n        return {count}"
     )?;
-    let has_getter = node.options.generation.getters
-        || (node.options.generation.setters && plan.borrows_content(element));
-    if has_getter {
+    let api = CollectionAccessors::new(plan, node, element);
+    if api.getter {
         writeln!(
             output,
             "\n    def __getitem__(self, index: _builtins.int) -> {}:\n        if index < 0 or index >= _builtins.len(self):\n            raise _builtins.IndexError(index)\n        {}",
@@ -637,11 +795,8 @@ fn sequence_view(
             .replace('\n', "\n        ")
         )?;
     }
-    if node.options.generation.setters
-        && plan.nodes[element].options.generation.setters
-        && let Some(mutation) = plan.mutation(element)
-    {
-        if !has_getter {
+    if let Some(mutation) = &api.setter {
+        if !api.getter {
             writeln!(output)?;
         }
         writeln!(
@@ -650,7 +805,7 @@ fn sequence_view(
             input_type(plan, mutation.value),
             mutation::body(
                 plan,
-                &mutation,
+                mutation,
                 &format!(
                     "({position}) + index * {}",
                     plan.nodes[element].layout.size()
@@ -658,7 +813,7 @@ fn sequence_view(
             )?
         )?;
     }
-    if has_getter {
+    if api.getter {
         writeln!(
             output,
             "\n    def __iter__(self) -> _abc.Iterator[{}]:\n        for index in _builtins.range(_builtins.len(self)):\n            yield self[index]",
@@ -687,9 +842,14 @@ fn indexed_fields(
             let api = IndexedAccessors::new(plan, node, &plan.nodes[element], field);
             numeric_component_accessors(output, plan, &api, field, &offset)?;
             if let Some(getter) = &api.getter {
+                let unused_index = if load::uses_index(plan, field.ty, field.options.exposure) {
+                    ""
+                } else {
+                    "  # noqa: ARG002 - Keep the public index keyword for unit values."
+                };
                 writeln!(
                     output,
-                    "\n    def {}(self, index: _builtins.int) -> {}:",
+                    "\n    def {}(self, index: _builtins.int) -> {}:{unused_index}",
                     getter,
                     output_type(plan, field.ty),
                 )?;
@@ -747,7 +907,7 @@ fn property(
     field: &Field,
     api: &Accessor,
     tag: Option<u32>,
-) -> Result<(), GenerateError> {
+) -> Result<bool, GenerateError> {
     let generation = api.generation;
     let name = &api.name;
     let offset = format!("self._offset + {}", field.offset);
@@ -769,18 +929,19 @@ fn property(
             let factory = format!("{scalar:?}_field").to_lowercase();
             let value = format!("_intrlay.{factory}({}{doc})", field.offset);
             writeln!(output, "\n    {name} = {value}")?;
-            return Ok(());
+            return Ok(true);
         }
         // Cached composite getters keep direct slot access on the hot path.
         if !plan.caches_view(field.ty)
             && (!generation.setters || plan.mutation(field.ty).is_none())
             && let Some(value) = load::expression(plan, field.ty, &offset, field.options.exposure)
+                .filter(|value| value.contains("self._offset"))
         {
             writeln!(
                 output,
                 "\n    {name}: _intrlay.ReadField[{ty}] = _intrlay.read_field(\n        lambda self: {value}{doc}\n    )"
             )?;
-            return Ok(());
+            return Ok(true);
         }
     }
     let has_getter = api.getter;
@@ -840,7 +1001,7 @@ fn property(
             mutation::body(plan, mutation, &offset)?
         )?;
     }
-    Ok(())
+    Ok(false)
 }
 
 fn input_type(plan: &TypeGraph, id: Id) -> String {
@@ -849,13 +1010,21 @@ fn input_type(plan: &TypeGraph, id: Id) -> String {
         Kind::Unit => "None".into(),
         Kind::String => "_builtins.str".into(),
         Kind::Record(_) | Kind::Enum(_) => names::reference(&plan.input_name(id)),
-        Kind::Sequence(element) | Kind::Array { element, .. } => {
+        Kind::Sequence(element) => {
             let count = if plan.zeroable(*element) {
-                " | _builtins.int"
+                " | _intrlay.ZeroedSequence"
             } else {
                 ""
             };
             format!("_abc.Sequence[{}]{count}", input_type(plan, *element))
+        }
+        Kind::Array { element, .. } => {
+            let zeroed = if plan.zeroable(id) {
+                " | _intrlay.Zeroed"
+            } else {
+                ""
+            };
+            format!("_abc.Sequence[{}]{zeroed}", input_type(plan, *element))
         }
         Kind::Optional { value, .. } => optional_type(plan, *value, true),
         Kind::Boxed(value) => input_type(plan, *value),

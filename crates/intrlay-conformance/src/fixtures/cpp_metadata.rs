@@ -6,7 +6,7 @@ use std::error::Error;
 
 use intrlay::{
     Intrlay,
-    schema::{DefinitionKind, Language, NameCase, Registry, Type},
+    schema::{DefinitionKind, Language, NameCase, Registry, Schema, Type},
 };
 use intrlay_codegen::{
     GenerateOptions, Modifier, NameStyle, NamingPolicy, NamingRule, SymbolKind, SymbolSelector,
@@ -33,9 +33,15 @@ struct SourceV {
 }
 
 #[derive(Intrlay)]
+#[allow(
+    non_snake_case,
+    reason = "Exercises a source field name reserved by a C++ runtime macro"
+)]
 struct Keyword {
     #[intrlay(cpp(name = "kind"))]
     r#class: u32,
+    #[intrlay(cpp(name = "restricted"), rust(name = "restricted"))]
+    INTRLAY_RESTRICT: u32,
 }
 
 #[derive(Intrlay)]
@@ -74,22 +80,32 @@ enum Mode {
 }
 
 #[derive(Intrlay)]
+struct ModeFields {
+    mode: Mode,
+    modes: [Mode; 2],
+}
+
+#[derive(Intrlay)]
 enum WholeChoice {
     Empty { payload: () },
     Value { payload: Child },
     Nested { payload: [Option<u32>; 2] },
 }
 
-fn generate_cpp_metadata_regressions(fixtures: &mut Fixtures) -> Result<(), Box<dyn Error>> {
-    let directory = std::path::PathBuf::from("cpp-metadata");
-
+fn metadata_schema() -> Result<Schema, Box<dyn Error>> {
     let mut registry = Registry::new();
     registry.export::<Names>("Names");
     registry.export::<Keyword>("Keyword");
     registry.export::<OrdinaryChoice>("OrdinaryChoice");
     registry.export::<WholeChoice>("WholeChoice");
     registry.export::<Mode>("Mode");
+    registry.export::<ModeFields>("ModeFields");
     registry.export::<Text>("Text");
+    registry.export::<Mode>("ModeAlias");
+    registry.export::<Child>("Child");
+    registry.export::<Child>("ChildAlias");
+    registry.export::<Text>("TextAlias");
+    registry.export::<OrdinaryChoice>("OrdinaryChoiceAlias");
     let mut schema = registry.finish();
     let Type::Named(identity) = &schema.exports["WholeChoice"] else {
         return Err("named variant expected".into());
@@ -107,13 +123,22 @@ fn generate_cpp_metadata_regressions(fixtures: &mut Fixtures) -> Result<(), Box<
     for variant in variants {
         variant.synthetic_payload = true;
     }
+    Ok(schema)
+}
+
+fn generate_cpp_metadata_regressions(fixtures: &mut Fixtures) -> Result<(), Box<dyn Error>> {
+    let directory = std::path::PathBuf::from("cpp-metadata");
+
+    let schema = metadata_schema()?;
     fixtures.insert(
         directory.join("bindings.hpp"),
         generate_with_options(
             &schema,
             Language::Cpp,
             GenerateOptions {
-                cpp_namespace: Some("cpp_metadata".into()),
+                cpp: intrlay_codegen::CppOptions {
+                    namespace: Some("cpp_metadata".into()),
+                },
                 ..GenerateOptions::default()
             },
         )?,
@@ -197,7 +222,9 @@ fn generate_cpp_metadata_peer(fixtures: &mut Fixtures) -> Result<(), Box<dyn Err
             &registry.finish(),
             Language::Cpp,
             GenerateOptions {
-                cpp_namespace: Some("cpp_metadata".into()),
+                cpp: intrlay_codegen::CppOptions {
+                    namespace: Some("cpp_metadata".into()),
+                },
                 ..GenerateOptions::default()
             },
         )?,
@@ -268,7 +295,9 @@ fn generate_cpp_custom_metadata_names(fixtures: &mut Fixtures) -> Result<(), Box
             &registry.finish(),
             Language::Cpp,
             GenerateOptions {
-                cpp_namespace: Some("cpp_metadata::custom".into()),
+                cpp: intrlay_codegen::CppOptions {
+                    namespace: Some("cpp_metadata::custom".into()),
+                },
                 naming: Some(naming),
                 ..GenerateOptions::default()
             },

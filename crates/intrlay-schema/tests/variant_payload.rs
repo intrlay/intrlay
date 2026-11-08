@@ -4,6 +4,13 @@ use intrlay_schema::{Field, Layouts, Scalar, Schema, Type, Variant};
 use std::collections::BTreeMap;
 
 #[test]
+fn an_enum_must_have_at_least_one_variant() {
+    let schema = Schema::default();
+    let error = Layouts::new(&schema).variants(&[], 1);
+    assert!(matches!(error, Err(error) if error.0 == "uninhabited enums cannot be exchanged"));
+}
+
+#[test]
 fn existing_metadata_defaults_to_ordinary_fields() -> Result<(), Box<dyn std::error::Error>> {
     let variant: Variant =
         serde_json::from_str(r#"{"name":"Value","tag":0,"fields":[],"docs":""}"#)?;

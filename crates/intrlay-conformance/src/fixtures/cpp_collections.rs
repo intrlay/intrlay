@@ -44,6 +44,45 @@ struct Collections {
     borrowed: BorrowOnly,
 }
 
+#[derive(Intrlay)]
+struct BooleanInputs {
+    scalar: bool,
+    fixed: [bool; 3],
+    dynamic: Vec<bool>,
+    maybe: Option<bool>,
+    boxed: Box<bool>,
+}
+
+fn generate_boolean_inputs(fixtures: &mut Fixtures) -> Result<(), Box<dyn Error>> {
+    let mut registry = Registry::new();
+    registry.export::<BooleanInputs>("BooleanInputs");
+    fixtures.insert(
+        "cpp-collections/boolean-inputs.hpp",
+        generate_with_options(
+            &registry.finish(),
+            Language::Cpp,
+            GenerateOptions {
+                cpp: intrlay_codegen::CppOptions {
+                    namespace: Some("cpp_collections".into()),
+                },
+                ..Default::default()
+            },
+        )?,
+    )?;
+    fixtures.insert(
+        "cpp-collections/boolean-inputs.bin",
+        BooleanInputsView::create(&BooleanInputs {
+            scalar: true,
+            fixed: [true, true, false],
+            dynamic: vec![true, false, true],
+            maybe: Some(true),
+            boxed: Box::new(true),
+        })?
+        .as_bytes(),
+    )?;
+    Ok(())
+}
+
 fn generate_cpp_shared_collections(fixtures: &mut Fixtures) -> Result<(), Box<dyn Error>> {
     let mut registry = Registry::new();
     registry.export::<Collections>("Collections");
@@ -56,7 +95,9 @@ fn generate_cpp_shared_collections(fixtures: &mut Fixtures) -> Result<(), Box<dy
         &schema,
         Language::Cpp,
         GenerateOptions {
-            cpp_namespace: Some("cpp_collections".into()),
+            cpp: intrlay_codegen::CppOptions {
+                namespace: Some("cpp_collections".into()),
+            },
             ..GenerateOptions::default()
         },
     )?;
@@ -93,7 +134,9 @@ fn generate_cpp_shared_collections(fixtures: &mut Fixtures) -> Result<(), Box<dy
         &schema,
         Language::Cpp,
         GenerateOptions {
-            cpp_namespace: Some("cpp_collections::custom".into()),
+            cpp: intrlay_codegen::CppOptions {
+                namespace: Some("cpp_collections::custom".into()),
+            },
             naming: Some(naming),
             ..GenerateOptions::default()
         },
@@ -128,6 +171,7 @@ fn generate_cpp_shared_collections(fixtures: &mut Fixtures) -> Result<(), Box<dy
 
 pub(super) fn collect(fixtures: &mut Fixtures) -> Result<(), Box<dyn std::error::Error>> {
     generate_cpp_shared_collections(fixtures)?;
+    generate_boolean_inputs(fixtures)?;
     Ok(())
 }
 

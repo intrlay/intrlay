@@ -8,8 +8,9 @@ the `derive` feature is enabled by default.
 
 Use the Rust declarations from the [drawing tutorial](../tutorial.mdx#1-define-the-message).
 `#[derive(Intrlay)]` introduces `DrawingView`, `PointView`, and
-`DrawingCommandView` alongside the source types. No separate CLI step is needed
-to use those Rust views.
+`DrawingCommandView` alongside the source types, plus `DrawingInput`,
+`PointInput`, and `DrawingCommandInput` for borrowed encoding sources. No
+separate CLI step is needed to use those Rust APIs.
 
 The same derive supports tuples, newtypes, arrays, optional values, strings,
 sequences, and `Box` trees. `export_types!` is only needed when the CLI collects
@@ -69,6 +70,49 @@ change presence because this optional integer has a fixed encoding.
 `create` owns an aligned allocation. `as_view()` borrows it and `as_bytes()` exposes
 the complete backing region. Converting a view into an owned native `Drawing`
 reconstructs its strings and collections; borrowing does not.
+
+## Borrow encoding inputs
+
+The owned schema does not require the producer to allocate matching containers.
+Each generated `TypeInput` has independent field source parameters. Strings can
+borrow `str`, sequences can borrow slices, and nested inputs follow the same
+rules:
+
+```rust
+let coordinates = [[1.0_f32, 2.0, 3.0], [4.0, 5.0, 6.0]];
+let input = DrawingInput {
+    title: "Sketch",
+    points: intrlay::SequenceInput::new(coordinates.iter().map(|point| PointInput {
+        x: point[0], y: point[1], z: point[2],
+    })),
+    selected_point: None::<u32>,
+    command: DrawingCommand::Clear,
+};
+let drawing = DrawingView::create_from(&input)?;
+```
+
+`create_from`, `compute_layout_from`, and `create_in_place_from` accept
+`EncodeSource<Schema>` without first constructing the owned schema. Their
+encoding and view types are identical to the owned-input `create` APIs. A slice
+such as `arc.as_ref()` borrows its elements; only the final encoding copies the
+payload. Compatible scalar and fixed-array slices retain the native bulk-copy
+path.
+
+Built-in scalar sources keep Rust's exact numeric types. A borrowed `&[u16]`
+cannot supply `Vec<u32>`, and a nested input's `f64` field cannot supply `f32`.
+Convert explicitly in a `SequenceInput` iterator when needed; no intermediate
+collection is required. References to a matching scalar remain valid sources.
+
+`SequenceInput` accepts an `ExactSizeIterator + Clone`. Measurement and writing
+must observe the same stable logical input. Fixed-layout elements can be
+measured from their count without visiting each item. `BoxInput(source)` supplies
+a boxed field without allocating an intermediate Rust `Box`; the writer creates
+the wire reference. `Option<Source>` preserves optional presence normally.
+
+Payload enum inputs parameterize fields in every variant. If an inactive
+variant leaves a source type unconstrained, specify that parameter explicitly.
+Using the original owned enum as a field source is also supported. Payload-free
+enum inputs are aliases of the original Rust enum.
 
 ## Caller storage and received bytes
 

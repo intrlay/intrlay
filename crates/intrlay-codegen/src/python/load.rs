@@ -11,6 +11,17 @@ pub(super) struct Read<'a> {
     pub tag: Option<u32>,
 }
 
+/// Unchecked indexed getters can return a unit without consulting the index.
+pub(super) fn uses_index(plan: &TypeGraph, id: Id, exposure: Exposure) -> bool {
+    let read = Read {
+        id,
+        exposure,
+        offset: "$[argument:index]",
+        tag: None,
+    };
+    body(plan, &read, None).contains("$[argument:index]")
+}
+
 pub(super) fn body(plan: &TypeGraph, read: &Read<'_>, cache: Option<&ViewCache>) -> String {
     let mut lines = Vec::new();
     if let Some(tag) = read.tag {

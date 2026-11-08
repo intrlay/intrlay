@@ -2,5 +2,3 @@
 /* eslint-disable */
 // Construction and mutation inputs, including nested views, must not overlap the bytes being written.
 // Writers rely on this caller precondition; no runtime overlap check is performed.
-import * as intrlay from "@intrlay/runtime";
-export type { Some } from "@intrlay/runtime";

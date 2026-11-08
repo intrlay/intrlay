@@ -26,7 +26,9 @@ Fixed headers, alignment, and relative offsets let readers address data directly
 Construction determines payload sizes before allocating. A view does not grow
 an array, relocate a string, or compact a buffer after construction.
 
-Every declared type has a consistent view API. Native-layout optimizations are
+Generated views have a consistent API; types used only by parent encoders need
+no standalone view when their construction and accessor APIs are disabled.
+Native-layout optimizations are
 implementation choices backed by layout proofs; callers do not need a different
 object-exchange model for POD and non-POD types.
 

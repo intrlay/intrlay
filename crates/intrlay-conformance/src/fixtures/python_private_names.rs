@@ -23,7 +23,13 @@ struct Child {
 #[intrlay(python(name = "__Choice"))]
 enum Choice {
     Empty,
-    Present { child: Child },
+    Present {
+        child: Child,
+    },
+    Private {
+        #[intrlay(python(name = "__number"))]
+        number: u32,
+    },
 }
 
 #[derive(Intrlay)]

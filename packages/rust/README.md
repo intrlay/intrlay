@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-The derive creates `PointView` alongside `Point`. Export schema roots with
+The derive creates `PointView` and `PointInput` alongside `Point`. Export schema roots with
 `intrlay::export_types!(Point);` at a library crate's root to generate bindings
 for other languages. Rust can also consume types generated from C++ schemas.
 

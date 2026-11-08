@@ -139,7 +139,10 @@ fn recursive_native_storage_preserves_wire_and_public_types(
         &schema,
         Language::CSharp,
         GenerateOptions {
-            csharp_namespace: Some("RecursiveStorage".into()),
+            csharp: intrlay_codegen::CSharpOptions {
+                namespace: Some("RecursiveStorage".into()),
+                ..Default::default()
+            },
             ..Default::default()
         },
     )?;

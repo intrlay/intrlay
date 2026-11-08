@@ -74,7 +74,16 @@ fn private_fields_use_compatible_public_constructor_parameters(
 
     fixtures.insert(
         directory.join("private-fields.dart"),
-        format!("// @dart=3.3\n{source}"),
+        format!(
+            "// @dart=3.3\n{source}\n\
+// Private accessors belong to this Dart library. Exercise them here.
+void checkPrivateFields(PrivateFieldsView view) {{
+  if (view._payload != 7 || view.__label != 'hello') throw core.StateError('private getters');
+  view._payload = 9;
+  if (view._payload != 9) throw core.StateError('private setter');
+}}
+"
+        ),
     )?;
     Ok(())
 }
@@ -127,7 +136,7 @@ fn numeric_array_writers_do_not_emit_unused_scalar_helpers() -> Result<(), Box<d
     let mut registry = Registry::new();
     registry.export::<Vec<[f32; 3]>>("Points");
     let source = generate(&registry.finish(), Language::Dart)?;
-    assert!(source.contains("intrlay.writeFloat32Array(storage, payloadOffset, value)"));
+    assert!(source.contains("intrlay.writeFloat32ArrayElements(storage, payloadOffset, items)"));
     assert!(!source.contains("void _writeIntrlayF32("));
 
     let mut registry = Registry::new();

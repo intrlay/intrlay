@@ -4,16 +4,16 @@ from collections.abc import Callable
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'target/reference-fixes'))
-from bindings import Fixture, FixtureView, DeepRootView, CachedRootView, ChoiceView
+from bindings import FixtureInput, FixtureView, DeepRootView, CachedRootView, ChoiceKind, ChoiceView
 from intrlay import Storage, Some, IntView
 
-value: Fixture = {
+value: FixtureInput = {
     'custom': {'value': 1}, 'deep': 7, 'nested': Some(8), 'absent': None,
     'missing_inner': Some(None), 'values': [9],
     'items': [{'scalar': 10, 'child': Some({'value': 11}), 'projected': Some(12.0)}],
     'cached': Some({'value': 13}), 'projected': Some(14.0), 'lanes': [15.0, 16.0],
-    'choice': {'kind': 'Selected', 'scalar': Some(17), 'child': Some({'value': 18})},
-    'inactive': {'kind': 'Empty'}, 'before': 19, 'empty': {}, 'after': 20,
+    'choice': {'kind': ChoiceKind.Selected, 'scalar': Some(17), 'child': Some({'value': 18})},
+    'inactive': {'kind': ChoiceKind.Empty}, 'before': 19, 'empty': {}, 'after': 20,
     'empty_items': [{}, {}], 'read_only': Some(21),
 }
 owned = FixtureView.create(value)
@@ -67,9 +67,9 @@ selected_child = view.choice.selected_child
 assert selected_child is not None and selected_child.value is not None
 assert selected_child.value.value is not None and selected_child.value.value.value == 18
 assert view.inactive.selected_child is None
-no_payload = ChoiceView.create({'kind': 'Selected', 'scalar': None, 'child': None}).selected_child
+no_payload = ChoiceView.create({'kind': ChoiceKind.Selected, 'scalar': None, 'child': None}).selected_child
 assert no_payload is not None and no_payload.value is None
-no_inner = ChoiceView.create({'kind': 'Selected', 'scalar': Some(None), 'child': Some(None)})
+no_inner = ChoiceView.create({'kind': ChoiceKind.Selected, 'scalar': Some(None), 'child': Some(None)})
 no_inner_payload = no_inner.selected_child
 assert no_inner_payload is not None and no_inner_payload.value is not None
 assert no_inner_payload.value.value is None and no_inner.selected_child is no_inner_payload

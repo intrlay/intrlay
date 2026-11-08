@@ -23,9 +23,54 @@ struct Padded {
 }
 
 #[derive(Intrlay)]
+struct FlatPacket {
+    sequence: u64,
+    vertices: Vec<Vertex>,
+    samples: Vec<f32>,
+    label: String,
+    color: [u32; 3],
+    enabled: bool,
+}
+
+#[derive(Intrlay)]
+struct LargeInlinePacket {
+    left: [u32; 32_768],
+    right: [u32; 32_768],
+    label: String,
+}
+
+// The canonical input name intentionally matches the generic Create parameter.
+#[derive(Intrlay)]
+struct T {
+    values: Vec<u32>,
+}
+
+#[derive(Intrlay)]
 enum Nested {
     Number(u64),
     Text(String),
+}
+
+#[derive(Intrlay)]
+enum ProtocolNames {
+    Value(u32),
+    HasValue(u32),
+    TryGetValue(u32),
+    Create(u32),
+}
+
+#[derive(Intrlay)]
+enum SparseUnion {
+    #[intrlay(tag = 7)]
+    Empty,
+    #[intrlay(tag = 91)]
+    Value(u32),
+}
+
+#[derive(Intrlay)]
+enum ProviderCollision {
+    #[intrlay(csharp(name = "IUnionMembers"))]
+    Member(u32),
 }
 
 #[derive(Intrlay)]
@@ -102,11 +147,34 @@ fn generate_native_and_scoped_view_cases(fixtures: &mut Fixtures) -> Result<(), 
     };
     let mut registry = Registry::new();
     registry.export::<Scene>("Scene");
+    registry.export::<FlatPacket>("FlatPacket");
+    registry.export::<LargeInlinePacket>("LargeInlinePacket");
+    registry.export::<T>("T");
+    registry.export::<ProtocolNames>("ProtocolNames");
+    registry.export::<SparseUnion>("SparseUnion");
+    let schema = registry.finish();
+    fixtures.insert(
+        std::path::Path::new("native-views-csharp15").join("bindings.cs"),
+        generate_with_options(
+            &schema,
+            Language::CSharp,
+            GenerateOptions {
+                csharp: intrlay_codegen::CSharpOptions {
+                    namespace: Some("NativeViews.Generated".into()),
+                    language_version: Some(15),
+                },
+                ..Default::default()
+            },
+        )?,
+    )?;
     let code = generate_with_options(
-        &registry.finish(),
+        &schema,
         Language::CSharp,
         GenerateOptions {
-            csharp_namespace: Some("NativeViews.Generated".into()),
+            csharp: intrlay_codegen::CSharpOptions {
+                namespace: Some("NativeViews.Generated".into()),
+                ..Default::default()
+            },
             ..Default::default()
         },
     )?;
@@ -117,10 +185,62 @@ fn generate_native_and_scoped_view_cases(fixtures: &mut Fixtures) -> Result<(), 
         directory.join("rust.bin"),
         SceneView::create(&value)?.as_bytes(),
     )?;
+    let packet = FlatPacket {
+        sequence: 17,
+        vertices: value.vertices,
+        samples: vec![1.5, -2.0, 3.25],
+        label: "borrowed 🦀".into(),
+        color: [11, 13, 17],
+        enabled: true,
+    };
+    fixtures.insert(
+        directory.join("flat.bin"),
+        FlatPacketView::create(&packet)?.as_bytes(),
+    )?;
     Ok(())
 }
 
 pub(super) fn collect(fixtures: &mut Fixtures) -> Result<(), Box<dyn std::error::Error>> {
+    check_union_language_options()?;
     generate_native_and_scoped_view_cases(fixtures)?;
+    Ok(())
+}
+
+fn check_union_language_options() -> Result<(), Box<dyn Error>> {
+    let mut registry = Registry::new();
+    registry.export::<ProviderCollision>("ProviderCollision");
+    let schema = registry.finish();
+    let default = generate_with_options(&schema, Language::CSharp, GenerateOptions::default())?;
+    let explicit = generate_with_options(
+        &schema,
+        Language::CSharp,
+        GenerateOptions {
+            csharp: intrlay_codegen::CSharpOptions {
+                language_version: Some(14),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(default, explicit);
+    for (version, expected) in [
+        (13, "C# 14 or later"),
+        (15, "IUnionMembers"),
+        (16, "IUnionMembers"),
+    ] {
+        let result = generate_with_options(
+            &schema,
+            Language::CSharp,
+            GenerateOptions {
+                csharp: intrlay_codegen::CSharpOptions {
+                    language_version: Some(version),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let error = result.err().ok_or("expected a C# language diagnostic")?;
+        assert!(error.to_string().contains(expected), "{error}");
+    }
     Ok(())
 }
