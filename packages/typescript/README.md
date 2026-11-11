@@ -32,9 +32,9 @@ storage directly. Caller-provided buffers are supported by `createInPlace`.
 
 ## Documentation
 
-- [Getting started](https://intrlay.github.io/intrlay/getting-started/)
-- [TypeScript guide](https://intrlay.github.io/intrlay/languages/typescript/)
-- [Buffers and views](https://intrlay.github.io/intrlay/concepts/buffers-and-views/)
-- [Project](https://github.com/intrlay/intrlay)
+- [Getting started](https://soulart.github.io/intrlay/getting-started/)
+- [TypeScript guide](https://soulart.github.io/intrlay/languages/typescript/)
+- [Buffers and views](https://soulart.github.io/intrlay/concepts/buffers-and-views/)
+- [Project](https://github.com/soulart/intrlay)
 
 Licensed under Apache-2.0 OR MIT.

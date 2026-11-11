@@ -6,10 +6,10 @@ const config: Config = {
     title: "Intrlay",
     tagline: "Typed buffer views across languages",
     favicon: "img/favicon.ico",
-    url: "https://intrlay.github.io",
+    url: "https://soulart.github.io",
     baseUrl: "/intrlay/",
     trailingSlash: true,
-    organizationName: "intrlay",
+    organizationName: "soulart",
     projectName: "intrlay",
     onBrokenLinks: "throw",
     onBrokenAnchors: "throw",
@@ -26,7 +26,7 @@ const config: Config = {
                     routeBasePath: "/",
                     include: ["**/*.mdx"],
                     sidebarPath: "./sidebars.ts",
-                    editUrl: "https://github.com/intrlay/intrlay/edit/main/docs/"
+                    editUrl: "https://github.com/soulart/intrlay/edit/main/docs/"
                 },
                 blog: false,
                 pages: false,
@@ -56,7 +56,7 @@ const config: Config = {
                     position: "left"
                 },
                 {
-                    href: "https://github.com/intrlay/intrlay",
+                    href: "https://github.com/soulart/intrlay",
                     label: "GitHub",
                     position: "right"
                 }

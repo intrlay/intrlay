@@ -9,7 +9,7 @@ rust-version = "1.95"
 publish = true
 readme = "README.md"
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/intrlay/intrlay"
+repository = "https://github.com/soulart/intrlay"
 
 [workspace.dependencies]
 intrlay-layout = { path = "crates/intrlay-layout", version = "0.1.4" }

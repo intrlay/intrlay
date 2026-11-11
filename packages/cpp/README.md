@@ -6,7 +6,7 @@ library is required.
 
 ## Installation
 
-Download the C++ header package from [Releases](https://github.com/intrlay/intrlay/releases), or use
+Download the C++ header package from [Releases](https://github.com/soulart/intrlay/releases), or use
 `packages/cpp` from a source checkout. With CMake:
 
 ```cmake
@@ -47,14 +47,14 @@ encoding sources. `INTRLAY_ADAPT_STRUCT` provides a public-field mirror;
 adapters also apply inside collections and other nested values.
 
 `<intrlay/adapters/glm.hpp>` provides optional GLM vector, matrix, and quaternion
-adapters. See [Library adapters](https://intrlay.github.io/intrlay/reference/library-adapters/)
+adapters. See [Library adapters](https://soulart.github.io/intrlay/reference/library-adapters/)
 for configuration and dual-quaternion support.
 
 ## Documentation
 
-- [Getting started](https://intrlay.github.io/intrlay/getting-started/)
-- [C++ guide](https://intrlay.github.io/intrlay/languages/cpp/)
-- [Code generation](https://intrlay.github.io/intrlay/reference/code-generation/)
-- [Project](https://github.com/intrlay/intrlay)
+- [Getting started](https://soulart.github.io/intrlay/getting-started/)
+- [C++ guide](https://soulart.github.io/intrlay/languages/cpp/)
+- [Code generation](https://soulart.github.io/intrlay/reference/code-generation/)
+- [Project](https://github.com/soulart/intrlay)
 
 Licensed under Apache-2.0 OR MIT.

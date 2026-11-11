@@ -12,8 +12,8 @@ license = "Apache-2.0 OR MIT"
 license-files = ["LICENSE", "LICENSE-APACHE", "LICENSE-MIT"]
 
 [project.urls]
-Repository = "https://github.com/intrlay/intrlay"
-Issues = "https://github.com/intrlay/intrlay/issues"
+Repository = "https://github.com/soulart/intrlay"
+Issues = "https://github.com/soulart/intrlay/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

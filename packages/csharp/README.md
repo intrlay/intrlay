@@ -35,9 +35,9 @@ generated API does not require enabling unsafe code in the consuming project.
 
 ## Documentation
 
-- [Getting started](https://intrlay.github.io/intrlay/getting-started/)
-- [C# guide](https://intrlay.github.io/intrlay/languages/csharp/)
-- [Code generation](https://intrlay.github.io/intrlay/reference/code-generation/)
-- [Project](https://github.com/intrlay/intrlay)
+- [Getting started](https://soulart.github.io/intrlay/getting-started/)
+- [C# guide](https://soulart.github.io/intrlay/languages/csharp/)
+- [Code generation](https://soulart.github.io/intrlay/reference/code-generation/)
+- [Project](https://github.com/soulart/intrlay)
 
 Licensed under Apache-2.0 OR MIT.

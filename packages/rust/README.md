@@ -38,13 +38,13 @@ for other languages. Rust can also consume types generated from C++ schemas.
 
 Optional `glam-0-33`, `glam-0-34`, `smol_str`, and `smallvec` features provide library codecs
 through the ordinary `#[intrlay(with = ...)]` adapter mechanism. See
-[Library adapters](https://intrlay.github.io/intrlay/reference/library-adapters/).
+[Library adapters](https://soulart.github.io/intrlay/reference/library-adapters/).
 
 ## Documentation
 
-- [Getting started](https://intrlay.github.io/intrlay/getting-started/)
-- [Rust guide](https://intrlay.github.io/intrlay/languages/rust/)
-- [Schema annotations](https://intrlay.github.io/intrlay/reference/annotations/)
-- [Project](https://github.com/intrlay/intrlay)
+- [Getting started](https://soulart.github.io/intrlay/getting-started/)
+- [Rust guide](https://soulart.github.io/intrlay/languages/rust/)
+- [Schema annotations](https://soulart.github.io/intrlay/reference/annotations/)
+- [Project](https://github.com/soulart/intrlay)
 
 Licensed under Apache-2.0 OR MIT.

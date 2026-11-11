@@ -10,9 +10,9 @@
     <Description>Typed storage for generated Intrlay memory views</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseExpression>Apache-2.0 OR MIT</PackageLicenseExpression>
-    <RepositoryUrl>https://github.com/intrlay/intrlay</RepositoryUrl>
+    <RepositoryUrl>https://github.com/soulart/intrlay</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageProjectUrl>https://github.com/intrlay/intrlay</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/soulart/intrlay</PackageProjectUrl>
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="generator/**/*.cs" />

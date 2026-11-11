@@ -5,7 +5,7 @@
   "description": "Typed storage for generated Intrlay memory views",
   "repository": {
     "type": "git",
-    "url": "https://github.com/intrlay/intrlay",
+    "url": "https://github.com/soulart/intrlay",
     "directory": "packages/typescript"
   },
   "exports": {

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(intrlay VERSION 0.1.4
-    HOMEPAGE_URL https://github.com/intrlay/intrlay
+    HOMEPAGE_URL https://github.com/soulart/intrlay
     LANGUAGES CXX)
 
 include(GNUInstallDirs)

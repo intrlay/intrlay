@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/intrlay/intrlay/main/docs/static/img/logo-wordmark-dark.svg" />
-    <img src="https://raw.githubusercontent.com/intrlay/intrlay/main/docs/static/img/logo-wordmark.svg" alt="Intrlay" width="360" height="109" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/soulart/intrlay/main/docs/static/img/logo-wordmark-dark.svg" />
+    <img src="https://raw.githubusercontent.com/soulart/intrlay/main/docs/static/img/logo-wordmark.svg" alt="Intrlay" width="360" height="109" />
   </picture>
 </p>
 
@@ -73,7 +73,7 @@ console.log(received.x); // 4
 `received` reads the same buffer. Encoding a native value creates its binary
 representation; borrowing an existing buffer does not copy the payload.
 
-See [Getting started](https://intrlay.github.io/intrlay/getting-started/) for the complete example and
+See [Getting started](https://soulart.github.io/intrlay/getting-started/) for the complete example and
 installation from a source checkout.
 
 ## Languages
@@ -83,22 +83,22 @@ target below.
 
 | Target | Runtime package | Guide |
 | --- | --- | --- |
-| Rust | `intrlay` on crates.io | [Rust](https://intrlay.github.io/intrlay/languages/rust/) |
-| C++20 | Header-only library | [C++](https://intrlay.github.io/intrlay/languages/cpp/) |
-| TypeScript / JavaScript | `@intrlay/runtime` on npm | [TypeScript](https://intrlay.github.io/intrlay/languages/typescript/) |
-| C# / .NET | `Intrlay` on NuGet, including its source generator | [C#](https://intrlay.github.io/intrlay/languages/csharp/) |
-| Python | `intrlay` on PyPI | [Python](https://intrlay.github.io/intrlay/languages/python/) |
-| Dart | `intrlay` on pub.dev | [Dart](https://intrlay.github.io/intrlay/languages/dart/) |
+| Rust | `intrlay` on crates.io | [Rust](https://soulart.github.io/intrlay/languages/rust/) |
+| C++20 | Header-only library | [C++](https://soulart.github.io/intrlay/languages/cpp/) |
+| TypeScript / JavaScript | `@intrlay/runtime` on npm | [TypeScript](https://soulart.github.io/intrlay/languages/typescript/) |
+| C# / .NET | `Intrlay` on NuGet, including its source generator | [C#](https://soulart.github.io/intrlay/languages/csharp/) |
+| Python | `intrlay` on PyPI | [Python](https://soulart.github.io/intrlay/languages/python/) |
+| Dart | `intrlay` on pub.dev | [Dart](https://soulart.github.io/intrlay/languages/dart/) |
 
 ## Documentation
 
-- [Documentation](https://intrlay.github.io/intrlay/)
-- [Feature comparison](https://intrlay.github.io/intrlay/feature-comparison/)
-- [Tutorial: a drawing message](https://intrlay.github.io/intrlay/tutorial/)
-- [Values, buffers, and views](https://intrlay.github.io/intrlay/concepts/buffers-and-views/)
-- [Code generation](https://intrlay.github.io/intrlay/reference/code-generation/)
-- [Schema annotations](https://intrlay.github.io/intrlay/reference/annotations/)
-- [Generated names](https://intrlay.github.io/intrlay/reference/naming/)
+- [Documentation](https://soulart.github.io/intrlay/)
+- [Feature comparison](https://soulart.github.io/intrlay/feature-comparison/)
+- [Tutorial: a drawing message](https://soulart.github.io/intrlay/tutorial/)
+- [Values, buffers, and views](https://soulart.github.io/intrlay/concepts/buffers-and-views/)
+- [Code generation](https://soulart.github.io/intrlay/reference/code-generation/)
+- [Schema annotations](https://soulart.github.io/intrlay/reference/annotations/)
+- [Generated names](https://soulart.github.io/intrlay/reference/naming/)
 
 Intrlay targets cooperating producers and consumers that agree on a schema.
 Rust and C++ offer checked view constructors and explicit unchecked paths.
@@ -107,10 +107,10 @@ application's responsibility.
 
 ## Contributing
 
-See [CONTRIBUTING.md](https://github.com/intrlay/intrlay/blob/main/CONTRIBUTING.md) for development setup, coding conventions,
+See [CONTRIBUTING.md](https://github.com/soulart/intrlay/blob/main/CONTRIBUTING.md) for development setup, coding conventions,
 and testing.
 
 ## License
 
-Licensed under either [Apache License 2.0](https://github.com/intrlay/intrlay/blob/main/LICENSE-APACHE) or
-[MIT](https://github.com/intrlay/intrlay/blob/main/LICENSE-MIT), at your option.
+Licensed under either [Apache License 2.0](https://github.com/soulart/intrlay/blob/main/LICENSE-APACHE) or
+[MIT](https://github.com/soulart/intrlay/blob/main/LICENSE-MIT), at your option.

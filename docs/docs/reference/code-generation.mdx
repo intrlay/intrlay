@@ -4,7 +4,7 @@ The `intrlay` executable generates typed buffer views from compiler-resolved
 metadata. Install a prebuilt executable with `cargo binstall intrlay-cli` using
 [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), compile it with
 `cargo install intrlay-cli`, or download it from
-[GitHub Releases](https://github.com/intrlay/intrlay/releases). Prebuilt executables
+[GitHub Releases](https://github.com/soulart/intrlay/releases). Prebuilt executables
 support Windows, Linux, and macOS on x64 and ARM64; Linux binaries require glibc
 2.39 or later. From a checkout, use `cargo build --release -p intrlay-cli`.
 
@@ -118,7 +118,7 @@ Install LLVM and set `LIBCLANG_PATH` to the directory containing `libclang.dll`,
 Executable archives include Intrlay's headers, but not a C++ compiler or
 libclang. Generating from existing metadata does not load libclang.
 
-The [C++ guide](https://intrlay.github.io/intrlay/languages/cpp/)
+The [C++ guide](https://soulart.github.io/intrlay/languages/cpp/)
 contains a complete source declaration and runtime integration example.
 
 ## Output options
@@ -157,14 +157,14 @@ intrlay generate schema.json --language csharp --csharp-language-version 15 --ou
 The options-file equivalent is `"csharp": { "language_version": 15 }`; the command-line
 flag overrides it. Versions below 14 are rejected. Versions 15 and later enable
 the union protocol and require a compiler supporting the selected version. See
-[C# union patterns](https://intrlay.github.io/intrlay/languages/csharp/#union-patterns-c-15).
+[C# union patterns](https://soulart.github.io/intrlay/languages/csharp/#union-patterns-c-15).
 
 Module-wide naming policies select symbol kind, visibility, and modifiers such
 as `static` or `readonly`, then apply a casing preset and optional prefix/suffix.
 Explicit annotation names are exceptions to that policy. The runtime package's
-own API names remain fixed. [Generated names](https://intrlay.github.io/intrlay/reference/naming/)
+own API names remain fixed. [Generated names](https://soulart.github.io/intrlay/reference/naming/)
 contains a complete options file, selector reference, and before/after examples.
-See [Schema annotations](https://intrlay.github.io/intrlay/reference/annotations/)
+See [Schema annotations](https://soulart.github.io/intrlay/reference/annotations/)
 for projections, accessor generation, adapters, and derive configuration.
 
 Run `intrlay generate --help` or `intrlay extract-cpp --help` for command help.
