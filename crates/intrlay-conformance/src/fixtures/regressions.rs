@@ -278,6 +278,10 @@ fn short_fixed_arrays_omit_bulk_dispatch() -> Result<(), Box<dyn Error>> {
     let source = generate(&short, Language::Dart)?;
     assert!(source.contains("intrlay.writeFloat32ArrayElements("));
     assert!(!source.contains("intrlay.writeFloat32Array("));
+    let source = generate(&medium, Language::Dart)?;
+    assert!(source.contains(
+        "core.bool.fromEnvironment('dart.library.js_interop') &&\n      !const core.bool.fromEnvironment('dart.tool.dart2wasm')"
+    ));
     Ok(())
 }
 

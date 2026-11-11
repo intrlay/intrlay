@@ -4,7 +4,9 @@ import 'dart:typed_data';
 
 import 'src/utf8.dart' as strings;
 
-const _isWeb = bool.fromEnvironment('dart.library.js_interop');
+// Wasm supports JS interop but retains native 64-bit integers and typed lists.
+const _isWasm = bool.fromEnvironment('dart.tool.dart2wasm');
+const _isJavaScript = bool.fromEnvironment('dart.library.js_interop') && !_isWasm;
 const _wordBase = 4294967296;
 final _isLittleEndian = Endian.host == Endian.little;
 
@@ -73,25 +75,25 @@ Uint8List _prepareWriteBytes(Uint8List bytes, int size, int alignment) {
   return result;
 }
 
-/// Reads a signed little-endian integer. Web precision follows Dart's int.
+/// Reads a signed little-endian integer. JavaScript precision follows Dart's int.
 @pragma('vm:prefer-inline')
-int readInt64(ByteData data, int offset) => _isWeb
+int readInt64(ByteData data, int offset) => _isJavaScript
     ? data.getInt32(offset + 4, Endian.little) * _wordBase +
         data.getUint32(offset, Endian.little)
     : data.getInt64(offset, Endian.little);
 
-/// Reads an unsigned little-endian integer without a web-only BigInt API.
+/// Reads an unsigned little-endian integer without a JavaScript-only BigInt API.
 @pragma('vm:prefer-inline')
-int readUint64(ByteData data, int offset) => _isWeb
+int readUint64(ByteData data, int offset) => _isJavaScript
     ? data.getUint32(offset + 4, Endian.little) * _wordBase +
         data.getUint32(offset, Endian.little)
     : data.getUint64(offset, Endian.little);
 
-/// Writes a signed integer; web callers must account for lost integer precision.
+/// Writes a signed integer; JavaScript callers must account for lost precision.
 @pragma('vm:prefer-inline')
 void writeInt64(ByteData data, int offset, int value) {
-  if (_isWeb) {
-    _writeWideWeb(data, offset, value);
+  if (_isJavaScript) {
+    _writeWideJavaScript(data, offset, value);
   } else {
     data.setInt64(offset, value, Endian.little);
   }
@@ -100,14 +102,14 @@ void writeInt64(ByteData data, int offset, int value) {
 /// Writes an unsigned integer using the same little-endian representation.
 @pragma('vm:prefer-inline')
 void writeUint64(ByteData data, int offset, int value) {
-  if (_isWeb) {
-    _writeWideWeb(data, offset, value);
+  if (_isJavaScript) {
+    _writeWideJavaScript(data, offset, value);
   } else {
     data.setUint64(offset, value, Endian.little);
   }
 }
 
-void _writeWideWeb(ByteData data, int offset, int value) {
+void _writeWideJavaScript(ByteData data, int offset, int value) {
   data.setUint32(offset, value, Endian.little);
   data.setUint32(offset + 4, (value / _wordBase).floor(), Endian.little);
 }
@@ -184,7 +186,8 @@ class Storage {
 ///
 /// Generated encoders supply offsets aligned to each scalar's size. Borrowed
 /// views use [Storage.writer], which preserves unaligned ByteData access.
-/// Native encoders create only the numeric views they use, once per storage.
+/// Native and Wasm encoders create only the numeric views they use, once per
+/// storage.
 /// JavaScript uses ByteData for scalar stores and byte views for bulk copies.
 final class WriteStorage extends Storage {
   @override
@@ -218,7 +221,7 @@ final class WriteStorage extends Storage {
   /// Writes the low sixteen bits, shared by signed and unsigned encodings.
   @pragma('vm:prefer-inline')
   void writeUint16(int offset, int value) {
-    if (!_isWeb && _isLittleEndian && _aligned) {
+    if (!_isJavaScript && _isLittleEndian && _aligned) {
       _uint16[offset >>> 1] = value;
     } else {
       data.setUint16(offset, value, Endian.little);
@@ -232,7 +235,7 @@ final class WriteStorage extends Storage {
   /// Writes the low thirty-two bits, shared by signed and unsigned encodings.
   @pragma('vm:prefer-inline')
   void writeUint32(int offset, int value) {
-    if (!_isWeb && _isLittleEndian && _aligned) {
+    if (!_isJavaScript && _isLittleEndian && _aligned) {
       _uint32[offset >>> 2] = value;
     } else {
       data.setUint32(offset, value, Endian.little);
@@ -243,25 +246,25 @@ final class WriteStorage extends Storage {
   @pragma('vm:prefer-inline')
   void writeInt32(int offset, int value) => writeUint32(offset, value);
 
-  /// Writes signed native lanes, retaining the existing Web integer conversion.
+  /// Writes signed lanes, retaining JavaScript integer conversion where needed.
   @pragma('vm:prefer-inline')
   void writeInt64(int offset, int value) {
-    if (!_isWeb && _isLittleEndian && _aligned) {
+    if (!_isJavaScript && _isLittleEndian && _aligned) {
       _uint64[offset >>> 3] = value;
-    } else if (_isWeb) {
-      _writeWideWeb(data, offset, value);
+    } else if (_isJavaScript) {
+      _writeWideJavaScript(data, offset, value);
     } else {
       data.setInt64(offset, value, Endian.little);
     }
   }
 
-  /// Writes unsigned native lanes, retaining the existing Web integer conversion.
+  /// Writes unsigned lanes, retaining JavaScript integer conversion where needed.
   @pragma('vm:prefer-inline')
   void writeUint64(int offset, int value) {
-    if (!_isWeb && _isLittleEndian && _aligned) {
+    if (!_isJavaScript && _isLittleEndian && _aligned) {
       _uint64[offset >>> 3] = value;
-    } else if (_isWeb) {
-      _writeWideWeb(data, offset, value);
+    } else if (_isJavaScript) {
+      _writeWideJavaScript(data, offset, value);
     } else {
       data.setUint64(offset, value, Endian.little);
     }
@@ -270,7 +273,7 @@ final class WriteStorage extends Storage {
   /// Rounds to float32 directly in the cached numeric view.
   @pragma('vm:prefer-inline')
   void writeFloat32(int offset, double value) {
-    if (!_isWeb && _isLittleEndian && _aligned) {
+    if (!_isJavaScript && _isLittleEndian && _aligned) {
       _float32[offset >>> 2] = value;
     } else {
       data.setFloat32(offset, value, Endian.little);
@@ -280,7 +283,7 @@ final class WriteStorage extends Storage {
   /// Writes a float64 without changing its representation.
   @pragma('vm:prefer-inline')
   void writeFloat64(int offset, double value) {
-    if (!_isWeb && _isLittleEndian && _aligned) {
+    if (!_isJavaScript && _isLittleEndian && _aligned) {
       _float64[offset >>> 3] = value;
     } else {
       data.setFloat64(offset, value, Endian.little);
@@ -291,14 +294,17 @@ final class WriteStorage extends Storage {
 // Array writers resolve native byte order and the cached destination once.
 // Inlining on JavaScript preserves fixed-length loops in the generated caller.
 // Dart 3.13 AOT/dart2js measurements: small loops beat range-copy dispatch.
+// Wasm uses the native strategy rather than JavaScript's number conversions.
 // Code generation applies the same limits statically for fixed-length arrays.
-const _arrayLoopLimit = _isWeb ? 128 : 4;
-// Byte lists already expose the needed source view, so web breaks even sooner.
-const _byteArrayLoopLimit = _isWeb ? 64 : 4;
+const _arrayLoopLimit = _isJavaScript ? 128 : 4;
+// Byte lists already expose the source view, so JavaScript breaks even sooner.
+const _byteArrayLoopLimit = _isJavaScript ? 64 : 4;
 
-// Web borrows source bytes only for a bulk copy. Using the native lane caches
+// JavaScript borrows source bytes only for a bulk copy. Using native lane caches
 // here would keep every lazy lane field in every WriteStorage allocation,
 // including messages that only write scalars or short arrays.
+// Wasm float32 copies also use bytes: setRange between different backing array
+// types can convert elements through double, changing float32 NaN payloads.
 @pragma('dart2js:tryInline')
 void _copyTypedArrayBytes(WriteStorage storage, int offset, TypedData values) {
   final bytes = Uint8List.view(values.buffer, values.offsetInBytes, values.lengthInBytes);
@@ -348,7 +354,7 @@ void writeInt16Array(WriteStorage storage, int offset, List<int> values) =>
 void writeUint16Array(WriteStorage storage, int offset, List<int> values) {
   if (values.length > _arrayLoopLimit && _isLittleEndian && storage._aligned &&
       (values is Uint16List || values is Int16List)) {
-    if (_isWeb) {
+    if (_isJavaScript) {
       _copyTypedArrayBytes(storage, offset, values as TypedData);
     } else {
       final start = offset >>> 1;
@@ -368,7 +374,7 @@ void writeInt16ArrayElements(WriteStorage storage, int offset, List<int> values)
 /// Resolves the 16-bit destination once and writes elements individually.
 @pragma('dart2js:tryInline')
 void writeUint16ArrayElements(WriteStorage storage, int offset, List<int> values) {
-  if (!_isWeb && _isLittleEndian && storage._aligned) {
+  if (!_isJavaScript && _isLittleEndian && storage._aligned) {
     final lanes = storage._uint16;
     final start = offset >>> 1;
     for (var index = 0; index < values.length; ++index) {
@@ -393,7 +399,7 @@ void writeInt32Array(WriteStorage storage, int offset, List<int> values) =>
 void writeUint32Array(WriteStorage storage, int offset, List<int> values) {
   if (values.length > _arrayLoopLimit && _isLittleEndian && storage._aligned &&
       (values is Uint32List || values is Int32List)) {
-    if (_isWeb) {
+    if (_isJavaScript) {
       _copyTypedArrayBytes(storage, offset, values as TypedData);
     } else {
       final start = offset >>> 2;
@@ -413,7 +419,7 @@ void writeInt32ArrayElements(WriteStorage storage, int offset, List<int> values)
 /// Resolves the 32-bit destination once and writes elements individually.
 @pragma('dart2js:tryInline')
 void writeUint32ArrayElements(WriteStorage storage, int offset, List<int> values) {
-  if (!_isWeb && _isLittleEndian && storage._aligned) {
+  if (!_isJavaScript && _isLittleEndian && storage._aligned) {
     final lanes = storage._uint32;
     final start = offset >>> 2;
     for (var index = 0; index < values.length; ++index) {
@@ -433,10 +439,10 @@ void writeUint32ArrayElements(WriteStorage storage, int offset, List<int> values
 void writeInt64Array(WriteStorage storage, int offset, List<int> values) =>
     writeUint64Array(storage, offset, values);
 
-/// Bulk-copies native integer lanes; web keeps its existing integer conversion.
+/// Bulk-copies native integer lanes; JavaScript keeps its integer conversion.
 @pragma('dart2js:tryInline')
 void writeUint64Array(WriteStorage storage, int offset, List<int> values) {
-  if (!_isWeb && values.length > _arrayLoopLimit && _isLittleEndian && storage._aligned &&
+  if (!_isJavaScript && values.length > _arrayLoopLimit && _isLittleEndian && storage._aligned &&
       (values is Uint64List || values is Int64List)) {
     final start = offset >>> 3;
     storage._uint64.setRange(start, start + values.length, values);
@@ -454,7 +460,7 @@ void writeInt64ArrayElements(WriteStorage storage, int offset, List<int> values)
 /// Resolves the 64-bit destination once and writes elements individually.
 @pragma('dart2js:tryInline')
 void writeUint64ArrayElements(WriteStorage storage, int offset, List<int> values) {
-  if (!_isWeb && _isLittleEndian && storage._aligned) {
+  if (!_isJavaScript && _isLittleEndian && storage._aligned) {
     final lanes = storage._uint64;
     final start = offset >>> 3;
     for (var index = 0; index < values.length; ++index) {
@@ -472,7 +478,7 @@ void writeUint64ArrayElements(WriteStorage storage, int offset, List<int> values
 @pragma('dart2js:tryInline')
 void writeFloat32Array(WriteStorage storage, int offset, List<double> values) {
   if (values.length > _arrayLoopLimit && _isLittleEndian && storage._aligned && values is Float32List) {
-    if (_isWeb) {
+    if (_isJavaScript || _isWasm) {
       _copyTypedArrayBytes(storage, offset, values);
     } else {
       final start = offset >>> 2;
@@ -486,7 +492,7 @@ void writeFloat32Array(WriteStorage storage, int offset, List<double> values) {
 /// Writes float32 elements with one destination lookup and no bulk dispatch.
 @pragma('dart2js:tryInline')
 void writeFloat32ArrayElements(WriteStorage storage, int offset, List<double> values) {
-  if (!_isWeb && _isLittleEndian && storage._aligned) {
+  if (!_isJavaScript && _isLittleEndian && storage._aligned) {
     final lanes = storage._float32;
     final start = offset >>> 2;
     for (var index = 0; index < values.length; ++index) {
@@ -504,7 +510,7 @@ void writeFloat32ArrayElements(WriteStorage storage, int offset, List<double> va
 @pragma('dart2js:tryInline')
 void writeFloat64Array(WriteStorage storage, int offset, List<double> values) {
   if (values.length > _arrayLoopLimit && _isLittleEndian && storage._aligned && values is Float64List) {
-    if (_isWeb) {
+    if (_isJavaScript) {
       _copyTypedArrayBytes(storage, offset, values);
     } else {
       final start = offset >>> 3;
@@ -518,7 +524,7 @@ void writeFloat64Array(WriteStorage storage, int offset, List<double> values) {
 /// Writes float64 elements with one destination lookup and no bulk dispatch.
 @pragma('dart2js:tryInline')
 void writeFloat64ArrayElements(WriteStorage storage, int offset, List<double> values) {
-  if (!_isWeb && _isLittleEndian && storage._aligned) {
+  if (!_isJavaScript && _isLittleEndian && storage._aligned) {
     final lanes = storage._float64;
     final start = offset >>> 3;
     for (var index = 0; index < values.length; ++index) {
@@ -532,13 +538,13 @@ void writeFloat64ArrayElements(WriteStorage storage, int offset, List<double> va
   }
 }
 
-/// Borrows signed 64-bit lanes. Web values have Dart's integer precision limits.
-List<int> int64View(ByteBuffer buffer, int offset, int length) => _isWeb
+/// Borrows signed 64-bit lanes. JavaScript retains Dart's int precision limits.
+List<int> int64View(ByteBuffer buffer, int offset, int length) => _isJavaScript
     ? _Int64View(ByteData.view(buffer, offset, length * 8), true)
     : buffer.asInt64List(offset, length);
 
-/// Borrows unsigned 64-bit lanes, with a ByteData fallback on web targets.
-List<int> uint64View(ByteBuffer buffer, int offset, int length) => _isWeb
+/// Borrows unsigned 64-bit lanes, with a ByteData fallback on JavaScript targets.
+List<int> uint64View(ByteBuffer buffer, int offset, int length) => _isJavaScript
     ? _Int64View(ByteData.view(buffer, offset, length * 8), false)
     : buffer.asUint64List(offset, length);
 

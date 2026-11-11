@@ -5,6 +5,7 @@ import 'package:intrlay/intrlay.dart';
 void main() {
   checkBulkClearing();
   checkNumericWrites();
+  checkFullWidthIntegers();
   checkStringRanges();
   final texts = ['', 'plain ASCII', 'héllo', '한글', '🦀', 'a🦀b',
     '\ud800', '\udc00', '\ud800\ud800', '\udc00\ud800', '\ud800a\udc00'];
@@ -107,6 +108,59 @@ void checkStringRanges() {
     truncated.stringAt(3);
     throw StateError('accepted an out-of-bounds string');
   } on RangeError { /* The byte range must fit in the borrowed storage. */ }
+}
+
+void checkFullWidthIntegers() {
+  const isJavaScript = bool.fromEnvironment('dart.library.js_interop') &&
+      !bool.fromEnvironment('dart.tool.dart2wasm');
+  if (isJavaScript) return;
+
+  // Parse these at runtime so dart2js need not represent the literals exactly.
+  // Native and Wasm must preserve every bit, including beyond JS precision.
+  final values = [
+    int.parse('9007199254740993'),
+    int.parse('-9007199254740993'),
+    int.parse('9223372036854775807'),
+    int.parse('-9223372036854775808'),
+    -1,
+  ];
+  for (final value in values) {
+    final expected = ByteData(8)..setInt64(0, value, Endian.little);
+    final aligned = WriteStorage.allocate(16);
+    final owner = Uint8List(18)..fillRange(0, 18, 0xa5);
+    final borrowed = Storage(Uint8List.sublistView(owner, 1, 17));
+    for (final writer in [aligned, borrowed.writer]) {
+      writer.writeInt64(0, value);
+      writer.writeUint64(8, value);
+      for (var i = 0; i < 16; ++i) {
+        if (writer.bytes[i] != expected.getUint8(i % 8)) {
+          throw StateError('64-bit writer lost precision for $value');
+        }
+      }
+      if (readInt64(writer.data, 0) != value || readUint64(writer.data, 8) != value) {
+        throw StateError('64-bit reader lost precision for $value');
+      }
+    }
+    if (owner.first != 0xa5 || owner.last != 0xa5) throw StateError('64-bit writer bounds');
+
+    final data = ByteData(16);
+    writeInt64(data, 0, value);
+    writeUint64(data, 8, value);
+    if (data.getInt64(0, Endian.little) != value || data.getUint64(8, Endian.little) != value) {
+      throw StateError('64-bit scalar write lost precision for $value');
+    }
+    final signed = int64View(data.buffer, 0, 1);
+    final unsigned = uint64View(data.buffer, 8, 1);
+    if (signed is! Int64List || unsigned is! Uint64List) {
+      throw StateError('Native and Wasm must borrow typed 64-bit lanes');
+    }
+    signed[0] = value;
+    unsigned[0] = value;
+    if (signed[0] != value || unsigned[0] != value ||
+        data.getInt64(0, Endian.little) != value || data.getUint64(8, Endian.little) != value) {
+      throw StateError('64-bit views lost precision or stopped aliasing storage');
+    }
+  }
 }
 
 void checkBulkClearing() {

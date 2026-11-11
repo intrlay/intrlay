@@ -359,25 +359,28 @@ fn check_dart(workspace: &Workspace) -> Result<()> {
         "runtime",
         "writes",
     ] {
-        workspace
-            .command("dart")?
-            .args([
-                "compile",
-                "js",
-                "-O2",
-                &format!("{fixture}.dart"),
-                "-o",
-                &format!("../../target/dart-{fixture}.cjs"),
-            ])
-            .current_dir(&directory)
-            .run()?;
-        workspace
-            .command("node")?
-            .args([
-                "tests/dart/run-web.mjs",
-                &format!("target/dart-{fixture}.cjs"),
-            ])
-            .run()?;
+        for (target, extension) in [("js", "cjs"), ("wasm", "wasm")] {
+            let mut compile = workspace.command("dart")?;
+            compile.args(["compile", target]);
+            if target == "js" {
+                compile.arg("-O2");
+            }
+            compile
+                .args([
+                    &format!("{fixture}.dart"),
+                    "-o",
+                    &format!("../../target/dart-{fixture}.{extension}"),
+                ])
+                .current_dir(&directory)
+                .run()?;
+            workspace
+                .command("node")?
+                .args([
+                    "tests/dart/run-web.mjs",
+                    &format!("target/dart-{fixture}.{extension}"),
+                ])
+                .run()?;
+        }
     }
     Ok(())
 }

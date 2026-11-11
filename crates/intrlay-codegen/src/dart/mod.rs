@@ -503,15 +503,15 @@ fn write_array(
             // Dart 3.13 AOT and dart2js have different range-copy setup costs.
             // Keep these fixed-extent choices aligned with the runtime limits
             // used when a sequence's length is only known during encoding.
-            let web_loop_limit = if scalar.layout().size() == 1 { 64 } else { 128 };
+            let javascript_loop_limit = if scalar.layout().size() == 1 { 64 } else { 128 };
             match node.kind {
                 Kind::Array { length, .. } if length <= 4 => writeln!(
                     output,
                     "  intrlay.write{method}ArrayElements(storage, payloadOffset, {values});"
                 )?,
-                Kind::Array { length, .. } if length <= web_loop_limit => writeln!(
+                Kind::Array { length, .. } if length <= javascript_loop_limit => writeln!(
                     output,
-                    "  if (const core.bool.fromEnvironment('dart.library.js_interop')) {{\n    intrlay.write{method}ArrayElements(storage, payloadOffset, {values});\n  }} else {{\n    intrlay.write{method}Array(storage, payloadOffset, {values});\n  }}"
+                    "  if (const core.bool.fromEnvironment('dart.library.js_interop') &&\n      !const core.bool.fromEnvironment('dart.tool.dart2wasm')) {{\n    intrlay.write{method}ArrayElements(storage, payloadOffset, {values});\n  }} else {{\n    intrlay.write{method}Array(storage, payloadOffset, {values});\n  }}"
                 )?,
                 _ => writeln!(
                     output,

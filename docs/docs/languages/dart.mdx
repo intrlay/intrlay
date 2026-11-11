@@ -95,7 +95,7 @@ into aligned construction buffers without an intermediate list. Ordinary lists,
 scalar conversions, and unaligned mutation buffers retain element writers.
 
 Small fixed arrays use element copying when range-copy setup would cost more.
-Native and JavaScript builds use separate thresholds; the platform selection is
+Native/Wasm and JavaScript builds use separate thresholds; the platform selection is
 a compile-time constant, so it does not add a per-element runtime branch.
 The array size and input representation still determine whether bulk copying
 applies. JavaScript-target 64-bit integers retain element conversion.
@@ -128,7 +128,8 @@ replacement. Obtain the active child again when that state changes.
 
 ## Native and web execution
 
-The same schema and byte layout work in Dart native and JavaScript builds.
+The same schema and byte layout work in Dart native, JavaScript, and WebAssembly
+builds. Wasm retains native 64-bit integer behavior and typed-list storage.
 JavaScript-target integer precision limits still apply: the generated `int` API
 does not guarantee exact representation of every 64-bit integer in that target.
 Choose values within the target's exact range when the application needs exact

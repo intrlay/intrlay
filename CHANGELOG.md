@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.5]
+
+- Distinguish Dart WebAssembly from JavaScript in the runtime and generated
+  fixed-array encoders. Wasm uses native 64-bit integer operations, typed
+  numeric views, and native array-copy thresholds.
+- Preserve float32 NaN payload bits during Wasm bulk copying by copying the
+  underlying bytes without converting elements through `double`.
+- Run Dart regression consumers compiled to WebAssembly in the standard
+  conformance check, alongside native and JavaScript tests.
+- Update package repository links and documentation URLs for `soulart/intrlay`.
+
+Regenerate Dart bindings and update the Dart runtime to apply the fixes.
+Existing schema wire layouts and public APIs are unchanged.
+
 ## [0.1.4]
 
 ### Buffer validation

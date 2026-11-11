@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "intrlay"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "glam 0.33.12",
  "glam 0.34.3",
@@ -442,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "intrlay-cli"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "clap",
  "intrlay-codegen",
@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "intrlay-codegen"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "intrlay",
  "intrlay-layout",
@@ -466,7 +466,7 @@ dependencies = [
 
 [[package]]
 name = "intrlay-conformance"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "glam 0.34.3",
  "intrlay",
@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "intrlay-derive"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "heck",
  "intrlay",
@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "intrlay-frontend-cpp"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "clang",
  "intrlay",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "intrlay-frontend-rust"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "cargo_metadata",
  "intrlay-schema",
@@ -514,11 +514,11 @@ dependencies = [
 
 [[package]]
 name = "intrlay-layout"
-version = "0.1.4"
+version = "0.1.5"
 
 [[package]]
 name = "intrlay-schema"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "heck",
  "intrlay-layout",
@@ -1191,7 +1191,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "clap",

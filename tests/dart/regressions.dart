@@ -79,15 +79,25 @@ void numericCopies() {
       (v) => numeric.F32View.create(intrlay.SequenceInput.from(v)).storage.bytes);
   checkNumeric<double>(Float64List.fromList(real),
       (v) => numeric.F64View.create(intrlay.SequenceInput.from(v)).storage.bytes);
-  if (!const bool.fromEnvironment('dart.library.js_interop')) {
-    checkNumeric<int>(Int64List.fromList(signed),
+  const isJavaScript = bool.fromEnvironment('dart.library.js_interop') &&
+      !bool.fromEnvironment('dart.tool.dart2wasm');
+  if (!isJavaScript) {
+    final wide = List<int>.generate(512, (i) => i.isEven
+        ? int.parse('9223372036854775807') : int.parse('-9007199254740993'));
+    checkNumeric<int>(Int64List.fromList(wide),
         (v) => numeric.I64View.create(intrlay.SequenceInput.from(v)).storage.bytes);
-    checkNumeric<int>(Uint64List.fromList(positive),
+    checkNumeric<int>(Uint64List.fromList(wide),
         (v) => numeric.U64View.create(intrlay.SequenceInput.from(v)).storage.bytes);
-    expectBytes(numeric.FixedWideShortView.create(intrlay.FixedArrayInput.from(Int64List.fromList([-1, 1]))).storage.bytes,
-        numeric.FixedWideShortView.create(const intrlay.FixedArrayInput.from([-1, 1])).storage.bytes);
-    expectBytes(numeric.FixedWideLongView.create(intrlay.FixedArrayInput.from(Int64List.fromList(signed.sublist(0, 16)))).storage.bytes,
-        numeric.FixedWideLongView.create(intrlay.FixedArrayInput.from(signed.sublist(0, 16))).storage.bytes);
+    final expected = ByteData(16 * 8);
+    for (var i = 0; i < 16; ++i) {
+      expected.setInt64(i * 8, wide[i], Endian.little);
+    }
+    for (final values in [wide, Int64List.fromList(wide)]) {
+      expectBytes(numeric.FixedWideShortView.create(intrlay.FixedArrayInput.from(values.sublist(0, 2))).storage.bytes,
+          expected.buffer.asUint8List(0, 16));
+      expectBytes(numeric.FixedWideLongView.create(intrlay.FixedArrayInput.from(values.sublist(0, 16))).storage.bytes,
+          expected.buffer.asUint8List());
+    }
   }
 
   // A different numeric lane still converts rather than copying its bytes.
@@ -114,6 +124,13 @@ void numericCopies() {
     final nanValues = Float32List.view(words.buffer);
     expectBytes(numeric.FixedBulkView.create(intrlay.FixedArrayInput.from(nanValues)).storage.bytes,
         words.buffer.asUint8List());
+    if (!isJavaScript) {
+      // Native/Wasm use bulk copying at this extent; JS uses element conversion.
+      // A signaling NaN distinguishes bit-preserving copying from scalar stores.
+      expectBytes(numeric.FixedMediumView.create(intrlay.FixedArrayInput.from(
+          Float32List.view(words.buffer, 0, 16))).storage.bytes,
+          words.buffer.asUint8List(0, 16 * 4));
+    }
   }
   final source = Float32List.sublistView(padded, 1, 129).asUnmodifiableView();
   final expected = numeric.FixedLongView.create(intrlay.FixedArrayInput.from(List<double>.of(source))).storage.bytes;
