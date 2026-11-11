@@ -6,11 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       publish_runtime:
-        description: Runtime registry to publish without creating a GitHub release
+        description: Build packages, check OIDC authentication, or publish selected runtimes
         type: choice
         default: none
         options:
           - none
+          - check-auth
           - pypi
           - nuget
           - pypi-and-nuget
@@ -23,7 +24,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  publishing-auth:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_runtime == 'check-auth'
+    runs-on: ubuntu-24.04
+    environment: release
+    strategy:
+      fail-fast: false
+      matrix:
+        registry: [crates, npm, pypi, nuget, pubdev]
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - name: Check OIDC authentication without uploading a package
+        env:
+          NUGET_USER: ${{ vars.NUGET_USER }}
+        run: cargo xtask check-publishing-auth ${{ matrix.registry }}
+
   metadata:
+    if: inputs.publish_runtime != 'check-auth'
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.release.outputs.version }}
@@ -53,6 +76,7 @@ jobs:
           if-no-files-found: error
 
   check:
+    if: inputs.publish_runtime != 'check-auth'
     uses: ./.github/workflows/check.yml
 
   binaries:
