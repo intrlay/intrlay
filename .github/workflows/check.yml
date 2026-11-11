@@ -13,9 +13,9 @@ jobs:
   conformance:
     runs-on: ubuntu-24.04
     env:
-      CC: clang-19
-      CXX: clang++-19
-      LIBCLANG_PATH: /usr/lib/llvm-19/lib
+      CC: clang-22
+      CXX: clang++-22
+      LIBCLANG_PATH: /usr/lib/llvm-22/lib
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -37,8 +37,12 @@ jobs:
       - uses: dart-lang/setup-dart@v1
       - name: Install C++ frontend dependencies
         run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key |
+            sudo tee /usr/share/keyrings/llvm-archive-keyring.asc > /dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main' |
+            sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
           sudo apt-get update
-          sudo apt-get install -y clang-19 libclang-19-dev cmake
+          sudo apt-get install -y clang-22 libclang-22-dev cmake
           "$CXX" --version
       - name: Check Rust and every generated language
         run: cargo xtask check

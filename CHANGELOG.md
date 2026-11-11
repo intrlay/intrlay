@@ -51,7 +51,7 @@ its contract is satisfied. In TypeScript, Python, and Dart, access backing bytes
 through `view.storage.bytes`. Numeric projections use packed inputs, and numeric
 component helpers require `generate_component_accessors = true`. Export C++
 out-of-line definitions and explicit specializations through concrete aliases.
-Existing schema wire layouts are unchanged.
+For Clang, use version 22 or later. Existing schema wire layouts are unchanged.
 
 ## [0.1.3]
 
