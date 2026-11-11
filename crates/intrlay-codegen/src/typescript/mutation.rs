@@ -26,7 +26,9 @@ pub(super) fn body(plan: &TypeGraph, mutation: &Mutation, offset: &str) -> Strin
             }
         }
     }
-    if let Kind::Scalar(scalar) = plan.nodes[mutation.value].kind {
+    if let Kind::Scalar(scalar) = plan.nodes[mutation.value].kind
+        && plan.nodes[mutation.value].numeric_input.is_none()
+    {
         let _ = write!(code, "{};", super::store(scalar, position, "value"));
     } else {
         let _ = write!(

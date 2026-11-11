@@ -12,6 +12,7 @@ internal sealed partial class Emitter
     private bool IsScopedOutput(int id)
     {
         var node = Node(id);
+        if (node.ValueEnum) return false;
         return node.Kind switch
         {
             "Record" or "Enum" or "Array" or "Sequence" => true,

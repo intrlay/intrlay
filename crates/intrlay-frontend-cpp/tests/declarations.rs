@@ -1,5 +1,7 @@
 //! Export identity and template-pattern checks use real Clang declarations.
 
+mod common;
+
 use std::{error::Error, path::PathBuf};
 
 use intrlay_frontend_cpp::{Options, extract};
@@ -29,8 +31,8 @@ fn redeclarations_share_an_export_identity() -> Result<(), Box<dyn Error>> {
     let schema = extract(path, &options)?;
     assert_eq!(schema.exports.len(), 4);
     assert_eq!(schema.exports["Root"], schema.exports["Alias"]);
-    assert_eq!(schema.exports["Root"], Type::Named("Root".into()));
-    let DefinitionKind::Record(fields) = &schema.definitions["Root"].kind else {
+    assert_eq!(schema.exports["Root"], common::named(&schema, "Root"));
+    let DefinitionKind::Record(fields) = &common::definition(&schema, "Root").kind else {
         return Err("root record expected".into());
     };
     assert_eq!(fields.len(), 1);
@@ -98,12 +100,11 @@ fn variant_names_resolve_aliases_after_their_first_use() -> Result<(), Box<dyn E
     assert_eq!(variants[0].tag, 0);
     assert_eq!(variants[1].tag, 1);
     assert_eq!(variants[0].fields[0].ty, variants[1].fields[0].ty);
-    let DefinitionKind::Record(fields) = &schema.definitions["codec_fixture::Repeated"].kind else {
+    let DefinitionKind::Record(fields) = &common::definition(&schema, "Repeated").kind else {
         return Err("record definition expected".into());
     };
     assert_eq!(fields[0].ty, schema.exports["Endpoints"]);
-    let DefinitionKind::Record(fields) = &schema.definitions["codec_fixture::CodecCases"].kind
-    else {
+    let DefinitionKind::Record(fields) = &common::definition(&schema, "CodecCases").kind else {
         return Err("record definition expected".into());
     };
     let Type::Named(identity) = &fields[1].ty else {
@@ -146,6 +147,6 @@ fn recursive_variant_names_resolve_completed_payloads() -> Result<(), Box<dyn Er
         return Err("variant definition expected".into());
     };
     assert_eq!(variants[1].name, "BoxOfNode");
-    assert!(schema.definitions.contains_key("Node"));
+    let _ = common::definition(&schema, "Node");
     Ok(())
 }

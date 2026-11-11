@@ -53,13 +53,28 @@ between these types and their storage.
 
 ### Enum names
 
-Payload-free enums use a native `ModeInput` enum in each target. In Rust,
-`ModeInput` is an alias of the schema's `Mode`. They also have a `ModeView` for
-encoded storage.
+Payload-free enums retain their original name, such as `Mode` or `DeviceKind`,
+in C++, C#, TypeScript, Python, and Dart.
+By default, fields and collection elements return this enum value directly; construction
+accepts the same type. These declarations remain available when only readers
+are generated.
 
-These native enum declarations remain available as tag constants even when no
-writer needs an input. TypeScript's `tag` getter uses `ModeInput` as its return
-type, while Python and Dart return the numeric wire tag.
+A standalone `ModeView` is generated when `Mode` is explicitly exported.
+Referenced enums need no wrapper just to read a field. C++, TypeScript, Python,
+and Dart expose an export alias such as `DisplayMode` as `DisplayMode` and
+`DisplayModeView`. C# aliases provide another view name while retaining the
+same enum value type.
+
+`Input` denotes a separate construction representation. A plain enum already
+has the same value representation for input and reads, so it needs no suffix.
+`Kind` names a separate discriminant only for an enum with payloads.
+
+An explicit numeric projection uses packed tag arrays for inputs and views while
+retaining the same enum declaration and export aliases for named constants.
+
+Rust output retains the schema's `Mode` declaration. Its derive supplies
+`ModeInput` as an alias and `ModeView` as part of the local Rust API, independently
+of the exported roots.
 
 For an enum with payloads, such as `DrawingCommand`:
 
@@ -173,9 +188,16 @@ casing. There are no user-supplied conversion callbacks.
 such as C++'s `selected_point()`. `method` covers operations such as construction
 and replacement. The shared runtime package's own API names remain unchanged.
 
+For property naming, `readonly` means that the property has no assignment setter.
+A separate mutation method does not change this modifier. For example, a C#
+getter with a `SetValue(...)` method still matches `readonly`; a TypeScript
+getter/setter pair does not. This describes the generated member, not whether
+its backing buffer can be modified.
+
 ## Rename one declaration
 
-An explicit annotation name bypasses the policy, including its affixes:
+An explicit name for a direct declaration bypasses the policy, including its
+affixes:
 
 ```rust title="Rust"
 #[derive(intrlay::Intrlay)]
@@ -197,6 +219,15 @@ TypeScript receives `amount`, while the source-language field remains
 `sample_value`. Other targets keep their default names. A common `name = "..."`
 applies to all targets unless overridden for one target; choose a literal spelling
 valid in each affected language.
+
+Enum payload accessors and flattened fields combine several name segments.
+Explicit names replace their corresponding segments, then the property policy
+applies to the complete path. For example, a variant named `Delivered` with a
+field named `Ticket` produces `deliveredTicket` under the default TypeScript
+policy, or `read_delivered_ticket` under a snake_case property policy with the
+`read_` prefix. Input field and enum-constant naming policies do not supply
+prefixes to that accessor path. Derived operation names, such as setter methods,
+follow their own naming rules.
 
 Invalid identifiers and collisions are errors. The generator does not silently
 rename colliding declarations. See [Schema annotations](annotations.mdx#target-options-and-names)

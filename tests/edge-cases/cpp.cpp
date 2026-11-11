@@ -28,9 +28,9 @@ int main() {
     const auto expected = read("text");
     assert(std::ranges::equal(text.bytes(), expected));
     auto bytes = read("golden");
-    types::EdgeCasesView root(bytes);
+    auto root = types::EdgeCasesView::from_bytes(bytes).value();
     for (std::size_t i = 0; i < input.values.size(); ++i) {
-        assert(text.view().values().get(i) == input.values[i]);
+        assert(text.view_unchecked().values().get(i) == input.values[i]);
         assert(root.text().values().get(i) == input.values[i]);
     }
     assert(root.nested().child().value().value().value().value() == 9);
@@ -39,17 +39,17 @@ int main() {
     assert(root.shadow().custom().value() == 13 && root.shadow().optional() == 14 && root.shadow().items().get(0) == 15);
     assert(root.choice().value_child().value().value().value() == 16);
     root.projection().many().get(0).set_x(20.0f);
-    assert(types::EdgeCasesViewReadOnly(bytes).projection().many().get(0).x() == 20);
+    assert(types::EdgeCasesViewReadOnly::from_bytes(bytes).value().projection().many().get(0).x() == 20);
     const auto absent0 = read("absent-0"), absent1 = read("absent-1"), absent2 = read("absent-2");
-    assert(!types::NestedViewReadOnly(absent0).child());
-    assert(!types::NestedViewReadOnly(absent1).child().value());
-    assert(!types::NestedViewReadOnly(absent2).child().value().value());
+    assert(!types::NestedViewReadOnly::from_bytes(absent0).value().child());
+    assert(!types::NestedViewReadOnly::from_bytes(absent1).value().child().value());
+    assert(!types::NestedViewReadOnly::from_bytes(absent2).value().child().value().value());
     types::NestedInput<> defaulted;
     types::RecursiveInput<> recursive;
     assert(!defaulted.child && !recursive.child && recursive.value == 0);
     auto recursive_wire = types::RecursiveView::create(recursive);
-    assert(!recursive_wire.view().child());
-    assert(edge_scalar::IntrlayU32View::create(std::uint32_t{123}).view().value() == 123);
+    assert(!recursive_wire.view_unchecked().child());
+    assert(edge_scalar::IntrlayU32View::create(std::uint32_t{123}).view_unchecked().value() == 123);
     using Scalar = edge_scalar::IntrlayU32View;
     static_assert(CanReplace<Scalar, std::uint32_t> && CanSet<Scalar, std::uint32_t>);
     static_assert(!CanReplace<Scalar, std::uint64_t> && !CanSet<Scalar, std::uint64_t>);
@@ -57,7 +57,7 @@ int main() {
     static_assert(!CanReplace<Scalar, std::int32_t> && !CanSet<Scalar, std::int32_t>);
     static_assert(!CanReplace<edge_scalar::IntrlayU32ViewReadOnly, std::uint32_t>);
     auto scalar = Scalar::create(std::uint32_t{0});
-    scalar.view().replace(std::numeric_limits<std::uint32_t>::max());
-    assert(scalar.view().value() == std::numeric_limits<std::uint32_t>::max());
+    scalar.view_unchecked().replace(std::numeric_limits<std::uint32_t>::max());
+    assert(scalar.view_unchecked().value() == std::numeric_limits<std::uint32_t>::max());
     std::cout << "C++ boundary values, defaults, and recursive declarations passed\n";
 }

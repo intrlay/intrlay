@@ -4,22 +4,23 @@ import * as intrlay from '../../target/node_modules/@intrlay/runtime/dist/index.
 import { FixtureView, DeepRootView, CachedRootView, ChoiceView } from '../../target/reference-fixes/bindings.js';
 
 const some = value => ({ value });
+const padded = value => new Float32Array([value, 0, 0, 0]);
 const input = {
     custom: { value: 1 }, deep: 7, nested: some(8), absent: null, missingInner: some(null),
-    values: [9], items: [{ scalar: 10, child: some({ value: 11 }), projected: some(12) }],
-    cached: some({ value: 13 }), projected: some(14), lanes: [15, 16],
+    values: [9], items: [{ scalar: 10, child: some({ value: 11 }), projected: some(padded(12)) }],
+    cached: some({ value: 13 }), projected: some(padded(14)), lanes: new Float32Array([15, 0, 0, 0, 16, 0, 0, 0]),
     choice: { kind: 1 /* ChoiceKind.Selected */, scalar: some(17), child: some({ value: 18 }) },
-    inactive: { kind: 0 /* ChoiceKind.Empty */ }, before: 19, empty: {}, after: 20,
-    emptyItems: [{}, {}], readOnly: some(21),
+    inactive: { kind: 0 /* ChoiceKind.Empty */ }, before: 19, empty: new Float32Array(0), after: 20,
+    emptyItems: 2, readOnly: some(21),
 };
 const owned = FixtureView.create(input);
-assert.deepEqual(owned.bytes, new Uint8Array(readFileSync(new URL('../../target/reference-fixes/fixture.bin', import.meta.url))));
+assert.deepEqual(owned.storage.bytes, new Uint8Array(readFileSync(new URL('../../target/reference-fixes/fixture.bin', import.meta.url))));
 
 class CountingStorage extends intrlay.Storage {
     reads = 0;
     get u32() { ++this.reads; return super.u32; }
 }
-const storage = new CountingStorage(owned.bytes);
+const storage = new CountingStorage(owned.storage.bytes);
 const view = new FixtureView(storage);
 function reads(expected, action) {
     storage.reads = 0;
@@ -41,7 +42,7 @@ assert.equal(items.getProjected(0).value[0], 12);
 const cached = reads(2, () => view.cached);
 assert.equal(reads(0, () => view.cached), cached);
 cached.value.value = 23;
-assert.equal(new FixtureView(owned.bytes).cached.value.value, 23);
+assert.equal(new FixtureView(owned.storage.bytes).cached.value.value, 23);
 assert.equal(reads(2, () => view.projected).value[0], 14);
 const lanes = reads(2, () => view.lanes);
 assert.deepEqual([...lanes], [15, 0, 0, 0, 16, 0, 0, 0]);

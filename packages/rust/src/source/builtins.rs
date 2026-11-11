@@ -129,9 +129,10 @@ unsafe impl<C: Intrlay, S: EncodeSource<C>, const N: usize> EncodeSource<[C; N]>
 unsafe impl<C: Intrlay, S: EncodeSource<C>> EncodeSource<Option<C>> for Option<S> {
     fn measure(&self, cursor: &mut SizeCursor) -> Result<(), EncodeError> {
         if let Some(value) = self {
-            value.measure(cursor)?;
+            value.measure(cursor)
+        } else {
+            Ok(())
         }
-        Ok(())
     }
     fn write(&self, writer: &mut Writer<'_>, offset: usize) -> Result<(), EncodeError> {
         writer.write(offset, &[u8::from(self.is_some())]);
@@ -143,9 +144,10 @@ unsafe impl<C: Intrlay, S: EncodeSource<C>> EncodeSource<Option<C>> for Option<S
                         &[crate::layout::Layout::new(1, 1), C::LAYOUT],
                         1,
                     ),
-            )?;
+            )
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 }
 

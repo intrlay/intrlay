@@ -36,6 +36,10 @@ The derive creates `PointView` and `PointInput` alongside `Point`. Export schema
 `intrlay::export_types!(Point);` at a library crate's root to generate bindings
 for other languages. Rust can also consume types generated from C++ schemas.
 
+Optional `glam-0-33`, `glam-0-34`, `smol_str`, and `smallvec` features provide library codecs
+through the ordinary `#[intrlay(with = ...)]` adapter mechanism. See
+[Library adapters](https://intrlay.github.io/intrlay/reference/library-adapters/).
+
 ## Documentation
 
 - [Getting started](https://intrlay.github.io/intrlay/getting-started/)

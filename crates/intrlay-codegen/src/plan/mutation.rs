@@ -67,6 +67,9 @@ impl TypeGraph {
         if let Some(field) = self.folded_field(id) {
             return self.native_value(field.ty);
         }
+        if self.nodes[id].is_value_enum() {
+            return true;
+        }
         match self.nodes[id].kind {
             Kind::Scalar(_) | Kind::Unit => true,
             Kind::Optional { value, .. } => self.native_value(value),

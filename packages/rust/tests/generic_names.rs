@@ -65,6 +65,7 @@ collision_case!(value);
 collision_case!(value_);
 collision_case!(cursor);
 collision_case!(writer);
+collision_case!(header);
 collision_case!(offset);
 collision_case!(bytes);
 collision_case!(registry);

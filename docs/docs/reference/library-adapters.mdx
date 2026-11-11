@@ -1,0 +1,197 @@
+# Library adapters
+
+Adapters let schemas keep library-owned types while using Intrlay's ordinary
+records, strings, and sequences on the wire. They also participate in nested
+containers, borrowed encoding inputs, and [projections](./annotations.mdx).
+Generated consumers do not depend on the source library.
+
+## Rust
+
+Enable only the adapters your schema needs:
+
+```toml
+[dependencies]
+intrlay = { version = "0.1", features = ["glam-0-34", "smol_str", "smallvec"] }
+glam = "0.34.3"
+smol_str = "0.3"
+smallvec = "1.16"
+```
+
+Each adapter is a codec selected with `with`; decoded values retain their
+original library types. Optional dependencies are disabled unless their feature
+is enabled.
+
+```rust
+use intrlay::{Intrlay, adapters::{glam_0_34 as math, smallvec as small, smol_str as text}};
+
+#[derive(Intrlay)]
+struct Model {
+    #[intrlay(with = text::SmolStr)]
+    name: smol_str::SmolStr,
+    #[intrlay(with = small::SmallVec<math::Vec3A, 8>)]
+    positions: smallvec::SmallVec<[glam::Vec3A; 8]>,
+    #[intrlay(with = Option<math::Quat>)]
+    rotation: Option<glam::Quat>,
+}
+
+intrlay::export_types!(Model);
+```
+
+Inputs can borrow different containers without allocating intermediate owners:
+
+```rust
+let positions = [glam::Vec3A::new(1.0, 2.0, 3.0)];
+let input = ModelInput {
+    name: "Example",
+    positions: positions.as_slice(),
+    rotation: Some(glam::Quat::IDENTITY),
+};
+let encoded = ModelView::create_from(&input)?;
+```
+
+### glam
+
+Select the module matching the native types in your application:
+
+| Cargo feature | Adapter module | Supported dependency |
+| --- | --- | --- |
+| `glam-0-33` | `intrlay::adapters::glam_0_33` | `glam >=0.33.12, <0.34` |
+| `glam-0-34` | `intrlay::adapters::glam_0_34` | `glam >=0.34.3, <0.35` |
+
+Both features can be enabled together. Their codecs share an implementation but
+retain distinct native types. For a framework re-exporting glam, select its
+matching adapter, for example `use intrlay::adapters::glam_0_33 as math`.
+A broad dependency range alone cannot guarantee Cargo selects the framework's
+version. The patch lower bounds also exclude older scalar implementations with
+uninitialized padding in `Vec3A`.
+
+Both modules provide codecs with the math containers' names:
+
+| Family | Types |
+| --- | --- |
+| Float vectors | `Vec2`, `Vec3`, `Vec3A`, `Vec4`, and `DVec2`–`DVec4` |
+| Integer vectors | 2/3/4-component `I8Vec`, `U8Vec`, `I16Vec`, `U16Vec`, `IVec`, `UVec`, `I64Vec`, `U64Vec`, `ISizeVec`, `USizeVec` |
+| Boolean vectors | `BVec2`, `BVec3`, `BVec4`, `BVec3A`, `BVec4A` |
+| Quaternions | `Quat`, `DQuat` |
+| Matrices | `Mat2`, `Mat3`, `Mat3A`, `Mat4`, `DMat2`, `DMat3`, `DMat4` |
+| Affine transforms | `Affine2`, `Affine3`, `Affine3A`, `DAffine2`, `DAffine3` |
+
+Vectors expose named components. Matrices expose columns as `x_axis`, `y_axis`,
+and so on. Affine transforms contain their matrix and translation. Quaternions
+store `x, y, z, w` without normalizing their values.
+
+Aligned types retain explicit alignment across glam's SIMD and `scalar-math`
+backends. Compatible numeric types use native copies, including initialized
+extra lanes in `Vec3A` and `Mat3A`; these lanes need not be zero. Actual Rust struct
+padding, such as the trailing padding in SIMD `Affine2`, uses field-wise encoding.
+Boolean masks encode ordinary Boolean
+fields rather than copying private SIMD masks. `ISizeVec` and `USizeVec` encode
+fixed 64-bit integers; checked decoding on a 32-bit host rejects values that do
+not fit its native component type.
+
+Projection remains explicit. For example,
+`#[intrlay(with = Vec<math::Vec3A>, project = "f32")]` exposes the view as a
+`Float32Array` in TypeScript, including the fourth padding lane per vector.
+The corresponding TypeScript Input also accepts a flat `Float32Array`, so the
+caller can encode existing packed storage without building vector objects.
+Python accepts a numeric `memoryview`; Dart accepts a flat scalar input backed
+by a typed list. Explicit projection applies to nested fixed arrays too.
+Rust, C++, and C# retain their typed inputs. `project = "flatten"` instead exposes
+individual scalar accessors. See [Schema annotations](./annotations.mdx).
+
+### Native layout proofs
+
+The Rust derive checks field offsets, sizes, and child codecs for direct records,
+including remote records. Getter-based adapters use field-wise encoding unless
+the adapter author supplies an explicit unsafe proof:
+
+```rust
+#[derive(intrlay::Intrlay)]
+#[intrlay(remote = ExternalVector, from = VectorCodec::into_native,
+    unsafe(native_layout))]
+#[repr(C, align(16))]
+struct VectorCodec {
+    #[intrlay(getter = VectorCodec::components)]
+    components: [f32; 4],
+}
+```
+
+`unsafe(native_layout = CONDITION)` makes the proof conditional, for example on
+child codecs' `NATIVE_LAYOUT` constants. Intrlay additionally checks little-endian
+storage, equal native/wire sizes, absence of dynamic payload, and absence of drop
+glue. The author must prove that every copied byte is initialized, native bytes
+match the schema's field representation, and every validated wire value is a
+valid native value. Rust padding is not initialized merely because the object
+was allocated in zeroed memory. SIMD extra lanes are eligible only when they are
+actual initialized storage. An incorrect proof can make safe encoding or decoding
+unsound.
+
+These proofs apply to the value and to nested records, arrays, and borrowed
+sequence sources. Measurement and field offsets still come from the same schema.
+
+### smol_str and smallvec
+
+`adapters::smol_str::SmolStr` uses exactly the `String` wire representation.
+Encoding borrows its UTF-8 contents; decoding builds the small string directly,
+without an intermediate `String`.
+
+`adapters::smallvec::SmallVec<C, N>` uses exactly the `Vec<C>` representation.
+`C` is the element codec and `N` controls only the native inline capacity.
+Inline and spilled inputs both encode from their existing contiguous elements.
+The capacity is not part of the schema or the encoded bytes. Nested adapters
+work the same way, such as `SmallVec<SmolStr, 4>` for a small vector of strings.
+
+The native `smol_str::SmolStr` and `smallvec::SmallVec` types can also supply
+borrowed inputs to ordinary `String` and `Vec<T>` schemas through `create_from`.
+Their ownership strategy does not require a separate wire format.
+
+The adapters target `smol_str >=0.3, <0.4` and `smallvec >=1.16, <2`.
+Incompatible dependency versions have distinct Rust types. Applications using
+another version can pass `as_str()` or `as_slice()` to ordinary string or sequence
+schemas without using a library-specific adapter. These adapters access public
+contents and do not depend on the containers' native memory layout.
+
+## C++ / GLM
+
+Include the adapter in the schema header and in code that passes GLM values to
+generated encoders. Supply GLM's include path to both the schema extractor and
+the application compiler. Intrlay does not download or link GLM for consumers.
+The adapter is tested against GLM 1.0.3.
+
+```cpp
+#include <intrlay/annotations.hpp>
+#include <intrlay/adapters/glm.hpp>
+#include <vector>
+
+struct INTRLAY() Model {
+    glm::mat4 transform;
+    glm::quat rotation;
+    std::vector<glm::vec3> positions;
+};
+```
+
+The specializations cover `glm::vec<L, T, Q>` for lengths 1–4, Boolean values,
+8/16/32/64-bit integers, and `float`/`double`; all 2–4-column, 2–4-row
+`glm::mat<C, R, T, Q>` float/double matrices; and float/double `glm::qua<T, Q>`.
+Precision qualifiers and aliases use the same mappings. Aligned qualifiers are
+supported when enabled by the application's GLM configuration.
+
+Vectors expose `x, y, z, w`. Matrices are fixed arrays of columns, and their
+encoding source borrows those columns. Quaternions encode `x, y, z, w` even with
+`GLM_FORCE_QUAT_DATA_WXYZ`. Native-copy optimizations still require matching
+field offsets and initialized bytes; aligned three-component padding is not
+copied from the native object.
+
+The experimental dual-quaternion extension has its own optional header:
+
+```cpp
+#define GLM_ENABLE_EXPERIMENTAL
+#include <intrlay/adapters/glm_dual_quaternion.hpp>
+```
+
+This supports float/double `glm::tdualquat<T, Q>` as `real` and `dual` quaternion
+fields. Intrlay does not enable GLM's experimental extensions implicitly.
+
+Use the same GLM configuration when extracting and compiling a schema. Library
+names alone do not guarantee identical encodings between GLM and glam; their
+selected schemas and alignments must also agree.

@@ -47,19 +47,8 @@ pub fn generate(
     let mut output = String::from(include_str!("prelude.txt"));
     let module = &context.namespace;
     writeln!(output, "\nnamespace {module} {{\n\n// Native values.")?;
-    for node in &plan.nodes {
-        if matches!(node.kind, Kind::Record(_) | Kind::Enum(_)) {
-            if node.is_value_enum() {
-                writeln!(
-                    output,
-                    "enum class {} : ::std::uint32_t;",
-                    node.input_name()
-                )?;
-            } else {
-                writeln!(output, "template<class...> struct {};", node.input_name())?;
-            }
-        }
-    }
+    reflection::declarations(&mut output, &generation.views.types)?;
+    input_declarations(&mut output, plan, context)?;
     let mut done = BTreeSet::new();
     writeln!(output)?;
     for id in 0..plan.nodes.len() {
@@ -67,7 +56,6 @@ pub fn generate(
     }
     let view_plan = &generation.views.types;
     let views = &generation.views.emitted;
-    reflection::declarations(&mut output, view_plan)?;
     let custom_collections = collections::has_custom_names(view_plan)?;
     if custom_collections && views.iter().any(|&id| is_collection(&view_plan.nodes[id])) {
         collections::generate_facade(&mut output, view_plan)?;
@@ -115,8 +103,95 @@ pub fn generate(
             view(&mut output, view_plan, context, id, &view_plan.nodes[id])?;
         }
     }
+    export_aliases(&mut output, plan, context, views)?;
+    writeln!(output, "}} // namespace {module}")?;
+    view_traits(&mut output, view_plan, context, views, custom_collections)?;
+    writeln!(output, "// NOLINTEND")?;
+    Ok(output)
+}
+
+fn input_declarations(
+    output: &mut String,
+    plan: &TypeGraph,
+    context: &Context,
+) -> Result<(), GenerateError> {
+    for (id, node) in plan.nodes.iter().enumerate() {
+        if node.is_value_enum() {
+            writeln!(
+                output,
+                "enum class {} : ::std::uint32_t;",
+                node.input_name()
+            )?;
+            continue;
+        }
+        match &node.kind {
+            Kind::Record(fields) => {
+                input_forward(output, plan, context, &node.input_name(), fields)?;
+            }
+            Kind::Enum(variants) => {
+                let descriptor = reflection::reference(plan, id, Some(context));
+                writeln!(
+                    output,
+                    "template<class... Sources>\n    requires ::intrlay::InputFieldsFor<::std::tuple<Sources...>, ::std::tuple<{descriptor}>>\nstruct {};",
+                    node.input_name()
+                )?;
+                for variant in variants {
+                    if !variant.synthetic_payload {
+                        input_forward(
+                            output,
+                            plan,
+                            context,
+                            &node.variant_input_name(variant),
+                            &variant.fields,
+                        )?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Ownership uses runtime traits rather than the configurable public factories.
+fn view_traits(
+    output: &mut String,
+    plan: &TypeGraph,
+    context: &Context,
+    views: &BTreeSet<Id>,
+    custom_collections: bool,
+) -> Result<(), GenerateError> {
+    writeln!(output, "\nnamespace intrlay::detail {{")?;
+    for &id in views {
+        if is_collection(&plan.nodes[id]) {
+            continue;
+        }
+        let view = context.qualified(&format!("Basic{}", plan.view_name(id)));
+        let descriptor = reflection::reference(plan, id, Some(context));
+        writeln!(
+            output,
+            "template<::intrlay::BufferByte Byte>\nstruct ViewTraits<{view}<Byte>>\n    : CheckedViewFactory<{view}<Byte>, {descriptor}> {{}};\n"
+        )?;
+    }
+    if custom_collections && views.iter().any(|&id| is_collection(&plan.nodes[id])) {
+        let view = collections::view_template(plan, context, true);
+        writeln!(
+            output,
+            "template<ValidatableDescriptor Descriptor, ::intrlay::BufferByte Byte, bool Constructible>\nstruct ViewTraits<{view}<Descriptor, Byte, Constructible>>\n    : CheckedViewFactory<{view}<Descriptor, Byte, Constructible>, Descriptor> {{}};\n"
+        )?;
+    }
+    writeln!(output, "}} // namespace intrlay::detail")?;
+    Ok(())
+}
+
+fn export_aliases(
+    output: &mut String,
+    plan: &TypeGraph,
+    context: &Context,
+    views: &BTreeSet<Id>,
+) -> Result<(), GenerateError> {
     for (alias, id) in &plan.exports {
-        if *alias != plan.nodes[*id].name {
+        if *alias != plan.nodes[*id].name && views.contains(id) {
             writeln!(output, "using {alias}View = {};", plan.view_name(*id))?;
         }
         if *alias != plan.nodes[*id].name
@@ -130,16 +205,16 @@ pub fn generate(
                     context.qualified(&node.input_name())
                 )?;
             } else {
+                let suffix = if node.is_value_enum() { "" } else { "Input" };
                 writeln!(
                     output,
-                    "using {alias}Input = {};",
+                    "using {alias}{suffix} = {};",
                     input_type(plan, context, *id)
                 )?;
             }
         }
     }
-    writeln!(output, "}} // namespace {module}\n// NOLINTEND")?;
-    Ok(output)
+    Ok(())
 }
 
 fn is_collection(node: &Node) -> bool {
@@ -222,7 +297,8 @@ fn input(
             writeln!(output, "\n    > value;\n}};\n")?;
             writeln!(
                 output,
-                "template<class Variant>\nstruct {name}<Variant> {{\n    using intrlay_input = ::intrlay::detail::GeneratedInputTag;\n    Variant value;\n}};\n\n{name}() -> {name}<>;\n"
+                "template<class VariantSource>\n    requires ::intrlay::EncodeSourceFor<VariantSource, {}>\nstruct {name}<VariantSource> {{\n    using intrlay_input = ::intrlay::detail::GeneratedInputTag;\n    VariantSource value;\n}};\n\n{name}() -> {name}<>;\n",
+                reflection::reference(plan, id, Some(context))
             )?;
             input_deduction_guide(output, &name)?;
         }
@@ -246,6 +322,25 @@ fn input_dependency(
     }
 }
 
+fn input_forward(
+    output: &mut String,
+    plan: &TypeGraph,
+    context: &Context,
+    name: &str,
+    fields: &[Field],
+) -> Result<(), GenerateError> {
+    let codecs = fields
+        .iter()
+        .map(|field| reflection::reference(plan, field.ty, Some(context)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(
+        output,
+        "template<class... Sources>\n    requires ::intrlay::InputFieldsFor<::std::tuple<Sources...>, ::std::tuple<{codecs}>>\nstruct {name};"
+    )?;
+    Ok(())
+}
+
 fn input_record(
     output: &mut String,
     plan: &TypeGraph,
@@ -257,7 +352,7 @@ fn input_record(
     documentation::write(output, docs, "")?;
     writeln!(
         output,
-        "template<class...> struct {name};\ntemplate<>\nstruct {name}<> {{\n    using intrlay_input = ::intrlay::detail::GeneratedInputTag;"
+        "template<>\nstruct {name}<> {{\n    using intrlay_input = ::intrlay::detail::GeneratedInputTag;"
     )?;
     for field in fields {
         documentation::write(output, &field.docs, "    ")?;
@@ -279,10 +374,12 @@ fn input_record(
     writeln!(output, "}};\n")?;
     writeln!(output, "{name}() -> {name}<>;\n")?;
     if !fields.is_empty() {
-        let parameters: Vec<_> = (0..fields.len())
-            .map(|index| {
-                let mut name = format!("Field{index}");
-                while fields.iter().any(|field| field.name == name) {
+        let mut taken = BTreeSet::new();
+        let parameters: Vec<_> = fields
+            .iter()
+            .map(|field| {
+                let mut name = plan.names.type_name(&format!("{}_source", field.name));
+                while fields.iter().any(|field| field.name == name) || !taken.insert(name.clone()) {
                     name.push('_');
                 }
                 name
@@ -294,9 +391,20 @@ fn input_record(
             .collect::<Vec<_>>()
             .join(", ");
         let arguments = parameters.join(", ");
+        let constraints = fields
+            .iter()
+            .zip(&parameters)
+            .map(|(field, parameter)| {
+                format!(
+                    "::intrlay::EncodeSourceFor<{parameter}, {}>",
+                    reflection::reference(plan, field.ty, Some(context))
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n        && ");
         writeln!(
             output,
-            "// Field sources can be spans, string views, or nested inputs.\ntemplate<{declarations}>\nstruct {name}<{arguments}> {{\n    using intrlay_input = ::intrlay::detail::GeneratedInputTag;"
+            "// Field sources can be spans, string views, or nested inputs.\ntemplate<{declarations}>\n    requires ({constraints})\nstruct {name}<{arguments}> {{\n    using intrlay_input = ::intrlay::detail::GeneratedInputTag;"
         )?;
         for (field, parameter) in fields.iter().zip(&parameters) {
             documentation::write(output, &field.docs, "    ")?;
@@ -343,17 +451,42 @@ fn view(
     };
     writeln!(
         output,
-        "\ntemplate<::intrlay::BufferByte Byte>\nclass Basic{name} {{\n    ::std::span<Byte> $[buffer];\n    {offset_attribute}::std::size_t $[offset];\n\npublic:\n    using $[metadata] = {};\n    static constexpr ::std::size_t $[byte_size] = {};\n    static constexpr ::std::size_t $[alignment] = {};\n\n    explicit Basic{name}(::std::span<Byte> bytes, ::std::size_t offset = 0)\n        : $[buffer](bytes), $[offset](offset) {{}}\n\n    ::std::span<Byte> $[bytes]() const {{ return $[buffer]; }}",
+        "\ntemplate<::intrlay::BufferByte Byte>\nclass Basic{name} {{\n    ::std::span<Byte> $[buffer];\n    {offset_attribute}::std::size_t $[offset];\n\npublic:\n    using $[metadata] = {};\n    static constexpr ::std::size_t $[byte_size] = {};\n    static constexpr ::std::size_t $[alignment] = {};\n\n    explicit Basic{name}(::std::span<Byte> bytes, ::std::size_t offset, ::intrlay::detail::Unchecked) noexcept\n        : $[buffer](bytes), $[offset](offset) {{}}\n\n    ::std::span<Byte> $[bytes]() const {{ return $[buffer]; }}",
         reflection::reference(plan, id, Some(context)),
         node.layout.size(),
         node.buffer_alignment
     )?;
+    borrowing(output, &name)?;
     if node.options.generation.create {
         construction(output, plan, id)?;
     }
     let emitter = Methods { plan, context };
     view_members(output, plan, id, node, &emitter)?;
     writeln!(output, "}};")?;
+    Ok(())
+}
+
+fn borrowing(output: &mut String, name: &str) -> Result<(), GenerateError> {
+    writeln!(
+        output,
+        r"
+    static ::intrlay::Expected<Basic{name}, ::intrlay::ViewError> $[from_bytes](::std::span<Byte> bytes) noexcept {{
+        return $[from_parts](bytes, 0);
+    }}
+
+    static ::intrlay::Expected<Basic{name}, ::intrlay::ViewError> $[from_parts](::std::span<Byte> bytes, ::std::size_t offset) noexcept {{
+        return ::intrlay::detail::CheckedViewFactory<Basic{name}, $[metadata]>::from_parts(bytes, offset);
+    }}
+
+    static Basic{name} $[from_bytes_unchecked](::std::span<Byte> bytes) noexcept {{
+        return $[from_parts_unchecked](bytes, 0);
+    }}
+
+    static Basic{name} $[from_parts_unchecked](::std::span<Byte> bytes, ::std::size_t offset) noexcept {{
+        return Basic{name}(bytes, offset, ::intrlay::detail::Unchecked{{}});
+    }}
+"
+    )?;
     Ok(())
 }
 
@@ -412,12 +545,18 @@ fn view_members(
         }
         Kind::Enum(variants) => {
             if node.options.generation.getters {
-                Methods::method(
-                    output,
-                    "::std::uint32_t",
-                    "$[tag]() const",
-                    "return ::intrlay::detail::load<::std::uint32_t>($[buffer], $[offset]);",
-                )?;
+                let (ty, body) = if node.is_value_enum() {
+                    (
+                        output_type(plan, emitter.context, id),
+                        "return $[metadata]::read($[buffer], $[offset]);",
+                    )
+                } else {
+                    (
+                        "::std::uint32_t".into(),
+                        "return ::intrlay::detail::load<::std::uint32_t>($[buffer], $[offset]);",
+                    )
+                };
+                Methods::reads(output, &ty, "$[tag]", body)?;
             }
             for (variant_index, variant) in variants.iter().enumerate() {
                 for (field_index, field) in variant.fields.iter().enumerate() {
@@ -429,10 +568,10 @@ fn view_members(
         Kind::Sequence(_) | Kind::Array { .. } => unreachable!("collections use shared views"),
         _ => {
             if node.options.generation.getters {
-                Methods::method(
+                Methods::reads(
                     output,
                     &output_type(plan, emitter.context, id),
-                    "$[value]() const",
+                    "$[value]",
                     "return $[metadata]::read($[buffer], $[offset]);",
                 )?;
             }
@@ -454,22 +593,24 @@ struct Methods<'a> {
     context: &'a Context,
 }
 impl Methods<'_> {
+    fn reads(output: &mut String, ty: &str, name: &str, body: &str) -> Result<(), GenerateError> {
+        Self::method(output, ty, &format!("{name}() const noexcept"), body)
+    }
+
     fn mutation(
         output: &mut String,
         name: &str,
         constraint: &str,
         body: &str,
     ) -> Result<(), GenerateError> {
-        // Require deduction so untyped braces cannot convert to a default input
-        // before the descriptor checks the caller's source type.
         writeln!(
             output,
-            "    template<class V>\n        requires {constraint}"
+            "    template<class V>\n        requires ({constraint})"
         )?;
         Self::method(
             output,
             "void",
-            &format!("{name}(const V& value) const"),
+            &format!("{name}(const V& value) const requires ::intrlay::WritableBufferByte<Byte>"),
             body,
         )
     }
@@ -480,11 +621,6 @@ impl Methods<'_> {
         signature: &str,
         body: &str,
     ) -> Result<(), GenerateError> {
-        let signature = if ty == "void" {
-            format!("{signature} requires ::intrlay::WritableBufferByte<Byte>")
-        } else {
-            signature.to_owned()
-        };
         let body = body.replace('\n', "\n        ");
         if ty.len() + signature.len() > 100 {
             writeln!(
@@ -521,12 +657,7 @@ impl Methods<'_> {
                     format!("{descriptor}::Field<{index}>::read($[buffer], $[offset])"),
                 )
             };
-            Self::method(
-                output,
-                &ty,
-                &format!("{name}() const"),
-                &format!("return {value};"),
-            )?;
+            Self::reads(output, &ty, name, &format!("return {value};"))?;
         }
         if let Some(accessor) = &api.setter {
             let setter_name = &accessor.name;
@@ -578,6 +709,9 @@ fn input_type(plan: &TypeGraph, context: &Context, id: Id) -> String {
     }
 }
 fn output_type(plan: &TypeGraph, context: &Context, id: Id) -> String {
+    if plan.nodes[id].is_value_enum() {
+        return context.qualified(&plan.input_name(id));
+    }
     match &plan.nodes[id].kind {
         Kind::Scalar(scalar) => scalar_type(*scalar).into(),
         Kind::Unit => "::std::monostate".into(),

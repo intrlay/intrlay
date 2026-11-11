@@ -60,9 +60,16 @@ Console.WriteLine(received.Command.DrawPointPosition is null); // True
 `Memory<byte>`; it can be stored in an ordinary object without allocating a
 wrapper for each access. `DrawingViewReadOnly` uses read-only storage.
 
+These constructors do not verify the complete encoding. Runtime bounds checks
+protect memory access, but do not establish valid enum tags, Boolean encodings,
+or UTF-8. Use bytes from a producer that follows the agreed schema.
+
 Enums with payloads use typed factories; payload-free enum inputs are ordinary
-C# enums with `uint` tags. Variant-specific getters return nullable results
-when the alternative is inactive; `Tag` exposes the numeric tag. The input
+C# enums with their original names and `uint` tags. Nested accessors return these values
+directly. Explicit exports also provide standalone `TypeView` and `TypeSpanView`
+types, whose `Tag` property returns the enum value. Variant-specific getters return
+nullable results when the alternative is inactive; payload-enum `Tag` properties
+expose the numeric tag. The input
 collection is `ReadOnlyMemory<PointInput>`, supplied here by a `PointInput[]`. The view's
 collection indexes encoded elements without reconstructing that array.
 
@@ -156,6 +163,12 @@ Only schemas whose elements have a valid zero representation accept zero sources
 Element types must match exactly. Fixed-array value sources must have the declared
 length. `TypeSpanInput.FromSources(...)` permits ref struct sources; the ordinary
 `TypeInput.FromSources(...)` cannot retain them.
+
+Pass a generic source to a span-view factory as a value:
+`DrawingSpanView.CreateInPlace(bytes, input)`. These factories take a `scoped`
+input so their result borrows only the destination, including when the source
+contains local `stackalloc` storage. Ordinary `DrawingInput` values can use
+`in input` to avoid copying large inline fields.
 
 Nested sources implement `IEncodeInput<TInput>`, where `TInput` identifies the
 canonical schema. Generated collection, optional, and boxed input wrappers compose

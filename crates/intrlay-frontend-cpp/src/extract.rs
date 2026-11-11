@@ -1,20 +1,34 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use clang::{Accessibility, Entity, EntityKind, Type as CppType, TypeKind};
 use intrlay_schema::{Definition, DefinitionKind, Field, Scalar, Schema, Type, Variant};
 
-use crate::{FrontendError, annotations::Annotation};
+use crate::{FrontendError, adapters::Adapters, annotations::Annotation};
 
-#[derive(Default)]
-pub struct Extractor {
+pub struct Extractor<'a, 'tu> {
+    adapters: &'a mut Adapters<'tu>,
     schema: Schema,
+    named_types: Vec<(CppType<'tu>, String)>,
     visiting: BTreeSet<String>,
-    exports: BTreeMap<String, (String, Annotation)>,
+    inline_types: Vec<(CppType<'tu>, usize)>,
+    exports: HashMap<Entity<'tu>, (String, Annotation)>,
     alternative_names: BTreeMap<String, BTreeMap<usize, String>>,
 }
 
-impl Extractor {
-    pub fn extract(mut self, root: Entity<'_>) -> Result<Schema, FrontendError> {
+impl<'a, 'tu> Extractor<'a, 'tu> {
+    pub fn new(adapters: &'a mut Adapters<'tu>) -> Self {
+        Self {
+            adapters,
+            schema: Schema::default(),
+            named_types: Vec::new(),
+            visiting: BTreeSet::new(),
+            inline_types: Vec::new(),
+            exports: HashMap::new(),
+            alternative_names: BTreeMap::new(),
+        }
+    }
+
+    pub fn extract(mut self, root: Entity<'tu>) -> Result<Schema, FrontendError> {
         self.discover(root)?;
         if self.schema.exports.is_empty() {
             return Err(FrontendError(
@@ -25,7 +39,7 @@ impl Extractor {
         Ok(self.schema)
     }
 
-    fn discover(&mut self, parent: Entity<'_>) -> Result<(), FrontendError> {
+    fn discover(&mut self, parent: Entity<'tu>) -> Result<(), FrontendError> {
         for entity in parent.get_children() {
             if entity.is_in_system_header() {
                 continue;
@@ -47,13 +61,9 @@ impl Extractor {
                         .clone()
                         .or_else(|| entity.get_name())
                         .ok_or_else(|| FrontendError("export must have a name".into()))?;
-                    let identity = entity
-                        .get_canonical_entity()
-                        .get_usr()
-                        .ok_or_else(|| {
-                            FrontendError(format!("export {name} has no declaration identity"))
-                        })?
-                        .0;
+                    // Redeclarations share an entity; separate aliases to the
+                    // same type remain independently annotated exports.
+                    let identity = entity.get_canonical_entity();
                     if let Some((previous_name, previous_annotation)) = self.exports.get(&identity)
                     {
                         if *previous_name != name || *previous_annotation != annotation {
@@ -69,8 +79,12 @@ impl Extractor {
                         .ok_or_else(|| {
                             FrontendError(format!("export {name} has no concrete type"))
                         })?;
-                    self.alternative_names(native, &annotation)?;
-                    let ty = self.ty(native)?;
+                    let ty = if let Some(resolved) = self.adapters.resolve_export(native, entity)? {
+                        self.alternative_names(resolved.native, &annotation)?;
+                        self.resolved_type(resolved.native, &resolved.expression)?
+                    } else {
+                        Type::Unit
+                    };
                     if self.schema.exports.insert(name.clone(), ty).is_some() {
                         return Err(FrontendError(format!("duplicate export: {name}")));
                     }
@@ -84,7 +98,7 @@ impl Extractor {
 
     fn alternative_names(
         &mut self,
-        native: CppType<'_>,
+        native: CppType<'tu>,
         annotation: &Annotation,
     ) -> Result<(), FrontendError> {
         if annotation.alternatives.is_empty() {
@@ -106,10 +120,8 @@ impl Extractor {
             .get_template_argument_types()
             .unwrap_or_default()
             .len();
-        let names = self
-            .alternative_names
-            .entry(native.get_display_name())
-            .or_default();
+        let identity = self.named_identity(native);
+        let names = self.alternative_names.entry(identity).or_default();
         for (&index, name) in &annotation.alternatives {
             if index >= count {
                 return Err(FrontendError(format!(
@@ -148,7 +160,8 @@ impl Extractor {
                     .unwrap_or_else(|| self.type_name(&variant.fields[0].ty));
                 if !names.insert(name.clone()) {
                     return Err(FrontendError(format!(
-                        "duplicate alternative name {name} in {identity}; use alternative(index, name = \"Name\") on a std::variant alias"
+                        "duplicate alternative name {name} in {}; use alternative(index, name = \"Name\") on a std::variant alias",
+                        definition.name
                     )));
                 }
                 resolved.push((identity.clone(), index, name));
@@ -186,8 +199,20 @@ impl Extractor {
         }
     }
 
-    fn ty(&mut self, native: CppType<'_>) -> Result<Type, FrontendError> {
-        let native = native.get_canonical_type();
+    fn ty(&mut self, native: CppType<'tu>, expression: &str) -> Result<Type, FrontendError> {
+        let Some(resolved) = self.adapters.resolve(native, expression) else {
+            // This pass only gathers unresolved compiler probes. Its schema is
+            // discarded before layout validation or target code generation.
+            return Ok(Type::Unit);
+        };
+        self.resolved_type(resolved.native, &resolved.expression)
+    }
+
+    fn resolved_type(
+        &mut self,
+        native: CppType<'tu>,
+        expression: &str,
+    ) -> Result<Type, FrontendError> {
         let scalar = match native.get_kind() {
             TypeKind::Bool => Some(Scalar::Bool),
             TypeKind::SChar | TypeKind::CharS => Some(Scalar::I8),
@@ -206,20 +231,27 @@ impl Extractor {
             return Ok(Type::Scalar(scalar));
         }
         match native.get_kind() {
-            TypeKind::ConstantArray => Ok(Type::Array {
-                element: Box::new(
-                    self.ty(native
-                        .get_element_type()
-                        .ok_or_else(|| unsupported(native))?)?,
-                ),
-                length: native.get_size().ok_or_else(|| unsupported(native))?,
+            TypeKind::ConstantArray => self.inline_type(native, |extractor| {
+                Ok(Type::Array {
+                    element: Box::new(
+                        extractor.ty(
+                            native
+                                .get_element_type()
+                                .ok_or_else(|| unsupported(native))?,
+                            &format!("::std::remove_extent_t<{expression}>"),
+                        )?,
+                    ),
+                    length: native.get_size().ok_or_else(|| unsupported(native))?,
+                })
             }),
-            TypeKind::Record | TypeKind::Enum | TypeKind::Unexposed => self.named(native),
+            TypeKind::Record | TypeKind::Enum | TypeKind::Unexposed => {
+                self.named(native, expression)
+            }
             _ => Err(unsupported(native)),
         }
     }
 
-    fn named(&mut self, native: CppType<'_>) -> Result<Type, FrontendError> {
+    fn named(&mut self, native: CppType<'tu>, expression: &str) -> Result<Type, FrontendError> {
         let entity = native
             .get_declaration()
             .ok_or_else(|| unsupported(native))?;
@@ -233,9 +265,15 @@ impl Extractor {
         let native = unqualified_named_type(native, entity)?;
         let name = entity.get_name().ok_or_else(|| unsupported(native))?;
         if in_standard_namespace(entity) {
-            return self.standard(native, &name);
+            // Named variant payloads have their own recursion boundary.
+            if name == "variant" {
+                return self.standard(native, &name, expression);
+            }
+            return self.inline_type(native, |extractor| {
+                extractor.standard(native, &name, expression)
+            });
         }
-        let identity = native.get_display_name();
+        let identity = self.named_identity(native);
         if self.schema.definitions.contains_key(&identity)
             || !self.visiting.insert(identity.clone())
         {
@@ -245,47 +283,7 @@ impl Extractor {
         let kind = if native.get_kind() == TypeKind::Enum {
             DefinitionKind::Enum(enum_variants(native, entity)?)
         } else {
-            // libclang omits base cursors on instantiated classes. Their selected
-            // template supplies the bases, unless this is an explicit specialization
-            // with its own definition (which can remove the template's bases).
-            let pattern = entity.get_template().filter(|pattern| {
-                pattern.get_kind() == EntityKind::ClassTemplatePartialSpecialization
-                    || !is_explicit_specialization(entity)
-            });
-            if pattern
-                .unwrap_or(entity)
-                .get_children()
-                .iter()
-                .any(|child| child.get_kind() == EntityKind::BaseSpecifier)
-            {
-                return Err(FrontendError(format!(
-                    "inheritance requires an explicit mirror type: {identity}"
-                )));
-            }
-            native.get_sizeof().map_err(|_| FrontendError(format!("incomplete type {identity}; instantiate concrete templates before export (for example with sizeof)")))?;
-            let fields = native.get_fields().ok_or_else(|| unsupported(native))?;
-            let mut result = Vec::with_capacity(fields.len());
-            for field in fields {
-                if field.is_bit_field()
-                    || matches!(
-                        field.get_accessibility(),
-                        Some(Accessibility::Private | Accessibility::Protected)
-                    )
-                {
-                    return Err(FrontendError(format!(
-                        "field requires a public mirror: {}",
-                        field.get_display_name().unwrap_or_default()
-                    )));
-                }
-                let attributes = Annotation::parse(field)?;
-                result.push(Field {
-                    name: field.get_name().ok_or_else(|| unsupported(native))?,
-                    ty: self.ty(field.get_type().ok_or_else(|| unsupported(native))?)?,
-                    docs: crate::documentation::extract(field),
-                    targets: attributes.targets,
-                });
-            }
-            DefinitionKind::Record(result)
+            DefinitionKind::Record(self.record_fields(native, entity, expression)?)
         };
         let alignment = annotation.alignment.unwrap_or_else(|| {
             if entity
@@ -313,7 +311,95 @@ impl Extractor {
         Ok(Type::Named(identity))
     }
 
-    fn standard(&mut self, native: CppType<'_>, name: &str) -> Result<Type, FrontendError> {
+    fn record_fields(
+        &mut self,
+        native: CppType<'tu>,
+        entity: Entity<'tu>,
+        expression: &str,
+    ) -> Result<Vec<Field>, FrontendError> {
+        // libclang omits base cursors on instantiated classes. Their selected
+        // template supplies the bases, unless this is an explicit specialization
+        // with its own definition (which can remove the template's bases).
+        let pattern = entity.get_template().filter(|pattern| {
+            pattern.get_kind() == EntityKind::ClassTemplatePartialSpecialization
+                || !is_explicit_specialization(entity)
+        });
+        if pattern
+            .unwrap_or(entity)
+            .get_children()
+            .iter()
+            .any(|child| child.get_kind() == EntityKind::BaseSpecifier)
+        {
+            return Err(FrontendError(format!(
+                "inheritance requires an explicit mirror type: {}",
+                native.get_display_name()
+            )));
+        }
+        native.get_sizeof().map_err(|_| {
+            FrontendError(format!(
+                "incomplete type {}; instantiate concrete templates before export (for example with sizeof)",
+                native.get_display_name()
+            ))
+        })?;
+        let fields = native.get_fields().ok_or_else(|| unsupported(native))?;
+        let mut result = Vec::with_capacity(fields.len());
+        for field in fields {
+            if field.is_bit_field()
+                || matches!(
+                    field.get_accessibility(),
+                    Some(Accessibility::Private | Accessibility::Protected)
+                )
+            {
+                return Err(FrontendError(format!(
+                    "field requires a public mirror: {}",
+                    field.get_display_name().unwrap_or_default()
+                )));
+            }
+            let attributes = Annotation::parse(field)?;
+            let name = field.get_name().ok_or_else(|| unsupported(native))?;
+            let field_expression = format!("decltype(::std::declval<{expression}>().{name})");
+            result.push(Field {
+                name,
+                ty: self.ty(
+                    field.get_type().ok_or_else(|| unsupported(native))?,
+                    &field_expression,
+                )?,
+                docs: crate::documentation::extract(field),
+                targets: attributes.targets,
+            });
+        }
+        Ok(result)
+    }
+
+    fn inline_type(
+        &mut self,
+        native: CppType<'tu>,
+        extract: impl FnOnce(&mut Self) -> Result<Type, FrontendError>,
+    ) -> Result<Type, FrontendError> {
+        // Entering a named definition starts a new recursion boundary:
+        // unique_ptr<Node> -> Node -> unique_ptr<Node> is a valid tree.
+        // An adapter directly mapping back into its own container is not.
+        // Composite types need not have declarations or USRs. Canonical type
+        // equality still distinguishes arrays of namesake local classes.
+        let key = (native.get_canonical_type(), self.visiting.len());
+        if self.inline_types.contains(&key) {
+            return Err(FrontendError(format!(
+                "recursive adapter schema requires a named record or enum: {}",
+                native.get_display_name()
+            )));
+        }
+        self.inline_types.push(key);
+        let result = extract(self);
+        self.inline_types.pop();
+        result
+    }
+
+    fn standard(
+        &mut self,
+        native: CppType<'tu>,
+        name: &str,
+        expression: &str,
+    ) -> Result<Type, FrontendError> {
         let arguments = native.get_template_argument_types().unwrap_or_default();
         let first = |index| {
             arguments
@@ -323,9 +409,23 @@ impl Extractor {
                 .ok_or_else(|| unsupported(native))
         };
         Ok(match name {
-            "vector" => Type::Sequence(Box::new(self.ty(first(0)?)?)),
-            "optional" => Type::Optional(Box::new(self.ty(first(0)?)?)),
-            "unique_ptr" => Type::Boxed(Box::new(self.ty(first(0)?)?)),
+            "vector" => Type::Sequence(Box::new(
+                self.ty(first(0)?, &format!("typename {expression}::value_type"))?,
+            )),
+            "optional" => Type::Optional(Box::new(
+                self.ty(first(0)?, &format!("typename {expression}::value_type"))?,
+            )),
+            "unique_ptr" => {
+                let element = first(0)?;
+                // unique_ptr<T[]>::element_type is T, not the requested T[].
+                // An unbounded allocation has no count in the Box wire format.
+                if element.get_kind() == TypeKind::IncompleteArray {
+                    return Err(unsupported(element));
+                }
+                Type::Boxed(Box::new(
+                    self.ty(element, &format!("typename {expression}::element_type"))?,
+                ))
+            }
             "basic_string" if matches!(first(0)?.get_kind(), TypeKind::CharS | TypeKind::CharU) => {
                 Type::String
             }
@@ -340,12 +440,14 @@ impl Extractor {
                     .and_then(|count| count.trim().parse().ok())
                     .ok_or_else(|| unsupported(native))?;
                 Type::Array {
-                    element: Box::new(self.ty(first(0)?)?),
+                    element: Box::new(
+                        self.ty(first(0)?, &format!("typename {expression}::value_type"))?,
+                    ),
                     length: count,
                 }
             }
             "variant" => {
-                let identity = native.get_display_name();
+                let identity = self.named_identity(native);
                 if !self.schema.definitions.contains_key(&identity)
                     && self.visiting.insert(identity.clone())
                 {
@@ -357,7 +459,10 @@ impl Extractor {
                                 .map_err(|error| FrontendError(error.to_string()))?,
                             fields: vec![Field::new(
                                 "value",
-                                self.ty(argument.ok_or_else(|| unsupported(native))?)?,
+                                self.ty(
+                                    argument.ok_or_else(|| unsupported(native))?,
+                                    &format!("::std::variant_alternative_t<{index}, {expression}>"),
+                                )?,
                             )],
                             synthetic_payload: true,
                             docs: String::new(),
@@ -381,6 +486,29 @@ impl Extractor {
             }
             _ => return Err(unsupported(native)),
         })
+    }
+
+    /// Interns an unqualified named type for references within this schema.
+    /// USRs may collide for block-local classes or be absent for structural
+    /// template arguments. Only Clang's canonical type equality is authoritative.
+    fn named_identity(&mut self, native: CppType<'tu>) -> String {
+        let native = native.get_canonical_type();
+        if let Some((_, identity)) = self.named_types.iter().find(|(known, _)| *known == native) {
+            return identity.clone();
+        }
+
+        // An unambiguous USR is only a stable label, so forward declarations do
+        // not reorder otherwise identical schemas. Missing or reused labels
+        // receive extraction-local IDs in a separate namespace.
+        let identity = native
+            .get_declaration()
+            .and_then(|entity| entity.get_canonical_entity().get_usr())
+            .filter(|usr| !usr.0.is_empty())
+            .map(|usr| format!("cpp:usr:{}", usr.0))
+            .filter(|identity| !self.named_types.iter().any(|(_, used)| used == identity))
+            .unwrap_or_else(|| format!("cpp:type:{}", self.named_types.len()));
+        self.named_types.push((native, identity.clone()));
+        identity
     }
 }
 

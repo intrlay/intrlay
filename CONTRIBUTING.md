@@ -27,6 +27,13 @@ for a bug or a meaningful feature, preferably in an existing fixture family.
 Regenerate affected bindings and exercise them in their target language; a text
 comparison alone does not establish that generated code works.
 
+C++ frontend reviews follow the supported schema declarations described in the
+[C++ guide](docs/docs/languages/cpp.mdx#export-declarations). Valid C++ syntax alone
+does not make a missing extraction case a defect. Establish a practical schema
+use case before expanding that boundary; prefer concrete export aliases to
+source-rewriting machinery for uncommon declaration forms. Buffer safety, type
+identity, and the documented encoding contract remain mandatory.
+
 Run the relevant checks while developing and `cargo xtask check` before submitting
 a change that affects schemas, generated code, or runtimes. Documentation-only
 changes need working links and accurate examples; run `npm --prefix docs run check`

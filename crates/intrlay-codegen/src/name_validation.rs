@@ -120,6 +120,11 @@ pub fn input_fields(
     node: &Node,
     payload_reserved: &[&str],
 ) -> Result<(), GenerateError> {
+    // Numeric aliases retain fields to describe their wire layout, but do not
+    // declare input members. Emitted view accessors are validated separately.
+    if node.numeric_input.is_some() {
+        return Ok(());
+    }
     let fields = |fields: &[Field], reserved: &[&str]| {
         let mut input = Scope::new(plan);
         input.reserve_all(reserved, "variant discriminant");
@@ -183,7 +188,7 @@ fn fields_accessors(
     Ok(())
 }
 
-/// Indexed record accessors share a scope with the backend's collection API.
+/// Indexed field accessors share a scope with the backend's collection API.
 /// The backend registers its own named methods or language-defined operators.
 pub fn indexed_accessors(
     plan: &TypeGraph,
@@ -195,11 +200,14 @@ pub fn indexed_accessors(
         Kind::Sequence(element) | Kind::Array { element, .. }
             if plan.folded_field(element).is_none() =>
         {
-            if let Kind::Record(fields) = &plan.nodes[element].kind {
-                for field in fields {
+            let child = &plan.nodes[element];
+            if let Some(tag) = IndexedAccessors::tag(plan, node, child) {
+                members.member(&tag, "indexed enum tag")?;
+            }
+            {
+                for (field, variant) in child.fields() {
                     for (name, role) in
-                        IndexedAccessors::new(plan, node, &plan.nodes[element], field)
-                            .declarations()
+                        IndexedAccessors::new(plan, node, child, field, variant).declarations()
                     {
                         members.member(name, role)?;
                     }
@@ -229,7 +237,7 @@ pub fn root_accessors(
     Ok(())
 }
 
-/// The usual target aliases export an Input and a View, without an owned value.
+/// Value enums retain their exported name; other aliases describe an input type.
 pub fn input_view_aliases(
     generation: &GenerationPlan,
     declarations: &mut Scope<'_>,
@@ -240,7 +248,8 @@ pub fn input_view_aliases(
         if generation.encoding.needs_input(node.codec)
             && (!matches!(node.kind, Kind::Record(_) | Kind::Enum(_)) || *alias != node.name)
         {
-            declarations.declaration(&format!("{alias}Input"), "export input alias")?;
+            let suffix = if node.is_value_enum() { "" } else { "Input" };
+            declarations.declaration(&format!("{alias}{suffix}"), "export input alias")?;
         }
         if *alias != node.name && generation.views.emitted.contains(id) {
             declarations.declaration(&format!("{alias}View"), "export view alias")?;

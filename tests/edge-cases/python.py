@@ -9,7 +9,7 @@ from scalar import IntrlayU32View
 
 values = ['', 'hello', '\uFEFF', '\uFEFFhello', '\uFEFF\uFEFFhello', 'a\uFEFFb', '한글😀']
 text = TextView.create({'values': values})
-assert bytes(text.buffer) == (base / 'text.bin').read_bytes()
+assert bytes(text.storage.bytes) == (base / 'text.bin').read_bytes()
 assert list(text.values) == values
 root = EdgeCasesView(bytearray((base / 'golden.bin').read_bytes()))
 assert list(root.text.values) == values
@@ -22,7 +22,7 @@ assert len(root.projection.numeric) == 4 and root.projection.named == 2
 for i in range(len(root.projection.many)):
     assert root.projection.many.get_x(i) == 3
     root.projection.many.set_x(i, 20)
-assert EdgeCasesView(root.buffer).projection.many.get_x(0) == 20
+assert EdgeCasesView(root.storage.bytes).projection.many.get_x(0) == 20
 assert NestedView((base / 'absent-0.bin').read_bytes()).child is None
 assert NestedView((base / 'absent-1.bin').read_bytes()).child.value is None
 assert NestedView((base / 'absent-2.bin').read_bytes()).child.value.value is None

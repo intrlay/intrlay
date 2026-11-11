@@ -49,8 +49,12 @@ Codecs handle the representation; application code normally accesses values thro
 
 A numeric projection may include padding lanes. For example, a three-float record
 aligned to 16 bytes occupies four `f32` lanes per element. See
-[Numeric and indexed projections](annotations.mdx#numeric-and-indexed-projections)
+[Projections](annotations.mdx#projections)
 for an input declaration and the resulting API.
+
+Padding bytes have no semantic value and need not be zero. Numeric inputs and
+proven native-layout adapters can preserve initialized padding lanes from their
+source storage; ordinary field-wise construction initializes unused wire bytes.
 
 ## Layout is established during construction
 
@@ -74,6 +78,8 @@ If an Intrlay release changes the encoding rules, its release notes will identif
 the change as a breaking change. Package versions identify library releases and
 are not embedded in buffers.
 
-Views assume a valid encoding and the agreed layout. Intrlay provides no general
-input validation layer; the application supplies valid bytes and the correct
-buffer lifetime at the receiving boundary.
+Rust and C++ provide checked view constructors. Rust also provides checked
+decoding into owned values. Their unchecked counterparts require valid bytes.
+Managed-language views rely on their runtime's memory access rules and do not
+provide complete semantic validation. In every language the application still
+supplies the correct schema, buffer lifetime, and synchronization at the boundary.

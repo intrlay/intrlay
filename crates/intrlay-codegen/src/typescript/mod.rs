@@ -4,15 +4,18 @@ use intrlay_schema::{Exposure, Scalar};
 
 use crate::{
     GenerateError,
-    api::{Accessor, CollectionAccessors, IndexedAccessors},
+    api::{Accessor, CollectionAccessors},
     plan::{Field, GenerationPlan, Id, Kind, Node, TypeGraph, Variant, WriterParameters},
 };
 
 mod documentation;
+mod field_helpers;
+mod indexed;
 mod load;
 mod mutation;
 mod name_validation;
 mod names;
+mod numeric_input;
 
 pub const BACKEND: crate::backend::Backend = crate::backend::Backend {
     language: intrlay_schema::Language::TypeScript,
@@ -91,8 +94,8 @@ pub fn generate(
             if plan.nodes[*id].is_value_enum() {
                 writeln!(
                     output,
-                    "export {{ {} as {alias}Input }};",
-                    input_type(plan, *id)
+                    "export {{ {} as {alias} }};",
+                    plan.nodes[*id].tag_type_name()
                 )?;
             } else {
                 writeln!(
@@ -113,12 +116,21 @@ fn input(
     node: &Node,
     needed: bool,
 ) -> Result<(), GenerateError> {
+    if node.is_enum_input_context() {
+        return Ok(());
+    }
     if !needed && !matches!(node.kind, Kind::Enum(_)) {
         return Ok(());
     }
     let name = plan.input_name(id);
     writeln!(output)?;
     documentation::write(output, &node.docs, "")?;
+    if let Some(ty) = numeric_input::input_type(plan, node)
+        && matches!(node.kind, Kind::Record(_))
+    {
+        writeln!(output, "export type {name} = {ty};")?;
+        return Ok(());
+    }
     if let Some(field) = plan.folded_node(node) {
         writeln!(
             output,
@@ -189,6 +201,11 @@ fn measure(
         "\nfunction $[measure:{id}]({value}: {}, cursor: intrlay.Cursor): void {{",
         input_type(plan, id)
     )?;
+    if let Some(numeric) = node.numeric_input {
+        numeric_input::measure(output, plan, node, numeric)?;
+        writeln!(output, "}}")?;
+        return Ok(());
+    }
     match &node.kind {
         Kind::String => writeln!(output, "    cursor.reserve(intrlay.utf8Length(value), 1);")?,
         Kind::Record(fields) => {
@@ -315,6 +332,11 @@ fn write_function(
         "\nfunction $[write:{id}]({storage}: intrlay.Storage, {offset}: number, {value}: {}, {cursor}: intrlay.Cursor{optional}): void {{",
         input_type(plan, id)
     )?;
+    if let Some(numeric) = node.numeric_input {
+        numeric_input::write(output, plan, node, numeric)?;
+        writeln!(output, "}}")?;
+        return Ok(());
+    }
     initialize_fixed_array(output, plan, id, node)?;
     match &node.kind {
         Kind::Scalar(scalar) => writeln!(output, "    {};", store(*scalar, "offset", "value"))?,
@@ -497,7 +519,7 @@ fn view(output: &mut String, plan: &TypeGraph, id: Id, node: &Node) -> Result<()
     };
     writeln!(
         output,
-        "export class {name} {{\n    public static readonly $[byte_size] = {};\n    public static readonly $[alignment] = {};\n    private readonly $[storage]: intrlay.Storage;{fields}\n\n    public constructor(bytes: globalThis.Uint8Array | intrlay.Storage, {offset} = 0) {{\n        this.$[storage] = bytes instanceof intrlay.Storage ? bytes : new intrlay.Storage(bytes);{initializers}\n    }}\n\n    public get $[bytes](): globalThis.Uint8Array {{ return this.$[storage].bytes; }}",
+        "export class {name} {{\n    public static readonly $[byte_size] = {};\n    public static readonly $[alignment] = {};\n    public readonly $[storage]: intrlay.Storage;{fields}\n\n    public constructor(bytes: globalThis.Uint8Array | intrlay.Storage, {offset} = 0) {{\n        this.$[storage] = bytes instanceof intrlay.Storage ? bytes : new intrlay.Storage(bytes);{initializers}\n    }}",
         node.layout.size(),
         node.buffer_alignment
     )?;
@@ -566,7 +588,7 @@ fn view_members(
     id: Id,
     node: &Node,
 ) -> Result<(), GenerateError> {
-    if node.options.generation.setters && !plan.has_payload(id) {
+    if node.options.generation.setters && node.options.values() && !plan.has_payload(id) {
         let codec = node.codec;
         method(
             output,
@@ -644,6 +666,15 @@ fn field_view(
 ) -> Result<(), GenerateError> {
     let name = &api.name;
     let position = format!("this.$[offset] + {}", field.offset);
+    field_helpers::emit(
+        output,
+        plan,
+        &api.helpers,
+        field,
+        &position,
+        tag.map(|tag| (tag, "this.$[offset]")),
+        false,
+    )?;
     let has_getter = api.getter;
     if has_getter {
         let optional = if tag.is_some() { " | undefined" } else { "" };
@@ -655,7 +686,7 @@ fn field_view(
             id: field.ty,
             offset: &position,
             exposure: field.options.exposure,
-            tag,
+            tag: tag.map(|tag| (tag, "this.$[offset]")),
         };
         getter(output, plan, api, &ty, &read, &field.docs)?;
     }
@@ -747,6 +778,7 @@ fn output_type(plan: &TypeGraph, id: Id, exposure: Exposure) -> String {
     }
     match &plan.nodes[id].kind {
         Kind::Scalar(scalar) => scalar_type(*scalar).into(),
+        Kind::Enum(_) if plan.nodes[id].is_value_enum() => plan.nodes[id].tag_type_name(),
         Kind::Unit => "null".into(),
         Kind::String => "string".into(),
         Kind::Optional { value, .. } => {
@@ -821,6 +853,9 @@ fn scalar_type(scalar: Scalar) -> &'static str {
     }
 }
 fn input_type(plan: &TypeGraph, id: Id) -> String {
+    if let Some(ty) = numeric_input::input_type(plan, &plan.nodes[id]) {
+        return ty;
+    }
     match &plan.nodes[id].kind {
         Kind::Scalar(scalar) => scalar_type(*scalar).into(),
         Kind::Unit => "null".into(),
@@ -920,72 +955,8 @@ fn sequence_view(
             "",
         )?;
     }
-    // Indexed access is also available on ordinary record arrays, so callers
-    // can opt out of per-element view allocation without changing the wire type.
-    indexed_fields(output, plan, node, element, &position)
-}
-
-fn indexed_fields(
-    output: &mut String,
-    plan: &TypeGraph,
-    node: &Node,
-    element: Id,
-    position: &str,
-) -> Result<(), GenerateError> {
-    let child = &plan.nodes[element];
-    if plan.folded_node(child).is_none()
-        && let Kind::Record(fields) = &child.kind
-    {
-        for field in fields {
-            let p = format!(
-                "({position}) + index * {} + {}",
-                child.layout.size(),
-                field.offset
-            );
-            let api = IndexedAccessors::new(plan, node, &plan.nodes[element], field);
-            numeric_component_accessors(output, plan, &api, field, &p)?;
-            if let Some(getter) = &api.getter {
-                let index = load::index_parameter(plan, field.ty, field.options.exposure);
-                writeln!(output)?;
-                method(
-                    output,
-                    &format!(
-                        "public {}({index}: number): {}",
-                        getter,
-                        output_type(plan, field.ty, field.options.exposure)
-                    ),
-                    &load::body(
-                        plan,
-                        &load::Read {
-                            id: field.ty,
-                            offset: &p,
-                            exposure: field.options.exposure,
-                            tag: None,
-                        },
-                        None,
-                    ),
-                    &crate::documentation::indexed(&field.docs),
-                )?;
-            }
-            if let Some(setter) = &api.setter {
-                let mutation = &setter.mutation;
-                if api.getter.is_none() {
-                    writeln!(output)?;
-                }
-                method(
-                    output,
-                    &format!(
-                        "public {}(index: number, value: {}): void",
-                        setter.name,
-                        input_type(plan, mutation.value)
-                    ),
-                    &mutation::body(plan, mutation, &p),
-                    &crate::documentation::indexed(&field.docs),
-                )?;
-            }
-        }
-    }
-    Ok(())
+    // Indexed projections add field helpers without changing the wire type.
+    indexed::fields(output, plan, node, element, &position)
 }
 
 fn compute_size(plan: &TypeGraph, id: Id) -> String {
@@ -1004,54 +975,4 @@ fn input_member(plan: &TypeGraph, node: &Node, field: &Field) -> String {
     } else {
         format!("value.{}", field.name)
     }
-}
-
-fn numeric_component_accessors(
-    output: &mut String,
-    plan: &TypeGraph,
-    api: &IndexedAccessors,
-    field: &Field,
-    offset: &str,
-) -> Result<(), GenerateError> {
-    if let Some(scalar) = plan.component_scalar(field) {
-        let mut prefix = format!("let position = {offset};\n");
-        if matches!(plan.nodes[field.ty].kind, Kind::Sequence(_)) {
-            prefix.push_str("position += this.$[storage].u32[position >>> 2]!;\n");
-        }
-        let lane = format!(
-            "this.$[storage].{}[({}) + component]",
-            storage_name(scalar),
-            storage_index(scalar, "position")
-        );
-        let docs = crate::documentation::indexed_component(&field.docs);
-        if let Some(getter) = &api.component_getter {
-            writeln!(output)?;
-            method(
-                output,
-                &format!(
-                    "public {}(index: number, component: number): {}",
-                    getter,
-                    scalar_type(scalar)
-                ),
-                &format!("{prefix}return {lane}!;"),
-                &docs,
-            )?;
-        }
-        if let Some(setter) = &api.component_setter {
-            if api.component_getter.is_none() {
-                writeln!(output)?;
-            }
-            method(
-                output,
-                &format!(
-                    "public {}(index: number, component: number, value: {}): void",
-                    setter,
-                    scalar_type(scalar)
-                ),
-                &format!("{prefix}{lane} = value;"),
-                &docs,
-            )?;
-        }
-    }
-    Ok(())
 }

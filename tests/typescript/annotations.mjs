@@ -11,8 +11,8 @@ const outboundInput = {
     choice: { kind: 1, payload: { value: 9, label: "variant" } },
 };
 const outboundExpected = new Uint8Array(fs.readFileSync("target/regressions/view_emission.bin"));
-assert.deepEqual(outbound.OutboundPacketView.create(outboundInput).bytes, outboundExpected);
-assert.deepEqual(outbound.OutboundPacketView.createInPlace(new Uint8Array(outboundExpected.length), outboundInput).bytes, outboundExpected);
+assert.deepEqual(outbound.OutboundPacketView.create(outboundInput).storage.bytes, outboundExpected);
+assert.deepEqual(outbound.OutboundPacketView.createInPlace(new Uint8Array(outboundExpected.length), outboundInput).storage.bytes, outboundExpected);
 assert.equal("InternalRecordView" in outbound, false);
 assert.equal("ZInternalRecordView" in outbound, false);
 
@@ -20,7 +20,7 @@ const creationInput = { count: 7, label: "created", fixed: [2, 5], optional: 11 
 const creationExpected = new Uint8Array(fs.readFileSync("target/regressions/storage_emission_created.bin"));
 for (const created of [storage.CreateOnlyView.create(creationInput),
     storage.CreateOnlyView.createInPlace(new Uint8Array(creationExpected.length), creationInput)]) {
-    assert.deepEqual(created.bytes, creationExpected);
+    assert.deepEqual(created.storage.bytes, creationExpected);
     assert.equal(Object.hasOwn(created, "_offset"), false);
 }
 assert.equal("DisabledNamesView" in storage, false);
@@ -41,7 +41,7 @@ const incoming = new inputs.ReadOnlyView(new Uint8Array(fs.readFileSync("target/
 assert.equal(incoming.label, "incoming");
 assert.equal(incoming.event.tag, 17);
 assert.equal(incoming.event.dataKind, 42);
-assert.equal(incoming.state.tag, 9);
+assert.equal(incoming.state, 9);
 assert.equal(incoming.next, null);
 assert.equal(inputs.ReadOnlyView.create, undefined);
 assert.equal(inputs.ZReadOnlyView, inputs.ReadOnlyView);
@@ -66,7 +66,7 @@ const input = {
     identifier: 9, identifiers: [10,11], maybe: { value: null }, label: "hello",
 };
 const view = ContractsView.create(input);
-assert.deepEqual(view.bytes, new Uint8Array(fs.readFileSync("target/regressions/contracts.bin")));
+assert.deepEqual(view.storage.bytes, new Uint8Array(fs.readFileSync("target/regressions/contracts.bin")));
 assert.equal(IdentifierView.byteSize, 16);
 assert.equal(view.identifier, 9);
 view.identifier = 19;
@@ -88,9 +88,11 @@ assert.throws(() => { view.fixed.value = 40; }, TypeError);
 const renamed = RenamedVariantsView.create({kind: 0 /* RenamedVariantsKind.Specific */, value: 8});
 assert.equal(renamed.specificValue, 8);
 const projected = ProjectedAccessView.create({
-    value: { branch: { leaf: { value: 1.5 } } },
+    value: new Float32Array([1.5]),
     structured: { branch: { leaf: { value: 2.5 } } },
     indexed: [{ value: 3 }],
+    ordinary: [{ value: 5 }],
+    direct: [{ value: 7 }],
 });
 assert.equal(projected.value[0], 1.5);
 projected.value[0] = 40;
@@ -98,7 +100,17 @@ assert.equal(projected.value[0], 40);
 assert.equal(projected.structured.branch.leaf.value, 2.5);
 assert.equal(projected.indexed.getValue(0), 3);
 projected.indexed.setValue(0, 4);
-assert.equal(new ProjectedAccessView(projected.bytes).indexed.getValue(0), 4);
+assert.equal(new ProjectedAccessView(projected.storage.bytes).indexed.getValue(0), 4);
+assert.equal(projected.indexed.get(0).value, 4);
+assert.equal(projected.ordinary.get(0).value, 5);
+assert.equal(projected.ordinary.constructor, projected.indexed.constructor);
+assert.equal(projected.direct.constructor, projected.indexed.constructor);
+projected.ordinary.get(0).value = 6;
+assert.equal(new ProjectedAccessView(projected.storage.bytes).ordinary.get(0).value, 6);
+assert.equal(projected.ordinary.getValue(0), 6);
+projected.direct.setValue(0, 8);
+assert.equal(projected.direct.getValue(0), 8);
+assert.equal(projected.direct.get(0).value, 8);
 view.readOnlyArray.forEach((_value, index, array) => { array[index] = 41; });
 assert.deepEqual(Array.from(view.readOnlyArray), [41, 41, 41]);
 console.log("TypeScript: transparent wrappers, byte parity, nested access, variant names passed");
@@ -119,3 +131,83 @@ assert.equal(indexedHints.writable.getWriteVectorComponent, undefined);
 assert.equal(indexedHints.writable.get(0).writeVector[1], 20);
 assert.equal(indexedHints.hidden.getHiddenScore, undefined);
 assert.equal(indexedHints.hidden.setHiddenVectorComponent, undefined);
+
+// Flattening changes only the access path, retaining padded canonical offsets.
+const { FlattenedAccessView, SelectiveFlattenView } = await import("../../target/regressions/contracts.js");
+const flat = FlattenedAccessView.create({
+    min: [1, 2, 3], max: { x: 4, y: 5, z: 6 },
+    details: { id: 7, enabled: true, weight: 8.5, fixed: 9 },
+    grid: [[10, 11], [12, 13]], label: "mixed fields", maybe: 14,
+    structured: { leaf: { value: 15 } }, lanes: new Float32Array([16, 17, 18]),
+});
+assert.deepEqual(flat.storage.bytes, new Uint8Array(fs.readFileSync("target/regressions/flattened.bin")));
+assert.deepEqual([flat.min0, flat.maxX, flat.detailsId, flat.detailsEnabled, flat.detailsWeight, flat.detailsFixed, flat.grid11], [1, 4, 7, true, 8.5, 9, 13]);
+assert.equal(flat.label, "mixed fields");
+assert.equal(flat.structured.leaf.value, 15);
+assert.deepEqual(Array.from(flat.lanes), [16, 17, 18]);
+assert.equal(flat.max, undefined);
+assert.throws(() => { flat.detailsFixed = 0; }, TypeError);
+flat.min1 = 20; flat.maxZ = 60; flat.detailsEnabled = false;
+flat.detailsWeight = 80.5; flat.grid10 = 120;
+assert.deepEqual(flat.storage.bytes, new Uint8Array(fs.readFileSync("target/regressions/flattened-changed.bin")));
+flat.maybe = null;
+assert.equal(flat.maybe, null);
+const selective = SelectiveFlattenView.create({ lower: { x: 1, y: 2, z: 3 }, max: { x: 4, y: 5, z: 6 } });
+assert.equal(selective.lowerX, 1);
+assert.equal(selective.max.z, 6);
+
+const indexedApi = await import("../../target/regressions/contracts.js");
+assert.equal(indexedApi.IndexedEntryView, undefined);
+const indexedOnly = indexedApi.IndexedOnlyView.create({ items: [{
+    id: 7, label: "entry", plain: [1, 2, 3], lanes: [4, 5, 6],
+    projected: new Float32Array([7, 8, 9, 0]), direct: new Float32Array([10, 11, 12, 0]),
+    child: { value: 13 }, flat: [14, 15],
+}] });
+assert.deepEqual(indexedOnly.storage.bytes, new Uint8Array(fs.readFileSync("target/regressions/indexed-only.bin")));
+const only = indexedOnly.items;
+assert.equal(only.length, 1);
+assert.equal(only.get, undefined);
+assert.equal(only.getPlainComponent, undefined);
+assert.equal(only.getProjectedComponent, undefined);
+assert.equal(only.getPlain(0)[1], 2);
+assert.equal(only.getProjected(0)[2], 9);
+assert.equal(only.getLabel(0), "entry");
+assert.equal(only.getChild(0).value, 13);
+only.setId(0, 17);
+only.setLanesComponent(0, 1, 20);
+only.setDirectComponent(0, 2, 60);
+only.setFlat1(0, 30);
+assert.deepEqual([only.getId(0), only.getLanes(0)[1], only.getDirectComponent(0, 2), only.getFlat1(0)], [17, 20, 60, 30]);
+
+// Fixed arrays retain field writers even without a Create factory or element view.
+const indexedFixed = new indexedApi.IndexedFixedView(new Uint8Array(fs.readFileSync("target/regressions/indexed-fixed.bin")));
+assert.equal(indexedApi.IndexedMutableEntryView, undefined);
+assert.equal(typeof indexedApi.IndexedValueView, "function");
+assert.equal(indexedApi.IndexedFixedView.create, undefined);
+const components = indexedFixed.withComponents;
+assert.equal(components.length, 1);
+assert.equal(components.get, undefined);
+assert.equal(components.getPlainComponent, undefined);
+assert.equal(components.getChild(0).value, 13);
+assert.equal(indexedFixed.withoutComponents.getLanesComponent, undefined);
+assert.equal(components.getLanesComponent(0, 1), 2);
+components.setChild(0, { value: 31 });
+components.setLanesComponent(0, 1, 20);
+indexedFixed.withoutComponents.setChild(0, { value: 32 });
+assert.deepEqual(indexedFixed.storage.bytes, new Uint8Array(fs.readFileSync("target/regressions/indexed-fixed-changed.bin")));
+
+// Navigation getters preserve mutation without restoring whole-element/scalar reads.
+const indexedWriteOnly = indexedApi.IndexedWriteOnlyView.create({
+    items: [{ id: 7, values: [1, 2] }], fixed: [{ id: 7, values: [1, 2] }],
+});
+assert.equal(indexedApi.IndexedWriteEntryView, undefined);
+for (const collection of [indexedWriteOnly.items, indexedWriteOnly.fixed]) {
+    assert.equal(collection.get, undefined);
+    assert.equal(collection.getId, undefined);
+}
+indexedWriteOnly.items.setId(0, 17);
+indexedWriteOnly.items.getValues(0).set(1, 20);
+indexedWriteOnly.fixed.getValues(0).set(0, 30);
+assert.deepEqual(indexedWriteOnly.storage.bytes, new Uint8Array(fs.readFileSync("target/regressions/indexed-write-only-changed.bin")));
+
+await import("./projections.mjs");

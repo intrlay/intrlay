@@ -54,6 +54,12 @@ impl Variant<'_> {
 
 pub fn expand(model: &Model<'_>, data: &DataEnum) -> syn::Result<TokenStream> {
     let tag_value = model.binding("tag");
+    if model.options.native_layout.is_some() {
+        return Err(syn::Error::new_spanned(
+            &model.input.ident,
+            "native_layout proofs require a struct",
+        ));
+    }
     if model.options.transparent || model.options.remote.is_some() || model.options.from.is_some() {
         return Err(syn::Error::new_spanned(
             &model.input.ident,
@@ -170,9 +176,21 @@ fn input(
         });
     }
     let runtime = &model.runtime;
-    let parameters = crate::input::parameters(model, fields);
+    let parameters = input_parameters(model, fields, variants);
     let source_generics = crate::input::generics(model, fields, &parameters);
     let (implementation, _, predicates) = source_generics.split_for_impl();
+    let input_types = view::type_arguments(&source_generics);
+    let marker_name = model.type_binding("__IntrlaySchema", &quote!(#source_generics));
+    let needs_marker = model.input.generics.type_params().next().is_some();
+    let marker = needs_marker.then(|| {
+        quote! {
+            #[doc(hidden)]
+            #marker_name(::core::convert::Infallible, ::core::marker::PhantomData<fn() -> #source>),
+        }
+    });
+    let never = model.binding("never");
+    let marker_arm =
+        needs_marker.then(|| quote!(Self::#marker_name(#never, _) => match *#never {},));
     let cursor = model.binding("cursor");
     let writer = model.binding("writer");
     let offset = model.binding("offset");
@@ -181,8 +199,94 @@ fn input(
         .map(|variant| variant.layout(runtime))
         .collect::<Vec<_>>();
     let payload_offset = quote!(const { #runtime::layout::field_offset(&[#runtime::layout::Layout::new(4, 4), #runtime::layout::union(&[#(#payloads),*])], 1) });
+    let declarations = input_variants(variants, &parameters);
+    let measure = variants.iter().map(|variant| {
+        let pattern = variant.pattern(model, &quote!(Self));
+        let fields = variant.fields.iter().enumerate().map(|(index, field)| {
+            let binding = model.binding(&format!("__field_{index}"));
+            let codec = &field.codec;
+            quote!(#runtime::EncodeSource::<#codec>::measure(#binding, #cursor))
+        });
+        let fields = crate::encoding::fallible_sequence(fields);
+        quote!(#pattern => { #fields })
+    });
+    let write = variants.iter().map(|variant| {
+        let pattern = variant.pattern(model, &quote!(Self));
+        let tag = &variant.tag;
+        let layouts = variant.layouts(runtime);
+        let fields = variant.fields.iter().enumerate().map(|(index, field)| {
+            let binding = model.binding(&format!("__field_{index}"));
+            let codec = &field.codec;
+            quote!(#runtime::EncodeSource::<#codec>::write(#binding, #writer, #offset + #payload_offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) }))
+        });
+        let fields = crate::encoding::fallible_sequence(fields);
+        quote!(#pattern => {
+            #writer.write(#offset, &(#tag as ::core::primitive::u32).to_le_bytes());
+            #fields
+        })
+    });
+    let (clone_body, debug_body) = input_trait_bodies(model, variants, marker_arm.as_ref());
+    let implementation_tokens = crate::input::source_implementation(
+        model,
+        &name,
+        &source_generics,
+        |name| {
+            let traits = crate::input::traits(
+                model,
+                name,
+                &source_generics,
+                &parameters,
+                &clone_body,
+                &debug_body,
+            );
+            quote! {
+                #traits
+                // SAFETY: Tags and payload offsets are identical to the owned codec;
+                // inactive bytes are initialized by the construction path.
+                #[automatically_derived]
+                unsafe impl #implementation #runtime::EncodeSource<#source> for #name #input_types #predicates {
+                    #[inline]
+                    fn measure(&self, #cursor: &mut #runtime::SizeCursor) -> ::core::result::Result<(), #runtime::EncodeError> {
+                        match self { #(#measure,)* #marker_arm }
+                    }
+                    #[inline]
+                    fn write(&self, #writer: &mut #runtime::Writer<'_>, #offset: ::core::primitive::usize) -> ::core::result::Result<(), #runtime::EncodeError> {
+                        match self { #(#write,)* #marker_arm }
+                    }
+                }
+            }
+        },
+    );
+    Ok(quote! {
+        /// Encoding input whose active payload can borrow existing storage.
+        /// Type parameters select each variant field's source representation.
+        #[allow(dead_code, non_snake_case, reason = "Generated input fields and variants preserve source names and are independently usable") ]
+        #vis enum #name #source_generics #predicates { #(#declarations,)* #marker }
+        #implementation_tokens
+        #owned
+    })
+}
+
+fn input_parameters(
+    model: &Model<'_>,
+    fields: &[Field],
+    variants: &[Variant<'_>],
+) -> Vec<syn::Ident> {
+    let parameter_names = variants.iter().flat_map(|variant| {
+        variant.fields.iter().map(|field| {
+            let member = match &field.member {
+                syn::Member::Named(name) => name.unraw().to_string(),
+                syn::Member::Unnamed(index) => format!("field_{}", index.index),
+            };
+            format!("{}_{}", variant.source.ident.unraw(), member)
+        })
+    });
+    crate::input::named_parameters(model, fields, parameter_names)
+}
+
+fn input_variants(variants: &[Variant<'_>], parameters: &[syn::Ident]) -> Vec<TokenStream> {
     let mut first = 0;
-    let declarations = variants
+    variants
         .iter()
         .map(|variant| {
             let variant_name = &variant.source.ident;
@@ -196,61 +300,57 @@ fn input(
             first = end;
             quote!(#[doc = #docs] #variant_name #fields)
         })
-        .collect::<Vec<_>>();
-    let measure = variants.iter().map(|variant| {
+        .collect::<Vec<_>>()
+}
+
+fn input_trait_bodies(
+    model: &Model<'_>,
+    variants: &[Variant<'_>],
+    marker_arm: Option<&TokenStream>,
+) -> (TokenStream, TokenStream) {
+    let clones = variants.iter().map(|variant| {
         let pattern = variant.pattern(model, &quote!(Self));
-        let fields = variant.fields.iter().enumerate().map(|(index, field)| {
+        let variant_name = &variant.source.ident;
+        let values = variant.fields.iter().enumerate().map(|(index, field)| {
             let binding = model.binding(&format!("__field_{index}"));
-            let codec = &field.codec;
-            quote!(#runtime::EncodeSource::<#codec>::measure(#binding, #cursor)?;)
-        });
-        quote!(#pattern => { #(#fields)* })
-    });
-    let write = variants.iter().map(|variant| {
-        let pattern = variant.pattern(model, &quote!(Self));
-        let tag = &variant.tag;
-        let layouts = variant.layouts(runtime);
-        let fields = variant.fields.iter().enumerate().map(|(index, field)| {
-            let binding = model.binding(&format!("__field_{index}"));
-            let codec = &field.codec;
-            quote!(#runtime::EncodeSource::<#codec>::write(#binding, #writer, #offset + #payload_offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) })?;)
-        });
-        quote!(#pattern => {
-            #writer.write(#offset, &(#tag as ::core::primitive::u32).to_le_bytes());
-            #(#fields)*
-        })
-    });
-    let implementation_tokens = crate::input::source_implementation(
-        model,
-        &name,
-        &parameters,
-        |name| {
-            quote! {
-                // SAFETY: Tags and payload offsets are identical to the owned codec;
-                // inactive bytes are initialized by the construction path.
-                #[automatically_derived]
-                unsafe impl #implementation #runtime::EncodeSource<#source> for #name<#(#parameters),*> #predicates {
-                    fn measure(&self, #cursor: &mut #runtime::SizeCursor) -> ::core::result::Result<(), #runtime::EncodeError> {
-                        match self { #(#measure),* }
-                        ::core::result::Result::Ok(())
-                    }
-                    fn write(&self, #writer: &mut #runtime::Writer<'_>, #offset: ::core::primitive::usize) -> ::core::result::Result<(), #runtime::EncodeError> {
-                        match self { #(#write),* }
-                        ::core::result::Result::Ok(())
-                    }
-                }
+            let value = quote!(::core::clone::Clone::clone(#binding));
+            let member = &field.member;
+            if matches!(variant.source.fields, Fields::Named(_)) {
+                quote!(#member: #value)
+            } else {
+                value
             }
-        },
-    );
-    Ok(quote! {
-        /// Encoding input whose active payload can borrow existing storage.
-        /// Type parameters select each variant field's source representation.
-        #[derive(Clone, Copy, Debug)]
-        #[allow(dead_code, non_snake_case, reason = "Generated input fields and variants preserve source names and are independently usable") ]
-        #vis enum #name<#(#parameters),*> { #(#declarations),* }
-        #implementation_tokens
-        #owned
-    })
+        });
+        let value = match &variant.source.fields {
+            Fields::Named(_) => quote!(Self::#variant_name { #(#values),* }),
+            Fields::Unnamed(_) => quote!(Self::#variant_name(#(#values),*)),
+            Fields::Unit => quote!(Self::#variant_name),
+        };
+        quote!(#pattern => #value,)
+    });
+    let clone_body = quote!(match self { #(#clones)* #marker_arm });
+    let formatter = model.binding("formatter");
+    let debug_arms = variants.iter().map(|variant| {
+        let pattern = variant.pattern(model, &quote!(Self));
+        let label = variant.source.ident.to_string();
+        let method = if matches!(variant.source.fields, Fields::Named(_)) {
+            quote!(debug_struct)
+        } else {
+            quote!(debug_tuple)
+        };
+        let fields = variant.fields.iter().enumerate().map(|(index, field)| {
+            let binding = model.binding(&format!("__field_{index}"));
+            let label = &field.name;
+            if matches!(variant.source.fields, Fields::Named(_)) {
+                quote!(.field(#label, #binding))
+            } else {
+                quote!(.field(#binding))
+            }
+        });
+        quote!(#pattern => #formatter.#method(#label)#(#fields)*.finish(),)
+    });
+    let debug_body = quote!(match self { #(#debug_arms)* #marker_arm });
+    (clone_body, debug_body)
 }
 
 fn tag_validation(model: &Model<'_>, variants: &[Variant<'_>]) -> TokenStream {
@@ -337,9 +437,10 @@ fn codec(
         let fields = variant.fields.iter().enumerate().map(|(index, field)| {
             let binding = model.binding(&format!("__field_{index}"));
             let codec = &field.codec;
-            quote!(<#codec as #runtime::Intrlay>::measure(#binding, #cursor)?;)
+            quote!(<#codec as #runtime::Intrlay>::measure(#binding, #cursor))
         });
-        quote!(#pattern => { #(#fields)* })
+        let fields = crate::encoding::fallible_sequence(fields);
+        quote!(#pattern => { #fields })
     });
     let write = variants.iter().map(|variant| {
         let pattern = variant.pattern(model, constructor);
@@ -348,11 +449,13 @@ fn codec(
         let fields = variant.fields.iter().enumerate().map(|(index, field)| {
             let binding = model.binding(&format!("__field_{index}"));
             let codec = &field.codec;
-            quote!(<#codec as #runtime::Intrlay>::write(#binding, #writer, #offset + #payload_offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) })?;)
+            quote!(<#codec as #runtime::Intrlay>::write(#binding, #writer, #offset + #payload_offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) }))
         });
-        quote!(#pattern => { let #tag_value: ::core::primitive::u32 = #tag; #writer.write(#offset, &#tag_value.to_le_bytes()); #(#fields)* })
+        let fields = crate::encoding::fallible_sequence(fields);
+        quote!(#pattern => { let #tag_value: ::core::primitive::u32 = #tag; #writer.write(#offset, &#tag_value.to_le_bytes()); #fields })
     });
-    let decode = decode_arms(model, variants, &payload_offset, constructor);
+    let decode = decode_arms(model, variants, &payload_offset, constructor, false);
+    let checked_methods = checked_codec(model, variants, &payload_offset, constructor);
     let metadata = metadata(model, variants);
     let has_payload = variants
         .iter()
@@ -386,23 +489,24 @@ fn codec(
                     #runtime::layout::Layout::new(4, 4), #runtime::layout::union(&[#(#payloads),*])
                 ], #alignment)
             };
+            #[inline]
             fn measure(#value: &<Self as #runtime::Intrlay>::Value, #cursor: &mut #runtime::SizeCursor) -> ::core::result::Result<(), #runtime::EncodeError> {
                 match #value { #(#measure),* }
-                ::core::result::Result::Ok(())
             }
+            #[inline]
             fn write(#value: &<Self as #runtime::Intrlay>::Value, #writer: &mut #runtime::Writer<'_>, #offset: ::core::primitive::usize) -> ::core::result::Result<(), #runtime::EncodeError> {
                 match #value { #(#write),* }
-                ::core::result::Result::Ok(())
             }
-            unsafe fn view(#bytes: &[::core::primitive::u8], #offset: ::core::primitive::usize) -> <Self as #runtime::Intrlay>::View<'_> {
+            unsafe fn view_unchecked(#bytes: &[::core::primitive::u8], #offset: ::core::primitive::usize) -> <Self as #runtime::Intrlay>::View<'_> {
                 // SAFETY: The caller guarantees a complete valid encoding at this offset.
                 unsafe { #view_name::from_parts_unchecked(#bytes, #offset) }
             }
-            unsafe fn view_mut(#bytes: &mut [::core::primitive::u8], #offset: ::core::primitive::usize) -> <Self as #runtime::Intrlay>::ViewMut<'_> {
+            unsafe fn view_mut_unchecked(#bytes: &mut [::core::primitive::u8], #offset: ::core::primitive::usize) -> <Self as #runtime::Intrlay>::ViewMut<'_> {
                 // SAFETY: The caller guarantees a complete valid encoding at this offset.
                 unsafe { #view_name::from_parts_unchecked(#bytes, #offset) }
             }
-            unsafe fn decode(#bytes: &[::core::primitive::u8], #offset: ::core::primitive::usize) -> <Self as #runtime::Intrlay>::Value {
+            #checked_methods
+            unsafe fn decode_unchecked(#bytes: &[::core::primitive::u8], #offset: ::core::primitive::usize) -> <Self as #runtime::Intrlay>::Value {
                 match <::core::primitive::u32 as #runtime::Scalar>::read(#bytes, #offset) {
                     #decode
                     _ => unreachable!("invalid enum tag in a trusted Intrlay buffer"),
@@ -412,15 +516,57 @@ fn codec(
     }
 }
 
-fn decode_arms(
+fn checked_codec(
     model: &Model<'_>,
     variants: &[Variant<'_>],
     payload_offset: &TokenStream,
     constructor: &TokenStream,
 ) -> TokenStream {
     let runtime = &model.runtime;
+    let offset = model.binding("offset");
+    let tag_value = model.binding("tag");
+    let checked_decode = decode_arms(model, variants, payload_offset, constructor, true);
+    let decoder = model.binding("decoder");
+    let validator = model.binding("validator");
+    let validated_tag = model.binding("validated_tag");
+    let validate_arms = variants.iter().map(|variant| {
+        let tag = &variant.tag;
+        let layouts = variant.layouts(runtime);
+        let fields = variant.fields.iter().enumerate().map(|(index, field)| {
+            let codec = &field.codec;
+            quote!(#validator.field::<#codec>(#offset + #payload_offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) })?;)
+        });
+        quote!(#validated_tag if #validated_tag == #tag => { #(#fields)* },)
+    });
+    quote! {
+            fn validate_fields(#validator: &mut #runtime::Validator<'_>, #offset: ::core::primitive::usize) -> ::core::result::Result<(), #runtime::DecodeError> {
+                match ::core::primitive::u32::from_le_bytes(#validator.read(#offset)?) {
+                    #(#validate_arms)*
+                    #tag_value => return ::core::result::Result::Err(#runtime::DecodeError::InvalidTag { offset: #offset, tag: #tag_value }),
+                }
+                ::core::result::Result::Ok(())
+            }
+            fn decode_from(#decoder: &mut #runtime::Decoder<'_>, #offset: ::core::primitive::usize) -> ::core::result::Result<<Self as #runtime::Intrlay>::Value, #runtime::DecodeError> {
+                #decoder.range(#offset, <Self as #runtime::Intrlay>::LAYOUT.size())?;
+                ::core::result::Result::Ok(match ::core::primitive::u32::from_le_bytes(#decoder.read(#offset)?) {
+                    #checked_decode
+                    #tag_value => return ::core::result::Result::Err(#runtime::DecodeError::InvalidTag { offset: #offset, tag: #tag_value }),
+                })
+            }
+    }
+}
+
+fn decode_arms(
+    model: &Model<'_>,
+    variants: &[Variant<'_>],
+    payload_offset: &TokenStream,
+    constructor: &TokenStream,
+    checked: bool,
+) -> TokenStream {
+    let runtime = &model.runtime;
     let bytes = model.binding("bytes");
     let offset = model.binding("offset");
+    let decoder = model.binding("decoder");
     let matched_tag = model.binding("__tag");
     let arms = variants.iter().map(|variant| {
         let name = &variant.source.ident;
@@ -428,7 +574,12 @@ fn decode_arms(
         let layouts = variant.layouts(runtime);
         let values = variant.fields.iter().enumerate().map(|(index, field)| {
             let codec = &field.codec;
-            quote!(unsafe { <#codec as #runtime::Intrlay>::decode(#bytes, #offset + #payload_offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) }) })
+            let position = quote!(#offset + #payload_offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) });
+            if checked {
+                quote!(#decoder.decode::<#codec>(#position)?)
+            } else {
+                quote!(unsafe { <#codec as #runtime::Intrlay>::decode_unchecked(#bytes, #position) })
+            }
         }).collect::<Vec<_>>();
         let result = match &variant.source.fields {
             Fields::Named(_) => { let members = variant.fields.iter().map(|field| &field.member); quote!(#constructor::#name { #(#members: #values),* }) }
@@ -527,7 +678,7 @@ fn views(
             /// Returns the active unit variant.
             #[must_use]
             pub fn variant(&self) -> #source {
-                unsafe { <#ident #types as #runtime::Intrlay>::decode(self.storage.as_bytes(), self.storage.byte_offset()) }
+                unsafe { <#ident #types as #runtime::Intrlay>::decode_unchecked(self.storage.as_bytes(), self.storage.byte_offset()) }
             }
         }
     };
@@ -552,7 +703,7 @@ fn variant_read_arms(
         let layouts = variant.layouts(runtime);
         let values = variant.fields.iter().enumerate().map(|(index, field)| {
             let codec = &field.codec;
-            quote!(unsafe { <#codec as #runtime::Intrlay>::view(#bytes, #offset + #payload_offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) }) })
+            quote!(unsafe { <#codec as #runtime::Intrlay>::view_unchecked(#bytes, #offset + #payload_offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) }) })
         }).collect::<Vec<_>>();
         let result = match &variant.source.fields {
             Fields::Named(_) => { let names = variant.fields.iter().map(|field| &field.member); quote!(#variant_name::#name { #(#names: #values),* }) }
@@ -601,14 +752,14 @@ fn variant_mutators(
                     if <::core::primitive::u32 as #runtime::Scalar>::read(self.storage.as_bytes(), self.storage.byte_offset()) != #tag { return ::core::result::Result::Ok(false); }
                     let #offset = self.storage.byte_offset() + #payload_offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) };
                     // SAFETY: The active variant guarantees an initialized field at this offset.
-                    unsafe { #runtime::ValueView::<#codec, _>::new_unchecked(self.storage.as_bytes_mut_unchecked(), #offset) }.replace(#value)?;
+                    unsafe { #runtime::ValueView::<#codec, _>::from_parts_unchecked(self.storage.as_bytes_mut_unchecked(), #offset) }.replace(#value)?;
                     ::core::result::Result::Ok(true)
                 }
                 #[doc = #docs]
                 #[must_use]
                 pub fn #method(&mut self) -> ::core::option::Option<<#codec as #runtime::Intrlay>::ViewMut<'_>> {
                     if <::core::primitive::u32 as #runtime::Scalar>::read(self.storage.as_bytes(), self.storage.byte_offset()) != #tag { return ::core::option::Option::None; }
-                    ::core::option::Option::Some(unsafe { let #offset = self.storage.byte_offset(); <#codec as #runtime::Intrlay>::view_mut(self.storage.as_bytes_mut_unchecked(), #offset + #payload_offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) }) })
+                    ::core::option::Option::Some(unsafe { let #offset = self.storage.byte_offset(); <#codec as #runtime::Intrlay>::view_mut_unchecked(self.storage.as_bytes_mut_unchecked(), #offset + #payload_offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) }) })
                 }
             });
         }

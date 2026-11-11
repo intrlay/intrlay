@@ -18,6 +18,11 @@ use crate::{
 /// but may not invalidate relative references or create overlapping mutable
 /// references. All returned borrows must remain within the
 /// supplied storage and retain its lifetime.
+/// `validate_fields` must reject representations that violate those view or
+/// mutation requirements, reserving every referenced region in writer order.
+/// `ALL_BITS_VALID` may bypass this method only for fixed headers whose every
+/// initialized bit pattern satisfies the same contract. Checked decoding must
+/// validate all bytes it interprets before using unchecked conversions.
 ///
 /// Initialization metadata must conservatively describe all successful writes.
 /// If [`WRITES_ALL_BYTES`](Self::WRITES_ALL_BYTES) is true, `write` must initialize
@@ -42,8 +47,33 @@ pub unsafe trait Intrlay: Describe + 'static {
     ///
     /// Implementations may set this only when every byte is initialized, no native
     /// ownership is embedded, and the native size, field offsets, and byte order match.
+    /// Semantically unused wire padding may preserve initialized native lanes;
+    /// Rust's uninitialized struct padding must never be copied through this path.
     /// Derives use this for a whole-record copy without exposing a native-reference API.
     const NATIVE_LAYOUT: bool = false;
+    /// Whether every initialized bit pattern of this fixed header is valid,
+    /// without tags, references, or descendants requiring validation.
+    /// This allows numeric arrays to be validated by their complete region alone.
+    const ALL_BITS_VALID: bool = false;
+    /// A sufficient recursion budget for unchecked reconstruction of a fixed header.
+    ///
+    /// `Some(depth)` requires [`ALL_BITS_VALID`](Self::ALL_BITS_VALID). Once the
+    /// complete header is in bounds and the decoder has at least `depth` levels
+    /// remaining, unchecked reconstruction must be equivalent to checked decoding:
+    /// no additional validation, fallible reservation, or out-of-line reads may
+    /// be required. The positive depth includes this codec's own decode call.
+    ///
+    /// Derives combine their fields' proofs. Custom codecs retain `None` unless
+    /// they can establish this contract; all-bits-valid storage alone does not
+    /// describe a custom decoder's recursion or additional checks. Native copies
+    /// already reconstruct the complete value at one level without calling it.
+    /// This proof does not prevent constructors from unwinding; initialized
+    /// values must still be dropped if reconstruction unwinds.
+    const FIXED_DECODE_DEPTH: Option<usize> = if Self::NATIVE_LAYOUT && Self::ALL_BITS_VALID {
+        Some(1)
+    } else {
+        None
+    };
     /// Whether an all-zero fixed header is a valid encoding without descendants.
     ///
     /// This is a wire-layout guarantee, not a promise about the native value's
@@ -91,25 +121,86 @@ pub unsafe trait Intrlay: Describe + 'static {
         offset: usize,
     ) -> Result<(), EncodeError>;
 
-    /// Borrows a value from trusted encoded bytes.
+    /// Validates and borrows a complete encoding without reconstructing it.
+    ///
+    /// # Errors
+    /// Rejects malformed data, overlapping payloads, and excessive nesting.
+    #[inline]
+    fn view(bytes: &[u8], offset: usize) -> Result<Self::View<'_>, crate::DecodeError> {
+        Self::validate(bytes, offset)?;
+        // SAFETY: Validation establishes the complete shared-borrow contract.
+        Ok(unsafe { Self::view_unchecked(bytes, offset) })
+    }
+
+    /// Validates and exclusively borrows a complete encoding for mutation.
+    ///
+    /// # Errors
+    /// Rejects malformed data, overlapping payloads, and excessive nesting.
+    #[inline]
+    fn view_mut(bytes: &mut [u8], offset: usize) -> Result<Self::ViewMut<'_>, crate::DecodeError> {
+        Self::validate(bytes, offset)?;
+        // SAFETY: The encoding is valid and the returned view retains the exclusive borrow.
+        Ok(unsafe { Self::view_mut_unchecked(bytes, offset) })
+    }
+
+    /// Borrows a value from trusted encoded bytes without validating it.
     ///
     /// # Safety
     /// `offset` must identify a complete, valid encoding of this type within `bytes`.
     /// All referenced descendants must remain valid and immutable for the borrow.
-    unsafe fn view(bytes: &[u8], offset: usize) -> Self::View<'_>;
+    unsafe fn view_unchecked(bytes: &[u8], offset: usize) -> Self::View<'_>;
 
     /// Exclusively borrows a value from trusted encoded bytes.
     ///
     /// # Safety
-    /// The input must meet [`view`](Self::view)'s representation requirements and
+    /// The input must meet [`view`](Self::view_unchecked)'s representation requirements and
     /// be exclusively borrowed for the returned view's lifetime.
-    unsafe fn view_mut(bytes: &mut [u8], offset: usize) -> Self::ViewMut<'_>;
+    unsafe fn view_mut_unchecked(bytes: &mut [u8], offset: usize) -> Self::ViewMut<'_>;
 
-    /// Materializes an owned source-language value.
+    /// Validates a complete encoding without reconstructing its owned value.
+    ///
+    /// # Errors
+    /// Rejects malformed data, overlapping payloads, and excessive nesting.
+    fn validate(bytes: &[u8], offset: usize) -> Result<(), crate::DecodeError> {
+        crate::Validator::new(bytes).validate::<Self>(offset)
+    }
+
+    /// Checks this header's tags and descendants after its region is validated.
+    /// Use the validator's `field` and `payload` methods to retain disjointness
+    /// and depth accounting. Success must establish the view/mutation contract.
+    ///
+    /// # Errors
+    /// Returns an error for any representation rejected by this codec.
+    fn validate_fields(
+        validator: &mut crate::Validator<'_>,
+        offset: usize,
+    ) -> Result<(), crate::DecodeError>;
+
+    /// Checks and materializes an owned source-language value in one traversal.
+    ///
+    /// # Errors
+    /// Returns an error for malformed data, excessive nesting, or failed collection
+    /// reservation. This does not establish validity for a subsequently opened view.
+    fn decode(bytes: &[u8], offset: usize) -> Result<Self::Value, crate::DecodeError> {
+        crate::Decoder::new(bytes).decode::<Self>(offset)
+    }
+
+    /// Implements checked reconstruction with a shared recursion budget.
+    /// Use `decoder.decode` for children and validate the full fixed header before
+    /// computing field offsets. This method must not trust the supplied bytes.
+    ///
+    /// # Errors
+    /// Returns an error when a header, payload, or discriminant is invalid.
+    fn decode_from(
+        decoder: &mut crate::Decoder<'_>,
+        offset: usize,
+    ) -> Result<Self::Value, crate::DecodeError>;
+
+    /// Materializes an owned source-language value without validating its bytes.
     ///
     /// # Safety
-    /// The input must meet [`view`](Self::view)'s representation requirements.
-    unsafe fn decode(bytes: &[u8], offset: usize) -> Self::Value;
+    /// The input must meet [`view`](Self::view_unchecked)'s representation requirements.
+    unsafe fn decode_unchecked(bytes: &[u8], offset: usize) -> Self::Value;
 }
 
 /// Computes complete allocation requirements without allocating payload storage.
@@ -233,7 +324,7 @@ pub fn create_in_place<'a, C: Intrlay>(
 ) -> Result<C::ViewMut<'a>, EncodeError> {
     let layout = write_into::<C>(value, bytes)?;
     // SAFETY: The codec has just initialized this exact region from a valid source value.
-    Ok(unsafe { C::view_mut(&mut bytes[..layout.byte_length()], 0) })
+    Ok(unsafe { C::view_mut_unchecked(&mut bytes[..layout.byte_length()], 0) })
 }
 
 /// Constructs a borrowed typed view from an independent encoding input.
@@ -247,5 +338,5 @@ pub fn create_in_place_from<'a, C: Intrlay>(
 ) -> Result<C::ViewMut<'a>, EncodeError> {
     let layout = write_from::<C>(value, bytes)?;
     // SAFETY: The source initialized this exact region with a valid C encoding.
-    Ok(unsafe { C::view_mut(&mut bytes[..layout.byte_length()], 0) })
+    Ok(unsafe { C::view_mut_unchecked(&mut bytes[..layout.byte_length()], 0) })
 }

@@ -23,11 +23,11 @@ import { PointView } from "./generated/point.js";
 const point = PointView.create({ x: 1, y: 2, z: 3 });
 point.x = 4;
 
-const received = new PointView(point.bytes);
+const received = new PointView(point.storage.bytes);
 console.log(received.x); // 4
 ```
 
-`point.bytes` is a `Uint8Array`. The generated view reads and writes its backing
+`point.storage.bytes` is a `Uint8Array`. The generated view reads and writes its backing
 storage directly. Caller-provided buffers are supported by `createInPlace`.
 
 ## Documentation

@@ -28,38 +28,38 @@ int main() {
     static_assert(!std::is_same_v<left::SharedInput<>, right::SharedInput<>>);
     auto shared_alpha = left::SharedAlphaView::create(left::SharedAlphaInput<>{{11}});
     auto shared_beta = right::SharedBetaView::create(right::SharedBetaInput<>{{22}});
-    assert(shared_alpha.view().shared().value() == 11);
-    assert(shared_beta.view().shared().value() == 22);
+    assert(shared_alpha.view_unchecked().shared().value() == 11);
+    assert(shared_beta.view_unchecked().shared().value() == 22);
     auto custom_alpha = fixture::left::SharedView::create(fixture::left::SharedInput<>{33});
     auto custom_beta = fixture::right::SharedView::create(fixture::right::SharedInput<>{44});
-    assert(custom_alpha.view().value() == 33);
-    assert(custom_beta.view().value() == 44);
+    assert(custom_alpha.view_unchecked().value() == 33);
+    assert(custom_beta.view_unchecked().value() == 44);
     auto renamed = RenamedFieldView::create(annotation_fixture::RenamedField{7, {9}});
-    assert(renamed.view().exported_value() == 7);
-    assert(renamed.view().identifier().value() == 9);
+    assert(renamed.view_unchecked().exported_value() == 7);
+    assert(renamed.view_unchecked().identifier().value() == 9);
     auto alpha = AlphaView::create(AlphaInput<>{{1, 2}});
     auto beta = BetaView::create(BetaInput<>{{3, 4}});
-    assert(alpha.view().values().get(1) == 2);
-    assert(beta.view().values().get(0) == 3);
+    assert(alpha.view_unchecked().values().get(1) == 2);
+    assert(beta.view_unchecked().values().get(0) == 3);
     auto scalar = ScalarView::create(1.5f);
-    assert(scalar.view().value() == 1.5f);
+    assert(scalar.view_unchecked().value() == 1.5f);
     static_assert(AlignedView::alignment == 16);
     const std::array<std::byte, 4> bytes{std::byte{7}};
-    assert(ReadOnlyViewReadOnly(bytes).value() == 7);
-    AlphaViewReadOnly read_only(alpha.bytes());
+    assert(ReadOnlyViewReadOnly::from_bytes(bytes).value().value() == 7);
+    auto read_only = AlphaViewReadOnly::from_bytes(alpha.bytes()).value();
     assert(read_only.values().get(1) == 2);
     auto vectors = ProjectionsView::create(ProjectionsInput<>{{VectorInput<>{1, 2, 3}}});
-    assert(vectors.view().vectors().size() == 1);
-    assert(vectors.view().vectors().get(0).z() == 3);
-    vectors.view().vectors().get(0).set_y(9.0f);
-    assert(vectors.view().vectors().get(0).y() == 9);
+    assert(vectors.view_unchecked().vectors().size() == 1);
+    assert(vectors.view_unchecked().vectors().get(0).z() == 3);
+    vectors.view_unchecked().vectors().get(0).set_y(9.0f);
+    assert(vectors.view_unchecked().vectors().get(0).y() == 9);
     ContractsInput<> contract_input{
         ContractChildInput<>{1}, ContractChildInput<>{2}, ContractChildInput<>{3}, {4,5,6},
         std::make_unique<std::vector<ContractChildInput<>>>(std::initializer_list<ContractChildInput<>>{{7}}),
         ConstantChildInput<>{8}, IdentifierInput<>{9}, {IdentifierInput<>{10}, IdentifierInput<>{11}}, MaybeValueInput<>{std::nullopt}, LabelInput<>{"hello"}
     };
     auto contract = ContractsView::create(contract_input);
-    auto cv = contract.view();
+    auto cv = contract.view_unchecked();
     static_assert(IdentifierView::byte_size == 16);
     assert(cv.identifier().field_0() == 9 && cv.identifiers().get(1).field_0() == 11);
     cv.identifier().set_field_0(19u);
@@ -69,7 +69,7 @@ int main() {
     cv.fixed().set_value(33u);
     cv.read_only_nested().value().get(0).set_value(34u);
     assert(cv.write_only().value() == 31 && cv.read_only().value() == 32 && cv.fixed().value() == 33);
-    static_assert(!CanSetValue<decltype(ContractsViewReadOnly(contract.bytes()).editable())>);
+    static_assert(!CanSetValue<decltype(ContractsViewReadOnly::from_bytes(contract.bytes()).value().editable())>);
     static_assert(CanSetValue<decltype(cv.read_only())>);
     static_assert(CanSetValue<decltype(cv.fixed())>);
     static_assert(CanSetValue<decltype(cv.read_only_nested().value().get(0))>);
@@ -78,15 +78,15 @@ int main() {
     FixedArraysInput<> input{{1, 2, 3}, {4, 5, 6, 7}, {{{8, 9, 10}, {11, 12, 13}}},
         std::array<float, 3>{14, 15, 16}, std::nullopt, {17, 18, 19}};
     auto arrays = FixedArraysView::create(input);
-    auto three = arrays.view().three();
+    auto three = arrays.view_unchecked().three();
     static_assert(decltype(three)::extent == 3);
-    static_assert(decltype(arrays.view().four())::extent == 4);
-    static_assert(decltype(arrays.view().matrix())::extent == 2);
-    static_assert(decltype(arrays.view().matrix().get(0))::extent == 3);
-    assert(three.get(2) == 3 && arrays.view().matrix().get(1).get(2) == 13);
-    assert(arrays.view().present().value().get(2) == 16 && !arrays.view().absent());
+    static_assert(decltype(arrays.view_unchecked().four())::extent == 4);
+    static_assert(decltype(arrays.view_unchecked().matrix())::extent == 2);
+    static_assert(decltype(arrays.view_unchecked().matrix().get(0))::extent == 3);
+    assert(three.get(2) == 3 && arrays.view_unchecked().matrix().get(1).get(2) == 13);
+    assert(arrays.view_unchecked().present().value().get(2) == 16 && !arrays.view_unchecked().absent());
     three.set(1, 20.0f);
-    assert(arrays.view().three().get(1) == 20);
+    assert(arrays.view_unchecked().three().get(1) == 20);
 
     // Native C arrays and a variant payload with its own member named value.
     namespace codecs = intrlay_generated::codecs;
@@ -95,8 +95,8 @@ int main() {
     auto generated = codecs::CodecCasesView::create(
         codecs::CodecCasesInput<>{{1, 2, 3}, {codecs::ValueRecordInput<>{7, "payload"}}});
     assert(std::ranges::equal(native.bytes(), generated.bytes()));
-    assert(native.view().raw().get(2) == 3);
-    auto payload = native.view().choice().as_value_record().value();
+    assert(native.view_unchecked().raw().get(2) == 3);
+    auto payload = native.view_unchecked().choice().as_value_record().value();
     assert(payload.value() == 7 && payload.label() == "payload");
 
     // Duplicate payload types are selected by index, never by type.
@@ -106,14 +106,14 @@ int main() {
     generated_end.value.emplace<1>(codecs::ValueRecordInput<>{9, "end"});
     auto end_copy = codecs::EndpointsView::create(generated_end);
     assert(std::ranges::equal(end.bytes(), end_copy.bytes()));
-    assert(end.view().tag() == 1 && !end.view().as_start());
-    assert(end.view().as_end()->value() == 9 && end.view().as_end()->label() == "end");
+    assert(end.view_unchecked().tag() == 1 && !end.view_unchecked().as_start());
+    assert(end.view_unchecked().as_end()->value() == 9 && end.view_unchecked().as_end()->label() == "end");
 
     // A custom traits string retains embedded NUL characters and matches std::string.
     const codec_fixture::Text text{{"a\0b", 3}};
     auto encoded_text = codecs::TextView::create(text);
     auto ordinary_text = codecs::TextView::create(codecs::TextInput<>{std::string("a\0b", 3)});
     assert(std::ranges::equal(encoded_text.bytes(), ordinary_text.bytes()));
-    assert(encoded_text.view().value() == std::string_view("a\0b", 3));
-    assert(codecs::TextView::create(codec_fixture::Text{}).view().value().empty());
+    assert(encoded_text.view_unchecked().value() == std::string_view("a\0b", 3));
+    assert(codecs::TextView::create(codec_fixture::Text{}).view_unchecked().value().empty());
 }

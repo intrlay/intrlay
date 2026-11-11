@@ -6,13 +6,13 @@ from bindings import MessageView, MaybeScalarView, NestedView, BoxedLeafView, No
 from intrlay import Some, zeroed
 
 view = MessageView.create(dict(before=123, fixed=dict(maybe=None, nested=Some(None), choice=dict(kind=ChoiceKind.Empty)), items=[None], text="preserved", after=456))
-alias = MessageView(view.buffer)
+alias = MessageView(view.storage.bytes)
 fixed = alias.fixed
 assert fixed.maybe is None and fixed.nested.value is None
 assert fixed.choice.child_leaf is None
 leaf = dict(number=7, scalar=8)
 boxed = BoxedLeafView.create(None)
-boxed_alias = BoxedLeafView(boxed.buffer)
+boxed_alias = BoxedLeafView(boxed.storage.bytes)
 assert boxed_alias.value is None
 boxed.set(leaf)
 assert boxed_alias.value.number == 7
@@ -38,7 +38,7 @@ assert alias.items[0].number == 7
 view.items[0] = None
 assert alias.items[0] is None
 scalar = MaybeScalarView.create(None)
-no_factory = NoFactoryView(scalar.buffer)
+no_factory = NoFactoryView(scalar.storage.bytes)
 no_factory.replace(dict(value=17))
 assert scalar.value == 17
 scalar.value = 42
@@ -46,17 +46,17 @@ assert scalar.value == 42
 scalar.value = None
 assert scalar.value is None
 nested = NestedView.create(None)
-other = NestedView(nested.buffer)
+other = NestedView(nested.storage.bytes)
 assert other.value is None
 nested.replace(Some(leaf))
 assert other.value.value.number == 7
 nested.replace(Some(None))
 assert other.value.value is None
 empty_payloads = EmptyPayloadsView.create(dict(empty=[], nested=[[], []], number=1))
-empty_alias = EmptyPayloadsView(empty_payloads.buffer)
+empty_alias = EmptyPayloadsView(empty_payloads.storage.bytes)
 replacement = dict(empty=[], nested=[[], []], number=2)
 empty_payloads.replace(replacement)
-assert empty_alias.number == 2 and bytes(empty_alias.buffer) == b"\x02\x00\x00\x00"
+assert empty_alias.number == 2 and bytes(empty_alias.storage.bytes) == b"\x02\x00\x00\x00"
 assert len(empty_alias.empty) == 0 and len(empty_alias.nested) == 2
 assert len(empty_alias.nested[1]) == 0
 view.fixed.choice.replace(dict(kind=ChoiceKind.EmptyArrays, data=replacement))

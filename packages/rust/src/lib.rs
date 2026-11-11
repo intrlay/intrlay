@@ -8,9 +8,9 @@
 //! including through nested inputs. Safe borrows enforce this; unsafe and FFI
 //! callers must preserve it. No runtime overlap check is performed.
 //!
-//! Foreign buffers enter through an explicit unsafe contract. No recursive
-//! validation, transport, allocator negotiation, or runtime schema lookup occurs
-//! when a view is opened.
+//! Checked view constructors validate foreign buffers once; explicit unchecked
+//! constructors retain the trusted-buffer path. Field reads do not repeat that
+//! validation or perform runtime schema lookup.
 
 #[allow(
     unused_extern_crates,
@@ -18,26 +18,31 @@
 )]
 extern crate self as intrlay;
 
+pub mod adapters;
 mod buffer;
 mod builtins;
 mod codec;
+mod decode;
 mod exports;
 mod initialization;
 mod sequence;
 mod source;
+mod validation;
 mod value_view;
 
-pub use buffer::{BufferLayout, EncodeError, OwnedBuffer, SizeCursor, Writer};
+pub use buffer::{BufferLayout, EncodeError, OwnedBuffer, OwnedBytes, SizeCursor, Writer};
 pub use builtins::{Scalar, ScalarMut};
 pub use codec::{
     Intrlay, compute_layout, compute_layout_from, create, create_from, create_in_place,
     create_in_place_from, write_from, write_into,
 };
+pub use decode::{DecodeError, Decoder};
 pub use initialization::Initialization;
 pub use intrlay_layout as layout;
 pub use intrlay_schema as schema;
 pub use sequence::{SequenceMut, SequenceView};
 pub use source::{BoxInput, EncodeSource, SequenceInput, ValueSource, Zeroed, ZeroedSequence};
+pub use validation::{StableBytes, Validator};
 pub use value_view::ValueView;
 
 #[cfg(feature = "derive")]
@@ -51,6 +56,8 @@ pub type Map<C> = Vec<C>;
 /// Support used by generated code; not a native-reference access API.
 #[doc(hidden)]
 pub mod __private {
+    pub use crate::decode::fixed_decode_depth;
+
     /// Copies an initialized, byte-identical native value into its encoded header.
     ///
     /// # Safety

@@ -18,18 +18,18 @@ assert scalar.value == 2.5
 # Public keyword names remain stable even when a layout does not use the input.
 assert ScalarView.compute_byte_length(value=1.5) == 4
 creation = CreateOnlyView.create({'count': 7, 'label': 'created', 'fixed': [2, 5], 'optional': 11})
-owner = bytearray(16) + bytes(creation.buffer)
+owner = bytearray(16) + bytes(creation.storage.bytes)
 borrowed_creation = CreateOnlyView(buffer=owner, offset=16)
-assert borrowed_creation.buffer.obj is owner
+assert borrowed_creation.storage.bytes.obj is owner
 assert not hasattr(borrowed_creation, '_offset')
-unit_fields = UnitFieldsView.create([{'marker': None, 'value': 42}])
+unit_fields = UnitFieldsView.create({'values': [{'marker': None, 'value': 42}]}).values
 assert unit_fields.get_marker(index=0) is None
 assert unit_fields.get_value(index=0) == 42
 
 access = AccessModesView.create({'read_only': 1, 'write_only': 2})
 assert access.read_only == 1
 access.set_write_only(7)
-assert access.buffer.tobytes() == b'\x01\0\0\0\x07\0\0\0'
+assert access.storage.bytes.tobytes() == b'\x01\0\0\0\x07\0\0\0'
 assert not hasattr(access, 'write_only')
 try:
     access.read_only = 3
@@ -42,7 +42,7 @@ value = [None, {'x': 1.0, 'y': 2.0}]
 size = OptionalPointsView.compute_byte_length(value)
 buffer = bytearray(size)
 view = OptionalPointsView.create_in_place(buffer, value)
-assert view.buffer.obj is buffer
+assert view.storage.bytes.obj is buffer
 assert view[0] is None
 point = view[1]
 assert point is not None and point.x == 1.0
@@ -50,9 +50,9 @@ point.y = 3.0
 assert OptionalPointsView(buffer)[1].y == 3.0
 
 # NestedInput views reuse the storage and its typed casts.
-assert point._storage is view._storage
-assert point._storage.f32 is view._storage.f32
-assert point._storage.f32.obj is buffer
+assert point.storage is view.storage
+assert point.storage.f32 is view.storage.f32
+assert point.storage.f32.obj is buffer
 
 # Native numeric views cover all supported widths without signedness changes.
 numeric_value = dict(
@@ -64,7 +64,7 @@ numeric_value = dict(
 )
 reference = (Path(__file__).resolve().parents[2] / 'target/python-types/numeric.bin').read_bytes()
 numeric = NumericValuesView.create(numeric_value)
-assert bytes(numeric.buffer) == reference
+assert bytes(numeric.storage.bytes) == reference
 assert len(reference) % 8 != 0  # The final string does not pad to a numeric width.
 for field, expected in numeric_value.items():
     assert getattr(numeric, field) == expected
@@ -91,7 +91,7 @@ owner = bytearray([0xA5]) * (size + alignment * 3)
 address = ctypes.addressof(ctypes.c_char.from_buffer(owner))
 start = alignment + (-address % alignment)
 borrowed = NumericValuesView.create_in_place(memoryview(owner)[start:start + size], numeric_value)
-assert borrowed.buffer.obj is owner
+assert borrowed.storage.bytes.obj is owner
 assert owner[:start] == bytes([0xA5]) * start
 assert owner[start + size:] == bytes([0xA5]) * (len(owner) - start - size)
 offset_view = NumericValuesView(owner, start)

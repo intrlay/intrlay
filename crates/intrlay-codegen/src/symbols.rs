@@ -75,10 +75,16 @@ pub(crate) fn runtime_symbol(plan: &TypeGraph, key: &str) -> Result<String, Gene
     let names = &plan.names;
     let result = match key {
         "byte_size" | "alignment" => names.constant(key),
-        "create" | "create_in_place" | "compute_byte_length" | "from_sources" => {
-            names.method(key, true)
-        }
+        "create"
+        | "create_in_place"
+        | "compute_byte_length"
+        | "from_sources"
+        | "from_bytes"
+        | "from_parts"
+        | "from_bytes_unchecked"
+        | "from_parts_unchecked" => names.method(key, true),
         "get"
+        | "copy_to"
         | "set"
         | "replace"
         | "string_at"
@@ -113,6 +119,12 @@ pub(crate) fn runtime_symbol(plan: &TypeGraph, key: &str) -> Result<String, Gene
             SymbolKind::Function,
             Some(Visibility::Internal),
             &[],
+        ),
+        "storage" if !plan.backend.language.has_value_types() => names.symbol(
+            key,
+            SymbolKind::Field,
+            Some(Visibility::Public),
+            &[Modifier::Readonly],
         ),
         "buffer" | "offset" | "storage" | "element_offset" | "element_count" | "first_element"
         | "optional_storage" => names.symbol(

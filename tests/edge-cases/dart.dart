@@ -8,8 +8,8 @@ void main() {
   const values = ['', 'hello', '\uFEFF', '\uFEFFhello', '\uFEFF\uFEFFhello', 'a\uFEFFb', '한글😀'];
   final text = bindings.TextView.create(const bindings.TextInput(values: values));
   final golden = File('target/edge-cases/text.bin').readAsBytesSync();
-  check(text.bytes.length == golden.length);
-  for (var i = 0; i < golden.length; i++) check(text.bytes[i] == golden[i]);
+  check(text.storage.bytes.length == golden.length);
+  for (var i = 0; i < golden.length; i++) check(text.storage.bytes[i] == golden[i]);
   final root = bindings.EdgeCasesView(File('target/edge-cases/golden.bin').readAsBytesSync());
   for (var i = 0; i < values.length; i++) {
     check(text.values[i] == values[i]);
@@ -25,7 +25,7 @@ void main() {
     check(root.projection.many.getX(i) == 3);
     root.projection.many.setX(i, 20);
   }
-  check(bindings.EdgeCasesView(root.bytes).projection.many.getX(0) == 20);
+  check(bindings.EdgeCasesView(root.storage.bytes).projection.many.getX(0) == 20);
   check(bindings.NestedView(File('target/edge-cases/absent-0.bin').readAsBytesSync()).child == null);
   check(bindings.NestedView(File('target/edge-cases/absent-1.bin').readAsBytesSync()).child!.value == null);
   check(bindings.NestedView(File('target/edge-cases/absent-2.bin').readAsBytesSync()).child!.value!.value == null);

@@ -1,26 +1,29 @@
 import 'package:intrlay/intrlay.dart' as intrlay;
 import 'dart:io';
+import 'dart:typed_data';
 import '../../target/reference-fixes/bindings.dart';
 
 void check(bool condition) {
   if (!condition) throw StateError('reference load regression');
 }
 
+Float32List padded(double value) => Float32List.fromList([value, 0, 0, 0]);
+
 void main() {
   final input = FixtureInput(
     custom: AEnumerateInput(value: 1), deep: 7, nested: Some(8), absent: null,
     missingInner: Some(null), values: [9],
-    items: [ItemInput(scalar: 10, child: Some(ChildInput(value: 11)), projected: Some(12.0))],
-    cached: Some(ChildInput(value: 13)), projected: Some(14.0), lanes: intrlay.SequenceInput.from([15.0, 16.0]),
+    items: [ItemInput(scalar: 10, child: Some(ChildInput(value: 11)), projected: Some(padded(12.0)))],
+    cached: Some(ChildInput(value: 13)), projected: Some(padded(14.0)), lanes: intrlay.SequenceInput.from(Float32List.fromList([15, 0, 0, 0, 16, 0, 0, 0])),
     choice: ChoiceSelectedInput(scalar: Some(17), child: Some(ChildInput(value: 18))),
-    inactive: ChoiceEmptyInput(), before: 19, empty: EmptyInput(), after: 20,
-    emptyItems: intrlay.SequenceInput.from([EmptyInput(), EmptyInput()]), readOnly: Some(21),
+    inactive: ChoiceEmptyInput(), before: 19, empty: Float32List(0), after: 20,
+    emptyItems: intrlay.SequenceInput.zeroed(2), readOnly: Some(21),
   );
   final view = FixtureView.create(input);
   final expected = File('target/reference-fixes/fixture.bin').readAsBytesSync();
-  check(view.bytes.length == expected.length);
+  check(view.storage.bytes.length == expected.length);
   for (var index = 0; index < expected.length; ++index) {
-    check(view.bytes[index] == expected[index]);
+    check(view.storage.bytes[index] == expected[index]);
   }
   check(view.deep == 7 && view.nested!.value == 8);
   check(view.absent == null && view.missingInner!.value == null);
@@ -30,7 +33,7 @@ void main() {
   final cached = view.cached;
   check(identical(cached, view.cached));
   cached!.value!.value = 23;
-  check(FixtureView(view.bytes).cached!.value!.value == 23);
+  check(FixtureView(view.storage.bytes).cached!.value!.value == 23);
   check(view.projected!.value![0] == 14.0);
   check(identical(view.projected, view.projected));
   check(view.lanes.length == 8 && view.lanes[0] == 15 && view.lanes[4] == 16);

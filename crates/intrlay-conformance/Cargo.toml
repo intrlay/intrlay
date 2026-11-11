@@ -9,10 +9,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-intrlay.workspace = true
+intrlay = { workspace = true, features = ["glam-0-33", "glam-0-34", "smol_str", "smallvec"] }
 intrlay-codegen.workspace = true
 intrlay-schema.workspace = true
 serde_json.workspace = true
+glam = "0.34"
+smol_str = "0.3"
+smallvec = "1.16"
 
 [lints]
 workspace = true

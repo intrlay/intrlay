@@ -1,6 +1,6 @@
 {
   "name": "@intrlay/runtime",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "description": "Typed storage for generated Intrlay memory views",
   "repository": {
@@ -20,7 +20,9 @@
     "CHANGELOG.md",
     "LICENSE*"
   ],
-  "sideEffects": ["./dist/storage.js"],
+  "sideEffects": [
+    "./dist/storage.js"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build"

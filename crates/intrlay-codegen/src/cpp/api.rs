@@ -1,17 +1,23 @@
 use crate::{
-    api::{Accessor, AccessorContext, ApiPolicy},
+    api::{Accessor, AccessorContext, ApiPolicy, DefaultApi},
     plan::{Field, TypeGraph, Variant},
 };
 
 pub(super) struct Api;
 
 impl ApiPolicy for Api {
-    fn variant_accessor(&self, plan: &TypeGraph, field: &Field, variant: &Variant) -> String {
+    fn variant_accessor(
+        &self,
+        plan: &TypeGraph,
+        field: &Field,
+        variant: &Variant,
+        readonly: bool,
+    ) -> String {
         if variant.synthetic_payload {
-            plan.names.member(&format!("as_{}", variant.name))
-        } else {
             plan.names
-                .member(&format!("{}_{}", variant.name, field.name))
+                .property(&format!("as_{}", variant.name_source()), readonly)
+        } else {
+            DefaultApi.variant_accessor(plan, field, variant, readonly)
         }
     }
 
@@ -28,7 +34,9 @@ impl ApiPolicy for Api {
         if let Some(variant) = context.variant.filter(|variant| variant.synthetic_payload)
             && let Some(setter) = &mut accessor.setter
         {
-            setter.name = plan.names.method(&format!("set_{}", variant.name), false);
+            setter.name = plan
+                .names
+                .method(&format!("set_{}", variant.name_source()), false);
         }
     }
 }

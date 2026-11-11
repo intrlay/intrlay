@@ -11,6 +11,7 @@
 /tests/rust-generated/target/
 /tests/compositions/rust/target/
 /tests/edge-cases/rust/target/
+/tests/library-adapters/rust/target/
 /packages/*/LICENSE*
 /crates/*/LICENSE*
 /packages/*/CHANGELOG.md

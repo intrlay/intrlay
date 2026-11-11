@@ -14,12 +14,17 @@ impl ApiPolicy for Api {
         }
     }
 
-    fn variant_accessor(&self, plan: &TypeGraph, field: &Field, variant: &Variant) -> String {
+    fn variant_accessor(
+        &self,
+        plan: &TypeGraph,
+        field: &Field,
+        variant: &Variant,
+        readonly: bool,
+    ) -> String {
         if variant.synthetic_payload {
-            plan.names.property(&variant.name, true)
+            plan.names.property(variant.name_source(), readonly)
         } else {
-            plan.names
-                .property(&format!("{}_{}", variant.name, field.name), true)
+            DefaultApi.variant_accessor(plan, field, variant, readonly)
         }
     }
 }

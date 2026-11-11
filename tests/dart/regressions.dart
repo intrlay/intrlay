@@ -14,9 +14,9 @@ void main() {
     choice: outbound.InternalChoiceRecordInput(payload: outbound.InternalRecordInput(value: 9, label: 'variant')),
   );
   final packet = outbound.OutboundPacketView.create(outboundInput);
-  final packetInPlace = outbound.OutboundPacketView.createInPlace(Uint8List(packet.bytes.length), outboundInput);
-  expectBytes(packet.bytes, packetInPlace.bytes);
-  final view = ProjectionsView.create(ProjectionsInput(vectors: intrlay.SequenceInput.from([VectorInput(x: 1, y: 2, z: 3)])));
+  final packetInPlace = outbound.OutboundPacketView.createInPlace(Uint8List(packet.storage.bytes.length), outboundInput);
+  expectBytes(packet.storage.bytes, packetInPlace.storage.bytes);
+  final view = ProjectionsView.create(ProjectionsInput(vectors: intrlay.SequenceInput.from([1, 2, 3, 0])));
   final lanes = view.vectors;
   if (lanes.length != 4 || lanes[2] != 3 || lanes[3] != 0) throw StateError('padded projection');
   lanes[1] = 9;
@@ -37,9 +37,9 @@ void main() {
   numericCopies();
   const creationInput = storage.CreateOnlyInput(count: 7, label: 'created', fixed: intrlay.FixedArrayInput.from([2, 5]), optional: 11);
   final created = storage.CreateOnlyView.create(creationInput);
-  final inPlace = storage.CreateOnlyView.createInPlace(Uint8List(created.bytes.length), creationInput);
-  expectBytes(inPlace.bytes, created.bytes);
-  if (storage.CreateOnlyView.computeByteLength(creationInput) != created.bytes.length) throw StateError('create-only layout');
+  final inPlace = storage.CreateOnlyView.createInPlace(Uint8List(created.storage.bytes.length), creationInput);
+  expectBytes(inPlace.storage.bytes, created.storage.bytes);
+  if (storage.CreateOnlyView.computeByteLength(creationInput) != created.storage.bytes.length) throw StateError('create-only layout');
   final zeroArray = storage.ZeroArrayView(Uint8List(0));
   zeroArray.setValues(const intrlay.FixedArrayInput<storage.ZeroPayloadInput>.from([]));
   zeroArray.replace(const storage.ZeroArrayInput(values: intrlay.FixedArrayInput.from([])));
@@ -64,75 +64,75 @@ void numericCopies() {
   final positive = List<int>.generate(512, (i) => i % 256);
   final real = List<double>.generate(512, (i) => i.isEven ? -0.0 : i / 3);
   checkNumeric<int>(Int8List.fromList(signed),
-      (v) => numeric.I8View.create(intrlay.SequenceInput.from(v)).bytes);
+      (v) => numeric.I8View.create(intrlay.SequenceInput.from(v)).storage.bytes);
   checkNumeric<int>(Uint8List.fromList(positive),
-      (v) => numeric.U8View.create(intrlay.SequenceInput.from(v)).bytes);
+      (v) => numeric.U8View.create(intrlay.SequenceInput.from(v)).storage.bytes);
   checkNumeric<int>(Int16List.fromList(signed),
-      (v) => numeric.I16View.create(intrlay.SequenceInput.from(v)).bytes);
+      (v) => numeric.I16View.create(intrlay.SequenceInput.from(v)).storage.bytes);
   checkNumeric<int>(Uint16List.fromList(positive),
-      (v) => numeric.U16View.create(intrlay.SequenceInput.from(v)).bytes);
+      (v) => numeric.U16View.create(intrlay.SequenceInput.from(v)).storage.bytes);
   checkNumeric<int>(Int32List.fromList(signed),
-      (v) => numeric.I32View.create(intrlay.SequenceInput.from(v)).bytes);
+      (v) => numeric.I32View.create(intrlay.SequenceInput.from(v)).storage.bytes);
   checkNumeric<int>(Uint32List.fromList(positive),
-      (v) => numeric.U32View.create(intrlay.SequenceInput.from(v)).bytes);
+      (v) => numeric.U32View.create(intrlay.SequenceInput.from(v)).storage.bytes);
   checkNumeric<double>(Float32List.fromList(real),
-      (v) => numeric.F32View.create(intrlay.SequenceInput.from(v)).bytes);
+      (v) => numeric.F32View.create(intrlay.SequenceInput.from(v)).storage.bytes);
   checkNumeric<double>(Float64List.fromList(real),
-      (v) => numeric.F64View.create(intrlay.SequenceInput.from(v)).bytes);
+      (v) => numeric.F64View.create(intrlay.SequenceInput.from(v)).storage.bytes);
   if (!const bool.fromEnvironment('dart.library.js_interop')) {
     checkNumeric<int>(Int64List.fromList(signed),
-        (v) => numeric.I64View.create(intrlay.SequenceInput.from(v)).bytes);
+        (v) => numeric.I64View.create(intrlay.SequenceInput.from(v)).storage.bytes);
     checkNumeric<int>(Uint64List.fromList(positive),
-        (v) => numeric.U64View.create(intrlay.SequenceInput.from(v)).bytes);
-    expectBytes(numeric.FixedWideShortView.create(intrlay.FixedArrayInput.from(Int64List.fromList([-1, 1]))).bytes,
-        numeric.FixedWideShortView.create(const intrlay.FixedArrayInput.from([-1, 1])).bytes);
-    expectBytes(numeric.FixedWideLongView.create(intrlay.FixedArrayInput.from(Int64List.fromList(signed.sublist(0, 16)))).bytes,
-        numeric.FixedWideLongView.create(intrlay.FixedArrayInput.from(signed.sublist(0, 16))).bytes);
+        (v) => numeric.U64View.create(intrlay.SequenceInput.from(v)).storage.bytes);
+    expectBytes(numeric.FixedWideShortView.create(intrlay.FixedArrayInput.from(Int64List.fromList([-1, 1]))).storage.bytes,
+        numeric.FixedWideShortView.create(const intrlay.FixedArrayInput.from([-1, 1])).storage.bytes);
+    expectBytes(numeric.FixedWideLongView.create(intrlay.FixedArrayInput.from(Int64List.fromList(signed.sublist(0, 16)))).storage.bytes,
+        numeric.FixedWideLongView.create(intrlay.FixedArrayInput.from(signed.sublist(0, 16))).storage.bytes);
   }
 
   // A different numeric lane still converts rather than copying its bytes.
   checkNumeric<double>(Float64List.fromList(real),
-      (v) => numeric.F32View.create(intrlay.SequenceInput.from(v)).bytes);
+      (v) => numeric.F32View.create(intrlay.SequenceInput.from(v)).storage.bytes);
   checkNumeric<int>(Int16List.fromList(signed),
-      (v) => numeric.U16View.create(intrlay.SequenceInput.from(v)).bytes);
+      (v) => numeric.U16View.create(intrlay.SequenceInput.from(v)).storage.bytes);
   checkNumeric<int>(Uint32List.fromList(positive),
-      (v) => numeric.I32View.create(intrlay.SequenceInput.from(v)).bytes);
+      (v) => numeric.I32View.create(intrlay.SequenceInput.from(v)).storage.bytes);
 
   final padded = Float32List.fromList([99.0, ...real, 99.0]);
   final largeSource = Float32List.sublistView(padded, 1, 513).asUnmodifiableView();
-  final largeExpected = numeric.FixedBulkView.create(intrlay.FixedArrayInput.from(List<double>.of(largeSource))).bytes;
-  expectBytes(numeric.FixedBulkView.create(intrlay.FixedArrayInput.from(largeSource)).bytes, largeExpected);
+  final largeExpected = numeric.FixedBulkView.create(intrlay.FixedArrayInput.from(List<double>.of(largeSource))).storage.bytes;
+  expectBytes(numeric.FixedBulkView.create(intrlay.FixedArrayInput.from(largeSource)).storage.bytes, largeExpected);
   final largeOwner = Uint8List(largeExpected.length + 16)..fillRange(0, largeExpected.length + 16, 0xa5);
   final largeActual = numeric.FixedBulkView.createInPlace(
       Uint8List.sublistView(largeOwner, 8, largeOwner.length - 8), intrlay.FixedArrayInput.from(largeSource));
-  expectBytes(largeActual.bytes, largeExpected);
+  expectBytes(largeActual.storage.bytes, largeExpected);
   if (largeOwner.take(8).any((v) => v != 0xa5) || largeOwner.skip(largeOwner.length - 8).any((v) => v != 0xa5)) {
     throw StateError('bulk copy changed bytes outside the output');
   }
   if (Endian.host == Endian.little) {
     final words = Uint32List(512)..fillRange(0, 512, 0x7fa12345);
     final nanValues = Float32List.view(words.buffer);
-    expectBytes(numeric.FixedBulkView.create(intrlay.FixedArrayInput.from(nanValues)).bytes,
+    expectBytes(numeric.FixedBulkView.create(intrlay.FixedArrayInput.from(nanValues)).storage.bytes,
         words.buffer.asUint8List());
   }
   final source = Float32List.sublistView(padded, 1, 129).asUnmodifiableView();
-  final expected = numeric.FixedLongView.create(intrlay.FixedArrayInput.from(List<double>.of(source))).bytes;
+  final expected = numeric.FixedLongView.create(intrlay.FixedArrayInput.from(List<double>.of(source))).storage.bytes;
   final owner = Uint8List(expected.length + 16)..fillRange(0, expected.length + 16, 0xa5);
   final actual = numeric.FixedLongView.createInPlace(
       Uint8List.sublistView(owner, 8, owner.length - 8), intrlay.FixedArrayInput.from(source));
-  expectBytes(actual.bytes, expected);
+  expectBytes(actual.storage.bytes, expected);
   if (owner.take(8).any((v) => v != 0xa5) || owner.skip(owner.length - 8).any((v) => v != 0xa5)) {
     throw StateError('bulk copy changed bytes outside the output');
   }
-  expectBytes(numeric.FixedShortView.create(intrlay.FixedArrayInput.from(Float32List.fromList([1.25, -0.0]))).bytes,
-      numeric.FixedShortView.create(const intrlay.FixedArrayInput.from([1.25, -0.0])).bytes);
-  expectBytes(numeric.FixedMediumView.create(intrlay.FixedArrayInput.from(Float32List.sublistView(source, 0, 16))).bytes,
-      numeric.FixedMediumView.create(intrlay.FixedArrayInput.from(source.sublist(0, 16))).bytes);
-  expectBytes(numeric.FixedBytesShortView.create(intrlay.FixedArrayInput.from(Uint8List.fromList([0, 255]))).bytes,
-      numeric.FixedBytesShortView.create(const intrlay.FixedArrayInput.from([0, 255])).bytes);
-  expectBytes(numeric.FixedBytesLongView.create(intrlay.FixedArrayInput.from(Uint8List.fromList(positive.sublist(0, 128)))).bytes,
+  expectBytes(numeric.FixedShortView.create(intrlay.FixedArrayInput.from(Float32List.fromList([1.25, -0.0]))).storage.bytes,
+      numeric.FixedShortView.create(const intrlay.FixedArrayInput.from([1.25, -0.0])).storage.bytes);
+  expectBytes(numeric.FixedMediumView.create(intrlay.FixedArrayInput.from(Float32List.sublistView(source, 0, 16))).storage.bytes,
+      numeric.FixedMediumView.create(intrlay.FixedArrayInput.from(source.sublist(0, 16))).storage.bytes);
+  expectBytes(numeric.FixedBytesShortView.create(intrlay.FixedArrayInput.from(Uint8List.fromList([0, 255]))).storage.bytes,
+      numeric.FixedBytesShortView.create(const intrlay.FixedArrayInput.from([0, 255])).storage.bytes);
+  expectBytes(numeric.FixedBytesLongView.create(intrlay.FixedArrayInput.from(Uint8List.fromList(positive.sublist(0, 128)))).storage.bytes,
       positive.sublist(0, 128));
-  expectBytes(numeric.FixedLongView.create(intrlay.FixedArrayInput.zeroed()).bytes, Uint8List(512));
+  expectBytes(numeric.FixedLongView.create(intrlay.FixedArrayInput.zeroed()).storage.bytes, Uint8List(512));
   try {
     numeric.FixedLongView.create(intrlay.FixedArrayInput.from(Float32List(127)));
     throw StateError('bulk copy skipped fixed extent validation');
@@ -142,7 +142,7 @@ void numericCopies() {
   final nested = numeric.NestedView.create(intrlay.FixedArrayInput.from([
     intrlay.FixedArrayInput.from(source), intrlay.FixedArrayInput.from(source),
   ]));
-  expectBytes(nested.bytes, [...expected, ...expected]);
+  expectBytes(nested.storage.bytes, [...expected, ...expected]);
 
   // Borrowed views can begin at an unaligned offset; their writer uses ByteData.
   final unaligned = Uint8List(519)..fillRange(0, 519, 0xa5);

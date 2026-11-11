@@ -12,9 +12,9 @@ fn numeric_views_and_decoding_preserve_unaligned_bits() {
                 let mut storage = vec![0xa5; offset + encoded.len()];
                 storage[offset..].copy_from_slice(&encoded);
                 // SAFETY: All bytes of this numeric encoding are initialized and in bounds.
-                let actual = unsafe { <$ty as Intrlay>::view(&storage, offset) };
+                let actual = unsafe { <$ty as Intrlay>::view_unchecked(&storage, offset) };
                 // SAFETY: Decode borrows the same complete valid numeric encoding.
-                let decoded = unsafe { <$ty as Intrlay>::decode(&storage, offset) };
+                let decoded = unsafe { <$ty as Intrlay>::decode_unchecked(&storage, offset) };
                 assert_eq!(actual.to_le_bytes(), encoded);
                 assert_eq!(decoded.to_le_bytes(), encoded);
                 assert_eq!(

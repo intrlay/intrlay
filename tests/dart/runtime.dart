@@ -5,6 +5,7 @@ import 'package:intrlay/intrlay.dart';
 void main() {
   checkBulkClearing();
   checkNumericWrites();
+  checkStringRanges();
   final texts = ['', 'plain ASCII', 'héllo', '한글', '🦀', 'a🦀b',
     '\ud800', '\udc00', '\ud800\ud800', '\udc00\ud800', '\ud800a\udc00'];
   for (final text in texts) {
@@ -70,6 +71,42 @@ void main() {
   if (wideBytes[7] != 0xcc || wideBytes[40] != 0xcc) throw StateError('64-bit view bounds');
   if (uint64View(wideBytes.buffer, 0, 0).isNotEmpty) throw StateError('empty 64-bit view');
   print('Dart runtime: UTF-8 sizes, borrowed storage, and 64-bit values passed');
+}
+
+void checkStringRanges() {
+  Storage storageFor(List<int> encoded) {
+    // Both the storage and string start inside a larger allocation. Invalid
+    // surrounding UTF-8 must not participate in the string's byte range.
+    final owner = Uint8List(encoded.length + 32)..fillRange(0, encoded.length + 32, 0xff);
+    final bytes = Uint8List.sublistView(owner, 5, owner.length - 5);
+    final data = ByteData.sublistView(bytes);
+    data.setUint32(3, 16, Endian.little);
+    data.setUint32(7, encoded.length, Endian.little);
+    bytes.setRange(19, 19 + encoded.length, encoded);
+    return Storage(bytes);
+  }
+
+  for (final text in ['', 'ASCII', 'héllo', '한글 🦀', '\u0000', '\uFEFF', '\uFEFFtext', '\uFEFF\uFEFFtext']) {
+    final storage = storageFor(utf8.encode(text));
+    if (storage.stringAt(3) != text) throw StateError('UTF-8 range or BOM preservation');
+  }
+  for (final encoded in [[0xc3], [0xff], [0xc0, 0xaf], [0xed, 0xa0, 0x80], [0xf4, 0x90, 0x80, 0x80]]) {
+    try {
+      storageFor(encoded).stringAt(3);
+      throw StateError('accepted malformed UTF-8');
+    } on FormatException { /* Expected strict decoding. */ }
+  }
+  final truncated = storageFor([0xc3, 0xa9]);
+  truncated.data.setUint32(7, 1, Endian.little);
+  try {
+    truncated.stringAt(3);
+    throw StateError('UTF-8 decoder read beyond the declared string');
+  } on FormatException { /* The continuation byte is outside the string. */ }
+  truncated.data.setUint32(7, truncated.bytes.length, Endian.little);
+  try {
+    truncated.stringAt(3);
+    throw StateError('accepted an out-of-bounds string');
+  } on RangeError { /* The byte range must fit in the borrowed storage. */ }
 }
 
 void checkBulkClearing() {

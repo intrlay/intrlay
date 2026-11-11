@@ -29,10 +29,23 @@ fn zeroed_inputs_fill_nested_arrays_and_reused_storage() -> Result<(), EncodeErr
         intrlay::create_from::<Batch>(&input)?.as_ref(),
         expected.as_ref()
     );
-    let mut reused = vec![0xa5; expected.as_ref().len() + 16];
-    intrlay::create_in_place_from::<Batch>(&input, &mut reused)?;
-    assert_eq!(&reused[..expected.as_ref().len()], expected.as_ref());
-    assert_eq!(&reused[expected.as_ref().len()..], &[0xa5; 16]);
+    let capacity = intrlay::SizeCursor::new(intrlay::layout::Layout::new(
+        (expected.as_ref().len() + 16).next_multiple_of(expected.layout().alignment()),
+        expected.layout().alignment(),
+    ))?
+    .finish();
+    let mut reused = intrlay::OwnedBuffer::new(capacity)?;
+    reused.as_mut().fill(0xa5);
+    intrlay::create_in_place_from::<Batch>(&input, reused.as_mut())?;
+    assert_eq!(
+        &reused.as_ref()[..expected.as_ref().len()],
+        expected.as_ref()
+    );
+    assert!(
+        reused.as_ref()[expected.as_ref().len()..]
+            .iter()
+            .all(|byte| *byte == 0xa5)
+    );
     assert_eq!(
         intrlay::create_from::<[[f32; 4]; 4]>(&Zeroed)?.as_ref(),
         &[0; 64]
@@ -57,10 +70,90 @@ struct Item {
     matrices: Vec<[f32; 16]>,
 }
 
+#[test]
+fn fixed_headers_keep_padding_and_surrounding_payload_cursors()
+-> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Clone, Copy, Debug, PartialEq, Intrlay)]
+    struct Row {
+        enabled: bool,
+        id: u64,
+        direction: [f32; 3],
+    }
+    #[derive(Debug, PartialEq, Intrlay)]
+    struct Envelope {
+        prefix: String,
+        rows: Vec<Row>,
+        #[expect(
+            clippy::box_collection,
+            reason = "exercise nested payload reservations after fixed headers"
+        )]
+        suffix: Box<String>,
+    }
+    let rows = [
+        Row {
+            enabled: true,
+            id: 17,
+            direction: [1.0, 2.0, 3.0],
+        },
+        Row {
+            enabled: false,
+            id: u64::MAX,
+            direction: [4.0, 5.0, 6.0],
+        },
+    ];
+    let expected = Envelope {
+        prefix: "prefix".into(),
+        rows: rows.to_vec(),
+        suffix: Box::new("suffix".into()),
+    };
+    let input = EnvelopeInput {
+        prefix: "prefix",
+        rows: SequenceInput::new(rows.iter().map(|row| RowInput {
+            enabled: &row.enabled,
+            id: &row.id,
+            direction: &row.direction,
+        })),
+        suffix: BoxInput("suffix"),
+    };
+    let owned = intrlay::create::<Envelope>(&expected)?;
+    let borrowed = intrlay::create_from::<Envelope>(&input)?;
+    assert_eq!(owned.as_ref(), borrowed.as_ref());
+    assert_eq!(Envelope::decode(borrowed.as_ref(), 0)?, expected);
+    let mut reused = intrlay::OwnedBuffer::new(intrlay::compute_layout::<Vec<u64>>(&vec![
+        0;
+        owned
+            .as_ref()
+            .len(
+            )
+    ])?)?;
+    reused.as_mut().fill(0xa5);
+    let written = intrlay::write_from::<Envelope>(&input, reused.as_mut())?;
+    assert_eq!(&reused.as_ref()[..written.byte_length()], owned.as_ref());
+    assert!(
+        reused.as_ref()[written.byte_length()..]
+            .iter()
+            .all(|byte| *byte == 0xa5)
+    );
+    Ok(())
+}
+
 #[derive(Intrlay)]
 struct Nested<T> {
     payload: Option<Box<T>>,
     values: [u16; 3],
+}
+
+#[test]
+fn borrowed_generic_inputs_do_not_require_owned_schema_copy() {
+    #[derive(Intrlay)]
+    struct Single<T> {
+        value: T,
+    }
+    fn requires_copy<T: Copy>(_: T) {}
+    // String is not Copy; its borrowed encoding source is.
+    let input = SingleInput::<String, _>::new("borrowed");
+    requires_copy(input);
+    assert!(format!("{input:?}").contains("borrowed"));
 }
 
 #[derive(Intrlay)]
@@ -136,10 +229,7 @@ fn local_input_impls_do_not_shadow_schema_generics() -> Result<(), EncodeError> 
         value: numbers.to_vec(),
         marker: 11_u8,
     };
-    let input = PacketInput {
-        value: numbers.as_slice(),
-        marker: 11_u8,
-    };
+    let input = PacketInput::new(numbers.as_slice(), 11_u8);
     assert_eq!(
         PacketView::<_, Vec<u32>, u8>::create_from(&input)?.as_bytes(),
         PacketView::<_, Vec<u32>, u8>::create(&owned)?.as_bytes(),
@@ -156,7 +246,8 @@ fn local_input_impls_do_not_shadow_schema_generics() -> Result<(), EncodeError> 
         MessageView::<_, Vec<u32>>::create(&owned)?.as_bytes(),
     );
     assert_eq!(
-        MessageView::<_, Vec<u32>>::create_from(&MessageInput::<&[u32]>::Empty)?.as_bytes(),
+        MessageView::<_, Vec<u32>>::create_from(&MessageInput::<Vec<u32>, &[u32]>::Empty)?
+            .as_bytes(),
         MessageView::<_, Vec<u32>>::create(&Message::Empty)?.as_bytes(),
     );
     Ok(())
@@ -170,7 +261,7 @@ fn renamed_inputs_keep_schema_generic_and_const_arguments() -> Result<(), Encode
     struct Packet<WireInput, const N: usize>([WireInput; N]);
 
     let numbers = [13_u32, 17, 19];
-    let input = WireInput(&numbers);
+    let input = WireInput::new(&numbers);
     assert_eq!(
         WireView::<_, u32, 3>::create_from(&input)?.as_bytes(),
         WireView::<_, u32, 3>::create(&Packet(numbers))?.as_bytes(),
@@ -215,10 +306,7 @@ fn input_bindings_preserve_traits_named_only_in_attribute_bounds() -> Result<(),
 
     let numbers = [13_u32, 17, 19];
     assert_eq!(
-        PacketView::<_, Vec<u32>>::create_from(&PacketInput {
-            value: numbers.as_slice(),
-        })?
-        .as_bytes(),
+        PacketView::<_, Vec<u32>>::create_from(&PacketInput::new(numbers.as_slice()))?.as_bytes(),
         PacketView::create(&Packet {
             value: numbers.to_vec()
         })?
@@ -235,10 +323,7 @@ fn input_bindings_preserve_traits_named_only_in_attribute_bounds() -> Result<(),
         .as_bytes(),
     );
     assert_eq!(
-        AliasView::<_, Vec<u32>>::create_from(&AliasInput {
-            value: numbers.as_slice(),
-        })?
-        .as_bytes(),
+        AliasView::<_, Vec<u32>>::create_from(&AliasInput::new(numbers.as_slice()))?.as_bytes(),
         AliasView::create(&Alias {
             value: numbers.to_vec()
         })?
@@ -289,13 +374,13 @@ fn enum_option_and_box_inputs_borrow_recursively() -> Result<(), EncodeError> {
         id: 5,
         matrices: matrices.as_slice(),
     }];
-    let input = NestedInput {
-        payload: Some(BoxInput(MessageInput::Data {
+    let input = NestedInput::new(
+        Some(BoxInput(MessageInput::Data {
             label: "data",
             items: items.as_slice(),
         })),
-        values: [1, 2, 3],
-    };
+        [1, 2, 3],
+    );
     let owned = Nested {
         payload: Some(Box::new(Message::Data {
             label: "data".into(),
@@ -392,7 +477,7 @@ fn fixed_element_sequences_measure_without_visiting_elements() -> Result<(), Enc
     let encoded = intrlay::create_from::<Vec<u32>>(&input)?;
     assert_eq!(visits.get(), 8);
     // SAFETY: create_from constructed a complete Vec<u32> encoding.
-    let values = unsafe { <Vec<u32> as Intrlay>::decode(encoded.as_ref(), 0) };
+    let values = unsafe { <Vec<u32> as Intrlay>::decode_unchecked(encoded.as_ref(), 0) };
     assert_eq!(values, (0..8).collect::<Vec<_>>());
     Ok(())
 }

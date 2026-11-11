@@ -163,7 +163,7 @@ variable-length data after construction.
 Continue the example:
 
 ```typescript
-const another = new DrawingView(drawing.bytes);
+const another = new DrawingView(drawing.storage.bytes);
 another.points.get(0).x = 20;
 console.log(drawing.points.get(0).x); // 20
 ```
@@ -199,9 +199,9 @@ bridge, or transport decides whether those bytes are borrowed, copied, or
 transferred. It also establishes their lifetime and ensures that both ends agree
 on the schema.
 
-Views expect a valid encoding from a cooperating producer. They do not perform
-a full validation pass or negotiate schema versions. A transport receiving
-untrusted input must establish that contract before exposing a view.
+Rust and C++ checked constructors validate the encoding before returning a view.
+Their unchecked constructors and the other targets assume valid bytes. Readers
+and writers must agree on the schema; validation does not negotiate versions.
 
 Continue with [Mutation](mutation.mdx) for changes allowed within an existing
 encoding, then [Storage and ownership](storage.mdx) for caller buffers and lifetimes.

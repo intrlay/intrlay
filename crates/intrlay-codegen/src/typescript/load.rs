@@ -8,7 +8,7 @@ pub(super) struct Read<'a> {
     pub id: Id,
     pub offset: &'a str,
     pub exposure: Exposure,
-    pub tag: Option<u32>,
+    pub tag: Option<(u32, &'a str)>,
 }
 
 /// Unit values and empty numeric regions do not consult the collection index.
@@ -34,10 +34,10 @@ pub(super) fn body(plan: &TypeGraph, read: &Read<'_>, cache: Option<&ViewCache>)
             "if (this.{cache} !== intrlay.uninitialized) {{\n    return this.{cache};\n}}"
         ));
     }
-    if let Some(tag) = read.tag {
+    if let Some((tag, offset)) = read.tag {
         let absent = finish("undefined", 0, cache, usize::MAX).replace('\n', "\n    ");
         lines.push(format!(
-            "if (this.$[storage].u32[this.$[offset] >>> 2] !== {tag}) {{\n    {absent}\n}}"
+            "if (this.$[storage].u32[({offset}) >>> 2] !== {tag}) {{\n    {absent}\n}}"
         ));
     }
     if let Some(value) = expression(plan, read.id, read.offset, read.exposure) {
@@ -153,6 +153,10 @@ fn expression(plan: &TypeGraph, id: Id, offset: &str, exposure: Exposure) -> Opt
                 value
             }
         }
+        Kind::Enum(_) if node.is_value_enum() => format!(
+            "this.$[storage].u32[({offset}) >>> 2]! as {}",
+            node.tag_type_name()
+        ),
         Kind::Unit => "null".into(),
         Kind::String => format!("intrlay.readString(this.$[storage], {offset})"),
         Kind::Boxed(_) | Kind::Optional { .. } => return None,

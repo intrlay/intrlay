@@ -2,6 +2,7 @@
 
 mod conformance;
 mod csharp_unions;
+mod library_adapters;
 
 use std::fs;
 use std::path::Path;
@@ -23,6 +24,7 @@ pub(crate) fn run(workspace: &Workspace) -> Result<()> {
     check_dart(workspace)?;
     check_csharp(workspace)?;
     check_cpp(workspace)?;
+    library_adapters::run(workspace)?;
     conformance::run(workspace)?;
     for fixture in ["cpp-metadata", "cpp-collections"] {
         cpp(
@@ -40,7 +42,12 @@ fn check_rust(workspace: &Workspace) -> Result<()> {
         .command("cargo")?
         .args(["fmt", "--all", "--check"])
         .run()?;
-    for consumer in ["rust-generated", "compositions/rust", "edge-cases/rust"] {
+    for consumer in [
+        "rust-generated",
+        "compositions/rust",
+        "edge-cases/rust",
+        "library-adapters/rust",
+    ] {
         workspace
             .command("rustfmt")?
             .args(["--check", "--config", "skip_children=true"])
@@ -92,6 +99,13 @@ fn generate_frontend_fixtures(workspace: &Workspace) -> Result<()> {
             "cpp",
             Some("Codecs"),
             "cpp-codecs.hpp",
+        ),
+        (
+            "adapters",
+            "cpp-adapters",
+            "cpp",
+            Some("Adapters"),
+            "cpp-adapters.hpp",
         ),
     ] {
         let schema = format!("target/{schema}.json");
@@ -339,6 +353,7 @@ fn check_dart(workspace: &Workspace) -> Result<()> {
     for fixture in [
         "construction-extents",
         "regressions",
+        "projections",
         "private-fields",
         "tagged-scalars",
         "runtime",
@@ -432,19 +447,36 @@ fn check_cpp(workspace: &Workspace) -> Result<()> {
             &[&format!("target/{fixture}")],
         )?;
     }
+    cpp(
+        workspace,
+        "tests/cpp/adapters.cpp",
+        "target/regressions",
+        &[],
+    )?;
+    cpp(
+        workspace,
+        "tests/cpp/validation.cpp",
+        "target/conformance",
+        &["target/conformance"],
+    )?;
     check_cpp_source_diagnostics(workspace)?;
     workspace
         .command("cmake")?
-        .args(["-S", "packages/cpp", "-B", "target/cmake-runtime"])
+        .args([
+            "-S",
+            "packages/cpp",
+            "-B",
+            "target/cmake-runtime",
+            "-DCMAKE_INSTALL_INCLUDEDIR=include/intrlay-sdk",
+        ])
         .run()?;
+    // A fresh prefix prevents stale default-path headers from hiding an
+    // incorrect exported include directory.
+    let installed = tempfile::tempdir()?;
     workspace
         .command("cmake")?
-        .args([
-            "--install",
-            "target/cmake-runtime",
-            "--prefix",
-            "target/cpp-install",
-        ])
+        .args(["--install", "target/cmake-runtime", "--prefix"])
+        .arg(installed.path())
         .run()?;
     for fixture in ["package", "collections", "metadata"] {
         let build = if fixture == "package" {
@@ -455,9 +487,10 @@ fn check_cpp(workspace: &Workspace) -> Result<()> {
         let mut command = workspace.command("cmake")?;
         command
             .args(["-S", &format!("tests/cpp-{fixture}"), "-B", &build])
+            .arg("-Uintrlay_DIR")
             .arg(format!(
                 "-DCMAKE_PREFIX_PATH={}",
-                workspace.path("target/cpp-install").display()
+                installed.path().display()
             ));
         if fixture != "package" {
             command.arg(format!(

@@ -58,7 +58,7 @@ def views(value: MessageInput, nullable_input: NullableCasesInput, recursive: Li
     view.fixed[1] = 2.5
     borrowed = MessageView.create_in_place(bytearray(4096), value)
     assert_type(borrowed, MessageView)
-    assert_type(borrowed.buffer, memoryview)
+    assert_type(borrowed.storage.bytes, memoryview)
     nullable = NullableCasesView.create(nullable_input)
     assert_type(nullable.nested_value, Some[int | None] | None)
     assert_type(nullable.triple, Some[Some[int | None] | None] | None)
@@ -80,4 +80,4 @@ def explicit_exports() -> None:
 def keyword_arguments(buffer: bytearray) -> None:
     assert_type(ScalarView.compute_byte_length(value=1.5), int)
     assert_type(CreateOnlyView(buffer=buffer, offset=4), CreateOnlyView)
-    assert_type(UnitFieldsView(buffer=buffer, offset=4).get_marker(index=0), None)
+    assert_type(UnitFieldsView(buffer=buffer, offset=4).values.get_marker(index=0), None)

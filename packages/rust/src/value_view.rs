@@ -13,12 +13,58 @@ pub struct ValueView<C: Intrlay, B> {
 }
 
 impl<C: Intrlay, B: AsRef<[u8]>> ValueView<C, B> {
+    /// Validates a root encoding and retains its storage without copying it.
+    ///
+    /// # Errors
+    /// Returns an error for malformed or excessively nested encodings.
+    pub fn from_bytes(buffer: B) -> Result<Self, crate::DecodeError>
+    where
+        B: crate::StableBytes,
+    {
+        Self::from_parts(buffer, 0)
+    }
+
+    /// Validates an encoding at an offset in stable storage.
+    ///
+    /// # Errors
+    /// Returns an error for malformed or overlapping encoded regions.
+    pub fn from_parts(buffer: B, offset: usize) -> Result<Self, crate::DecodeError>
+    where
+        B: crate::StableBytes,
+    {
+        C::validate(buffer.as_ref(), offset)?;
+        // SAFETY: Validation establishes the full representation contract, and
+        // StableBytes retains it until an exclusive, layout-preserving mutation.
+        Ok(unsafe { Self::new_unchecked(buffer, offset) })
+    }
+
+    /// Opens a trusted root encoding without validation.
+    ///
+    /// # Safety
+    /// The storage must retain a complete, valid encoding for the view's lifetime.
+    #[inline]
+    pub unsafe fn from_bytes_unchecked(buffer: B) -> Self {
+        // SAFETY: The caller establishes the representation and storage contract.
+        unsafe { Self::new_unchecked(buffer, 0) }
+    }
+
+    /// Opens a trusted encoding at an offset without validation.
+    ///
+    /// # Safety
+    /// The storage must retain a complete, valid encoding at `offset`, including
+    /// disjoint descendants, for the view's lifetime.
+    #[inline]
+    pub unsafe fn from_parts_unchecked(buffer: B, offset: usize) -> Self {
+        // SAFETY: The caller establishes the representation and storage contract.
+        unsafe { Self::new_unchecked(buffer, offset) }
+    }
+
     /// Opens a value at an offset within caller-owned storage.
     ///
     /// # Safety
-    /// The bytes must satisfy [`Intrlay::view`]'s representation and lifetime contract.
+    /// The bytes must satisfy [`Intrlay::view_unchecked`]'s representation and lifetime contract.
     #[inline]
-    pub unsafe fn new_unchecked(buffer: B, offset: usize) -> Self {
+    pub(crate) unsafe fn new_unchecked(buffer: B, offset: usize) -> Self {
         Self {
             buffer,
             offset,
@@ -31,7 +77,7 @@ impl<C: Intrlay, B: AsRef<[u8]>> ValueView<C, B> {
     #[inline]
     pub fn value(&self) -> C::View<'_> {
         // SAFETY: The constructor establishes the representation contract.
-        unsafe { C::view(self.buffer.as_ref(), self.offset) }
+        unsafe { C::view_unchecked(self.buffer.as_ref(), self.offset) }
     }
 
     /// Returns the storage supplied at construction.
@@ -59,10 +105,14 @@ impl<C: Intrlay, B: AsRef<[u8]>> ValueView<C, B> {
         }
     }
 
-    /// Consumes the view and returns ownership of its backing storage.
+    /// Consumes an owning view and returns its backing storage without copying.
+    /// Borrowed views release their storage borrow when dropped instead.
     #[must_use]
     #[inline]
-    pub fn into_buffer(self) -> B {
+    pub fn into_buffer(self) -> B
+    where
+        B: crate::OwnedBytes,
+    {
         self.buffer
     }
 }
@@ -99,7 +149,7 @@ impl<C: Intrlay, B: AsRef<[u8]> + AsMut<[u8]>> ValueView<C, B> {
     #[inline]
     pub fn value_mut(&mut self) -> C::ViewMut<'_> {
         // SAFETY: The constructor establishes validity and the mutable borrow is exclusive.
-        unsafe { C::view_mut(self.buffer.as_mut(), self.offset) }
+        unsafe { C::view_mut_unchecked(self.buffer.as_mut(), self.offset) }
     }
 
     /// Exclusively reborrows the same valid encoding without copying its bytes.

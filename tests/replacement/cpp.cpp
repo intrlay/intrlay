@@ -3,6 +3,7 @@
 #endif
 #include "bindings.hpp"
 #include <cassert>
+#include <deque>
 #include <iostream>
 
 using namespace intrlay_generated::replacement;
@@ -37,6 +38,28 @@ struct NativeLeaf {
     std::optional<std::uint32_t> scalar;
 };
 
+struct ThrowingNumbers {
+    std::deque<std::uint32_t> values{31, 37, 41};
+    auto begin() const { return values.begin(); }
+    auto end() const { return values.end(); }
+    auto size() const { return values.size(); }
+    const std::uint32_t& operator[](std::size_t index) const {
+        if (index == 1) throw std::runtime_error("source read failed");
+        return values[index];
+    }
+};
+
+struct ThrowingOptional {
+    bool has_value() const noexcept { return true; }
+    std::uint32_t operator*() const { throw std::runtime_error("source read failed"); }
+};
+
+template<class Number, class Scalar>
+struct LeafSource { Number number; Scalar scalar; };
+template<class... Fields>
+concept CanFormLeaf = requires { typename LeafInput<Fields...>; };
+static_assert(!CanFormLeaf<std::uint64_t, std::optional<std::uint32_t>>);
+
 // These constraints must fail during overload resolution, not inside a writer.
 static_assert(CanSetNumber<std::uint32_t>);
 static_assert(!CanSetNumber<std::uint64_t> && !CanSetNumber<ConvertibleNumber>);
@@ -52,8 +75,8 @@ static_assert(!CanReplaceBraced<MaybeScalarView, std::uint64_t>);
 static_assert(!CanSetScalarBraced<LeafView, std::uint64_t>);
 static_assert(!CanSet<IntrlayOptionalU32ViewReadOnly, std::uint32_t>);
 static_assert(CanReplace<LeafView, NativeLeaf>);
-static_assert(!CanReplace<LeafView, LeafInput<std::uint64_t, std::optional<std::uint32_t>>>);
-static_assert(!CanReplace<LeafView, LeafInput<std::uint32_t, std::optional<std::uint16_t>>>);
+static_assert(!CanReplace<LeafView, LeafSource<std::uint64_t, std::optional<std::uint32_t>>>);
+static_assert(!CanReplace<LeafView, LeafSource<std::uint32_t, std::optional<std::uint16_t>>>);
 static_assert(CanSetValues<std::span<const std::uint32_t>>);
 static_assert(!CanSetValues<std::span<const std::uint64_t>>);
 static_assert(!CanSetValues<std::array<std::uint16_t, 3>>);
@@ -64,7 +87,7 @@ void invalid_sources(LeafView leaf, MaybeScalarView optional, ChoiceView choice,
     leaf.set_number(scalar);
     optional.set(std::optional{scalar});
     choice.set_numbers_values(values);
-    leaf.replace(LeafInput{scalar, std::optional<std::uint32_t>{}});
+    leaf.replace(LeafSource{scalar, std::optional<std::uint32_t>{}});
 }
 #endif
 
@@ -73,7 +96,7 @@ int main() {
     auto owned = MessageView::create(initial);
     std::vector<std::byte> external(owned.bytes().size() + 16, std::byte{0xa5});
     auto view = MessageView::create_in_place(std::span(external).subspan(8), initial);
-    MessageView alias(view.bytes());
+    auto alias = MessageView::from_bytes(view.bytes()).value();
     auto fixed = alias.fixed();
     assert(!fixed.maybe() && !*fixed.nested());
     assert(!fixed.choice().child_leaf());
@@ -100,6 +123,31 @@ int main() {
         rejected = true;
     }
     assert(rejected && std::ranges::equal(view.bytes(), before));
+    // A source can throw after writing the first element. Existing aliases must
+    // still see the complete previous value, not a partially replaced array.
+    try {
+        view.fixed().choice().set_numbers_values(ThrowingNumbers{});
+        assert(false);
+    } catch (const std::runtime_error&) {}
+    assert(std::ranges::equal(view.bytes(), before));
+
+    view.fixed().choice().replace(ChoiceInput<>{ChoiceChildInput<>{leaf}});
+    const std::vector<std::byte> before_variant(view.bytes().begin(), view.bytes().end());
+    using BorrowedChoice = std::variant<ChoiceEmptyInput<>, ChoiceChildInput<>,
+        ChoiceNumbersInput<std::span<const std::uint32_t>>, ChoiceEmptyArraysInput<>>;
+    try {
+        view.fixed().choice().replace(BorrowedChoice{ChoiceNumbersInput{std::span(numbers).first(2)}});
+        assert(false);
+    } catch (const std::length_error&) {}
+    assert(std::ranges::equal(view.bytes(), before_variant));
+    assert(MessageView::from_bytes(view.bytes()) && fixed.choice().child_leaf()->number() == 7);
+
+    // Record replacement must not commit earlier fields before a later source fails.
+    try {
+        fixed.choice().child_leaf()->replace(LeafSource{79u, ThrowingOptional{}});
+        assert(false);
+    } catch (const std::runtime_error&) {}
+    assert(std::ranges::equal(view.bytes(), before_variant));
     view.fixed().set_maybe(std::nullopt);
     view.fixed().set_nested(std::optional{std::optional<LeafInput<>>{}});
     assert(!fixed.maybe() && !*fixed.nested());
@@ -110,7 +158,7 @@ int main() {
     view.items().set(0, std::optional<LeafInput<>>{});
     assert(!alias.items().get(0));
     auto scalarOwned = MaybeScalarView::create(std::optional<std::uint32_t>{});
-    MaybeScalarView scalar(scalarOwned.bytes());
+    auto scalar = MaybeScalarView::from_bytes(scalarOwned.bytes()).value();
     scalar.set(42u);
     assert(scalar.value() == 42u);
     scalar.set(std::nullopt);
@@ -119,24 +167,29 @@ int main() {
     assert(scalar.value() == 43u);
     scalar.replace(std::nullopt);
     assert(!scalar.value());
-    assert(!MaybeScalarView::create(std::nullopt).view().value());
+    assert(!MaybeScalarView::create(std::nullopt).view_unchecked().value());
 
     auto native = LeafView::create(leaf);
-    native.view().replace(NativeLeaf{47, 53});
-    assert(native.view().number() == 47 && native.view().scalar() == 53u);
-    native.view().replace(LeafInput{59u, std::nullopt});
-    assert(native.view().number() == 59 && !native.view().scalar());
+    // Creation initializes padding; replacing an existing value preserves it.
+    const auto padding = LeafView::Metadata::Field<1>::offset + 1;
+    assert(native.bytes()[padding] == std::byte{});
+    native.bytes()[padding] = std::byte{0xa5};
+    native.view_unchecked().replace(NativeLeaf{47, 53});
+    assert(native.view_unchecked().number() == 47 && native.view_unchecked().scalar() == 53u);
+    assert(native.bytes()[padding] == std::byte{0xa5});
+    native.view_unchecked().replace(LeafInput{59u, std::nullopt});
+    assert(native.view_unchecked().number() == 59 && !native.view_unchecked().scalar());
 
     auto boxed = BoxedLeafView::create(std::make_unique<std::optional<LeafInput<>>>(leaf));
     const auto boxed_size = boxed.bytes().size();
-    boxed.view().set(std::nullopt);
-    assert(!boxed.view().value());
-    boxed.view().set(NativeLeaf{61, 67});
-    assert(boxed.view().value()->number() == 61 && boxed.view().value()->scalar() == 67u);
+    boxed.view_unchecked().set(std::nullopt);
+    assert(!boxed.view_unchecked().value());
+    boxed.view_unchecked().set(NativeLeaf{61, 67});
+    assert(boxed.view_unchecked().value()->number() == 61 && boxed.view_unchecked().value()->scalar() == 67u);
     assert(boxed.bytes().size() == boxed_size);
     auto emptyOwned = EmptyPayloadsView::create(EmptyPayloadsInput<>{{}, {}, 1});
-    EmptyPayloadsView emptyView(emptyOwned.bytes());
-    EmptyPayloadsView emptyAlias(emptyOwned.bytes());
+    auto emptyView = EmptyPayloadsView::from_bytes(emptyOwned.bytes()).value();
+    auto emptyAlias = EmptyPayloadsView::from_bytes(emptyOwned.bytes()).value();
     const EmptyPayloadsInput<> replacement{{}, {}, 2};
     emptyView.replace(replacement);
     assert(emptyAlias.number() == 2 && emptyOwned.bytes().size() == 4);

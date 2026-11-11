@@ -240,6 +240,14 @@ impl Describe for Fallible {
 // SAFETY: Successful writes initialize all 32 bytes. Failure paths do not return
 // initialized views, and the byte-array codec provides the same representation.
 unsafe impl Intrlay for Fallible {
+    const ALL_BITS_VALID: bool = true;
+    fn validate_fields(
+        _: &mut intrlay::Validator<'_>,
+        _: usize,
+    ) -> Result<(), intrlay::DecodeError> {
+        Ok(())
+    }
+
     type Value = u8;
     type View<'a> = &'a [u8];
     type ViewMut<'a> = &'a mut [u8];
@@ -263,27 +271,139 @@ unsafe impl Intrlay for Fallible {
         }
     }
 
-    unsafe fn view(bytes: &[u8], offset: usize) -> &[u8] {
+    unsafe fn view_unchecked(bytes: &[u8], offset: usize) -> &[u8] {
         &bytes[offset..offset + 32]
     }
 
-    unsafe fn view_mut(bytes: &mut [u8], offset: usize) -> &mut [u8] {
+    unsafe fn view_mut_unchecked(bytes: &mut [u8], offset: usize) -> &mut [u8] {
         &mut bytes[offset..offset + 32]
     }
 
-    unsafe fn decode(_: &[u8], _: usize) -> u8 {
+    fn decode_from(
+        decoder: &mut intrlay::Decoder<'_>,
+        offset: usize,
+    ) -> Result<u8, intrlay::DecodeError> {
+        decoder.range(offset, 32)?;
+        Ok(2)
+    }
+
+    unsafe fn decode_unchecked(_: &[u8], _: usize) -> u8 {
         2
     }
 }
 
 #[test]
 fn partially_written_allocations_are_discarded_on_error_or_panic() -> Result<(), Box<dyn Error>> {
+    #[derive(Intrlay)]
+    struct Wrapped {
+        prefix: u32,
+        #[intrlay(with = Fallible)]
+        last: u8,
+    }
     assert!(matches!(
         create::<Fallible>(&0),
         Err(EncodeError::SizeOverflow)
     ));
     assert!(catch_unwind(|| create::<Fallible>(&1)).is_err());
     check::<Fallible>(&2)?;
+    assert!(matches!(
+        create::<Wrapped>(&Wrapped { prefix: 1, last: 0 }),
+        Err(EncodeError::SizeOverflow)
+    ));
+    assert!(catch_unwind(|| create::<Wrapped>(&Wrapped { prefix: 1, last: 1 })).is_err());
+    check::<Wrapped>(&Wrapped { prefix: 1, last: 2 })?;
+    Ok(())
+}
+
+struct OffsetSensitive;
+
+impl Describe for OffsetSensitive {
+    fn describe(registry: &mut Registry) -> Type {
+        u8::describe(registry)
+    }
+}
+
+// SAFETY: Every byte is valid. XOR with the absolute offset is reversible, and
+// all reads and writes stay within this one-byte fixed header.
+unsafe impl Intrlay for OffsetSensitive {
+    type Value = u8;
+    type View<'a> = u8;
+    type ViewMut<'a> = &'a mut [u8];
+    const LAYOUT: Layout = Layout::new(1, 1);
+    const ALL_BITS_VALID: bool = true;
+    const WRITES_FIXED_LAYOUT: bool = true;
+    const INITIALIZATION: Initialization = Initialization::FIXED;
+
+    fn measure(_: &u8, _: &mut SizeCursor) -> Result<(), EncodeError> {
+        Ok(())
+    }
+
+    fn write(value: &u8, writer: &mut Writer<'_>, offset: usize) -> Result<(), EncodeError> {
+        writer.write(offset, &[value ^ offset.to_le_bytes()[0]]);
+        Ok(())
+    }
+
+    fn validate_fields(
+        _: &mut intrlay::Validator<'_>,
+        _: usize,
+    ) -> Result<(), intrlay::DecodeError> {
+        Ok(())
+    }
+
+    unsafe fn view_unchecked(bytes: &[u8], offset: usize) -> u8 {
+        bytes[offset] ^ offset.to_le_bytes()[0]
+    }
+
+    unsafe fn view_mut_unchecked(bytes: &mut [u8], offset: usize) -> &mut [u8] {
+        &mut bytes[offset..=offset]
+    }
+
+    fn decode_from(
+        decoder: &mut intrlay::Decoder<'_>,
+        offset: usize,
+    ) -> Result<u8, intrlay::DecodeError> {
+        Ok(decoder.range(offset, 1)?[0] ^ offset.to_le_bytes()[0])
+    }
+
+    unsafe fn decode_unchecked(bytes: &[u8], offset: usize) -> u8 {
+        bytes[offset] ^ offset.to_le_bytes()[0]
+    }
+}
+
+#[test]
+fn fixed_custom_codecs_retain_absolute_offsets_in_owned_and_borrowed_records()
+-> Result<(), Box<dyn Error>> {
+    #[derive(Debug, PartialEq, Intrlay)]
+    struct Located {
+        prefix: u64,
+        #[intrlay(with = OffsetSensitive)]
+        value: u8,
+    }
+    let records = vec![
+        Located {
+            prefix: 1,
+            value: 3,
+        },
+        Located {
+            prefix: 2,
+            value: 7,
+        },
+    ];
+    let owned = create::<Vec<Located>>(&records)?;
+    assert_eq!(Vec::<Located>::decode(owned.as_ref(), 0)?, records);
+    let input = intrlay::SequenceInput::new(records.iter().map(|record| LocatedInput {
+        prefix: &record.prefix,
+        value: intrlay::ValueSource::<OffsetSensitive>::new(&record.value),
+    }));
+    let borrowed = intrlay::create_from::<Vec<Located>>(&input)?;
+    assert_eq!(borrowed.as_ref(), owned.as_ref());
+    for (view, record) in Vec::<Located>::view(borrowed.as_ref(), 0)?
+        .iter()
+        .zip(&records)
+    {
+        assert_eq!(view.value(), record.value);
+    }
+    check::<Vec<Located>>(&records)?;
     Ok(())
 }
 
@@ -372,7 +492,7 @@ fn changing_remote_payloads_cannot_publish_uninitialized_bytes() -> Result<(), B
                 assert_eq!(reused?, layout);
                 assert_eq!(fresh.as_ref(), buffer.as_ref());
                 // SAFETY: Both successful constructors established the encoding's validity.
-                let view = unsafe { ChangingAdapter::view(fresh.as_ref(), 0) };
+                let view = unsafe { ChangingAdapter::view_unchecked(fresh.as_ref(), 0) };
                 assert_eq!(view.text(), written);
             }
         }

@@ -78,7 +78,12 @@ internal sealed partial class Emitter
             case "Record":
             case "Enum":
                 if (node.Kind == "Enum" && node.Read)
-                    ExpressionGetter($"public uint {Name("tag")}", $"global::System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian({Bytes(buffer)}.Slice({offset}))");
+                {
+                    if (node.ValueEnum)
+                        Getter($"public {Input(node.Id)} {Name("tag")}", node.Id, offset, view.ReadOnly, buffer);
+                    else
+                        ExpressionGetter($"public uint {Name("tag")}", $"global::System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian({Bytes(buffer)}.Slice({offset}))");
+                }
                 foreach (var field in node.Fields) Property(node, field, view.ReadOnly);
                 break;
             case "Array":
@@ -107,7 +112,7 @@ internal sealed partial class Emitter
         // scoped values bound their contained spans as well as the parameter.
         // scoped in only bounds the reference to the struct, so it cannot prove
         // that a returned span view is independent of stack-backed input fields.
-        var passing = borrowed ? "scoped " : "in ";
+        var passing = borrowed ? "scoped " : "scoped in ";
         var size = Name("byte_size");
         var measure = Name("compute_byte_length");
         Line();

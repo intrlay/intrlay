@@ -74,7 +74,9 @@ reconstructs its strings and collections; borrowing does not.
 ## Borrow encoding inputs
 
 The owned schema does not require the producer to allocate matching containers.
-Each generated `TypeInput` has independent field source parameters. Strings can
+Each generated `TypeInput` declares independent field source parameters with
+`EncodeSource<FieldSchema>` bounds. Names such as `TitleSource` and
+`PointsSource` identify the corresponding fields. Strings can
 borrow `str`, sequences can borrow slices, and nested inputs follow the same
 rules:
 
@@ -114,6 +116,22 @@ variant leaves a source type unconstrained, specify that parameter explicitly.
 Using the original owned enum as a field source is also supported. Payload-free
 enum inputs are aliases of the original Rust enum.
 
+For a generic schema, the Input keeps its schema arguments before its field
+source parameters. Its constructor hides a zero-size schema marker:
+
+```rust
+#[derive(intrlay::Intrlay)]
+struct Items<T> { values: Vec<T> }
+
+let values = [1_u32, 2, 3];
+let input = ItemsInput::<u32, _>::new(values.as_slice());
+let encoded = intrlay::create_from::<Items<u32>>(&input)?;
+```
+
+Concrete, nongeneric record schemas use ordinary Input struct literals. `Clone`,
+`Copy`, and `Debug` on an Input depend on its sources, not on whether the owned
+schema implements those traits.
+
 ## Caller storage and received bytes
 
 Given `value` from the example, measure and encode into caller-owned storage:
@@ -134,13 +152,65 @@ assert_eq!(received.title(), "Sketch");
 if it preserves those requirements and the allocation's lifetime. The native
 input must not alias the destination.
 
-`from_bytes_unchecked` and `from_parts_unchecked` borrow an existing encoding.
-They are unsafe because the caller must establish a valid representation,
-alignment, and the necessary lifetime and aliasing guarantees. Intrlay does not
-validate an arbitrary received packet as part of view construction.
+`from_bytes(bytes)` and `from_parts(bytes, offset)` validate the complete encoding
+once and return `Result<View, DecodeError>`. They check bounds, tags, UTF-8,
+recursive references, and disjoint payload regions. Numeric arrays whose element
+headers accept every bit pattern require only a region check; their elements
+are not scanned. Recursive validation defaults to a depth limit of 128.
 
-For an actual FFI receive, the caller must establish the same conditions rather
-than relying on the local writer used in this example. See
+```rust
+let received = DrawingView::from_bytes(written.as_bytes())?;
+let native = <Drawing as intrlay::Intrlay>::decode(received.as_bytes(), 0)?;
+```
+
+`decode` returns `Result<NativeValue, DecodeError>` and reconstructs the owned
+value in one checked traversal. It allocates native strings and collections.
+View validation neither copies payloads nor allocates a visited set.
+
+Fixed headers whose every bit pattern is valid can be checked as one region,
+including records that require field conversion instead of a native copy.
+Compile-time depth metadata preserves the decoding limit; custom codecs without
+that proof retain their checked traversal.
+
+The codec-level `Intrlay::view(bytes, offset)` and `view_mut(bytes, offset)`
+also validate once and return `Result` with their borrowed projection. Their
+unsafe counterparts are `view_unchecked` and `view_mut_unchecked`. Generated
+field access uses the unchecked operations after construction establishes
+validity, so it does not recursively revalidate every field read.
+
+`SequenceView::new(bytes, offset, length)` and `SequenceMut::new` validate a raw
+array of element headers and its descendants. Here `offset` points to the first
+element, not the vector's reference/count header. `new_unchecked` skips that
+validation when the caller already guarantees the entire sequence.
+
+`SequenceView::copy_to(&mut [T])` fills an existing native slice with decoded
+elements when `T: Copy`. The lengths must match. Native-compatible elements use
+one bulk byte copy; other layouts use each element's decoder. This works with
+unaligned encoded input and avoids allocating a replacement `Vec<T>`.
+For a mutable sequence, use `as_view().copy_to(destination)`.
+
+`from_bytes_unchecked` and `from_parts_unchecked` skip validation. They are unsafe:
+the caller guarantees the complete representation and retains valid storage for
+the view's lifetime. `Intrlay::decode_unchecked` likewise reconstructs a trusted
+value without checking it. `create`, `as_view`, and child access already preserve
+the representation contract and do not revalidate it.
+
+Safe constructors require `StableBytes`, implemented for slices, byte arrays,
+`Vec<u8>`, `Box<[u8]>`, `Arc<[u8]>`, `Rc<[u8]>`, `OwnedBuffer`, and references to
+stable storage. `AsRef<[u8]>` alone is insufficient: a custom implementation can
+return different contents on successive calls. Implementing `StableBytes` is
+unsafe and promises stable contents until exclusive, layout-preserving mutation.
+Reading bytes does not require native pointer alignment; constructing into caller
+storage still follows the allocation layout requirements above.
+
+`into_buffer()` consumes a view and returns its original storage without copying.
+It is available only when the storage implements the sealed `OwnedBytes` trait:
+`OwnedBuffer`, `Vec<u8>`, `Box<[u8]>`, byte arrays, `Arc<[u8]>`, or `Rc<[u8]>`.
+Borrowed views, including mutable child views, end their borrow when dropped;
+they cannot expose mutable raw bytes that could invalidate a still-live parent.
+
+FFI callers must keep the foreign allocation alive and prevent concurrent writes.
+Validation establishes encoding validity, not ownership or synchronization. See
 [Storage and ownership](../concepts/storage.mdx) for the boundary contract.
 
 Fixed values support replacement in their existing storage. Rust rejects
@@ -150,3 +220,6 @@ ordinary Rust structs do not need `repr(C)` merely to be schemas.
 
 See [Schema annotations](../reference/annotations.mdx) for generic bounds, runtime
 crate paths, external-type adapters, and transparent wrappers.
+
+Optional `glam-0-33`, `glam-0-34`, `smol_str`, and `smallvec` features provide ready-made codecs;
+see [Library adapters](../reference/library-adapters.mdx).

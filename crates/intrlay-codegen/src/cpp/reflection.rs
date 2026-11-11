@@ -73,23 +73,36 @@ pub fn generate(
                 write!(output, ">")?;
             }
             Kind::Enum(variants) => {
-                write!(output, "::intrlay::Enum<{view}")?;
-                for variant in variants {
-                    write!(output, ",\n    ::intrlay::Variant<{}", variant.tag)?;
-                    fields_metadata(
+                if node.is_value_enum() {
+                    write!(
                         output,
-                        plan,
-                        &variant.fields,
-                        &members,
-                        variant.synthetic_payload,
-                        "        ",
+                        "::intrlay::ValueEnum<{}, {}",
+                        context.qualified(&node.input_name()),
+                        node.layout.size()
                     )?;
-                    if !variant.fields.is_empty() {
-                        write!(output, "\n    ")?;
+                    for variant in variants {
+                        write!(output, ", {}", variant.tag)?;
                     }
                     write!(output, ">")?;
+                } else {
+                    write!(output, "::intrlay::Enum<{view}, {}", node.layout.size())?;
+                    for variant in variants {
+                        write!(output, ",\n    ::intrlay::Variant<{}", variant.tag)?;
+                        fields_metadata(
+                            output,
+                            plan,
+                            &variant.fields,
+                            &members,
+                            variant.synthetic_payload,
+                            "        ",
+                        )?;
+                        if !variant.fields.is_empty() {
+                            write!(output, "\n    ")?;
+                        }
+                        write!(output, ">")?;
+                    }
+                    write!(output, "\n>")?;
                 }
-                write!(output, "\n>")?;
             }
             Kind::Sequence(element) => write!(
                 output,
@@ -106,8 +119,9 @@ pub fn generate(
             )?,
             Kind::Optional { value, offset } => write!(
                 output,
-                "::intrlay::Optional<{}, {offset}>",
-                reference(plan, *value, None)
+                "::intrlay::Optional<{}, {offset}, {}>",
+                reference(plan, *value, None),
+                node.layout.size()
             )?,
             Kind::Boxed(value) => write!(
                 output,

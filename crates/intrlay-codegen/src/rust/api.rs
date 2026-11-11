@@ -14,7 +14,18 @@ impl ApiPolicy for Api {
         format!("{native_name}View")
     }
 
-    fn variant_accessor(&self, _plan: &TypeGraph, field: &Field, variant: &Variant) -> String {
+    fn field_accessor(&self, _plan: &TypeGraph, field: &Field, _readonly: bool) -> String {
+        // The derive uses the name emitted on the Rust declaration.
+        field.property_name.clone()
+    }
+
+    fn variant_accessor(
+        &self,
+        _plan: &TypeGraph,
+        field: &Field,
+        variant: &Variant,
+        _readonly: bool,
+    ) -> String {
         let name = NameCase::SnakeCase.apply(&variant.name);
         if variant.synthetic_payload {
             format!("{name}_field_0")

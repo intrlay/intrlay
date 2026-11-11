@@ -64,6 +64,9 @@ fixtures, then compiles and executes consumers for all six targets. It also
 checks TypeScript's unused locals and parameters, Python typing and unused
 arguments, Dart's JavaScript output, and installed C++/C# package
 integration. It installs local runtime and test dependencies as part of setup.
+Optional Rust adapter features are exercised by the conformance crate. The GLM
+tests fetch a pinned upstream archive with a checked hash into their CMake build
+directory; `FETCHCONTENT_SOURCE_DIR_GLM` can select an existing checkout.
 
 Python unused-argument checks use temporary copies without the generated
 file-wide lint suppression. Narrow exceptions for keyword-compatible public

@@ -1,13 +1,21 @@
+mod byte_range;
 mod cache;
+mod documentation;
 mod encoding;
+mod flatten;
 mod generation;
 mod initialization;
+mod input_plan;
 mod mutation;
+mod numeric_region;
 mod properties;
 mod view_plan;
+pub use byte_range::ByteRange;
 pub use cache::ViewCache;
 pub use encoding::{EncodingPlan, WriterParameters};
+pub use input_plan::NumericInput;
 pub use mutation::{Mutation, MutationStep};
+pub use numeric_region::{NumericRegion, RegionStep};
 pub use view_plan::ViewPlan;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,14 +29,42 @@ use crate::{GenerateError, NamingPolicy, SymbolKind, Visibility, backend::Backen
 
 pub type Id = usize;
 
+/// Effective helper choices identify views with different public APIs.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AccessorPolicy {
+    pub components: bool,
+    pub byte_ranges: bool,
+    pub values: bool,
+}
+
 #[derive(Clone, Default)]
 pub struct Options {
     pub exposure: Exposure,
     pub explicit_exposure: bool,
     pub generation: ApiGeneration,
+    pub component_accessors: Option<bool>,
+    pub byte_range_accessors: Option<bool>,
+    pub value_accessors: Option<bool>,
 }
 
 impl Options {
+    pub fn inherit_helpers(&mut self, parent: &Self) {
+        self.component_accessors = self.component_accessors.or(parent.component_accessors);
+        self.byte_range_accessors = self.byte_range_accessors.or(parent.byte_range_accessors);
+        self.value_accessors = self.value_accessors.or(parent.value_accessors);
+    }
+
+    pub fn accessor_policy(&self) -> AccessorPolicy {
+        AccessorPolicy {
+            components: self.component_accessors.unwrap_or(false),
+            byte_ranges: self.byte_range_accessors.unwrap_or(false),
+            values: self.values(),
+        }
+    }
+    pub fn values(&self) -> bool {
+        self.value_accessors.unwrap_or(true)
+    }
+
     fn apply(&mut self, overrides: Option<&TargetOptions>, language: Language) {
         if let Some(overrides) = overrides {
             if let Some(exposure) = overrides.exposure {
@@ -42,6 +78,15 @@ impl Options {
                 if let Some(setters) = overrides.generate_setters {
                     self.generation.setters &= setters;
                 }
+                if let Some(components) = overrides.generate_component_accessors {
+                    self.component_accessors = Some(components);
+                }
+                if let Some(ranges) = overrides.generate_byte_range_accessors {
+                    self.byte_range_accessors = Some(ranges);
+                }
+                if let Some(values) = overrides.generate_value_accessors {
+                    self.value_accessors = Some(values);
+                }
             }
             if let Some(create) = overrides.create {
                 self.generation.create &= create;
@@ -53,6 +98,12 @@ impl Options {
 #[derive(Clone)]
 pub struct Field {
     pub source_name: String,
+    /// Original declaration path, independent of renames and flattened API names.
+    pub source_path: String,
+    /// The field's containing declarations were removed by accessor projection.
+    pub flattened: bool,
+    /// Literal annotation override, before any target naming policy is applied.
+    pub explicit_name: Option<String>,
     pub name: String,
     pub property_name: String,
     pub ty: Id,
@@ -61,13 +112,29 @@ pub struct Field {
     pub options: Options,
 }
 
+impl Field {
+    /// Semantic accessor segment before applying the target naming policy.
+    pub fn name_source(&self) -> &str {
+        self.explicit_name.as_deref().unwrap_or(&self.source_name)
+    }
+}
+
 #[derive(Clone)]
 pub struct Variant {
+    pub source_name: String,
+    pub explicit_name: Option<String>,
     pub name: String,
     pub docs: String,
     pub tag: u32,
     pub fields: Vec<Field>,
     pub synthetic_payload: bool,
+}
+
+impl Variant {
+    /// Variant path segment, independent of input/discriminant naming rules.
+    pub fn name_source(&self) -> &str {
+        self.explicit_name.as_deref().unwrap_or(&self.source_name)
+    }
 }
 
 #[derive(Clone)]
@@ -85,12 +152,20 @@ pub enum Kind {
 
 #[derive(Clone)]
 pub struct Node {
-    /// Encoding metadata remains canonical when accessors use another projection.
+    /// Encoding representation selected before view-specific API projection.
     pub codec: Id,
+    /// Flat numeric input; the original kind and layout still describe the wire.
+    pub numeric_input: Option<input_plan::NumericInput>,
+    /// Public schema identity, preserved when input contexts need distinct helpers.
+    pub schema_name: String,
+    /// Source declaration name used in projected documentation.
+    pub source_name: String,
     pub name: String,
     pub view_name: String,
     pub docs: String,
     pub transparent: bool,
+    /// Declared enum shape; flattening may remove every projected payload field.
+    value_enum: bool,
     pub kind: Kind,
     pub layout: Layout,
     pub buffer_alignment: usize,
@@ -99,13 +174,46 @@ pub struct Node {
 }
 
 impl Node {
+    /// Fields retain their variant so indexed APIs can guard payload access.
+    pub fn fields(&self) -> impl Iterator<Item = (&Field, Option<&Variant>)> {
+        let record = if let Kind::Record(fields) = &self.kind {
+            Some(fields)
+        } else {
+            None
+        };
+        let variants = if let Kind::Enum(variants) = &self.kind {
+            Some(variants)
+        } else {
+            None
+        };
+        record
+            .into_iter()
+            .flatten()
+            .map(|field| (field, None))
+            .chain(variants.into_iter().flatten().flat_map(|variant| {
+                variant
+                    .fields
+                    .iter()
+                    .map(move |field| (field, Some(variant)))
+            }))
+    }
+
+    pub fn has_field_payload(&self) -> bool {
+        matches!(self.kind, Kind::Record(_))
+            || matches!(self.kind, Kind::Enum(_)) && !self.is_value_enum()
+    }
     /// Only declared payload absence qualifies, not a zero-sized payload type.
     pub fn is_value_enum(&self) -> bool {
-        matches!(&self.kind, Kind::Enum(variants) if variants.iter().all(|variant| variant.fields.is_empty()))
+        self.value_enum
     }
-    /// Input declarations remain distinct from a future frontend's schema type.
+    /// Payload-free enums share one value type for construction and reads.
+    /// Structured inputs remain distinct from a future frontend's schema type.
     pub fn input_name(&self) -> String {
-        format!("{}Input", self.name)
+        if self.is_value_enum() {
+            self.schema_name.clone()
+        } else {
+            format!("{}Input", self.name)
+        }
     }
 
     pub fn kind_name(&self) -> String {
@@ -115,10 +223,15 @@ impl Node {
     /// Numeric tag type: a value enum itself, or a payload enum's companion.
     pub fn tag_type_name(&self) -> String {
         if self.is_value_enum() {
-            self.input_name()
+            self.schema_name.clone()
         } else {
             self.kind_name()
         }
+    }
+
+    /// Numeric and structured inputs reuse one enum declaration and its variants.
+    pub fn is_enum_input_context(&self) -> bool {
+        self.is_value_enum() && self.name != self.schema_name
     }
 
     pub fn variant_input_name(&self, variant: &Variant) -> String {
@@ -139,8 +252,10 @@ impl GenerationPlan {
         backend: &'static Backend,
         naming: Option<NamingPolicy>,
     ) -> Result<Self, GenerateError> {
-        let encoding = EncodingPlan::new(TypeGraph::new(schema, backend, naming)?);
-        let views = ViewPlan::new(&encoding.types);
+        let mut types = TypeGraph::new(schema, backend, naming)?.project_inputs()?;
+        let views = ViewPlan::new(&types)?;
+        types.document_inputs();
+        let encoding = EncodingPlan::new(types, &views);
         Ok(Self { encoding, views })
     }
 }
@@ -192,20 +307,34 @@ impl TypeGraph {
         for (identity, definition) in &schema.definitions {
             let id = builder.index(&Type::Named(identity.clone()))?;
             let kind = match &definition.kind {
-                DefinitionKind::Record(fields) => {
-                    Kind::Record(builder.fields(fields, definition.alignment, 0)?)
-                }
+                DefinitionKind::Record(fields) => Kind::Record(builder.fields(
+                    fields,
+                    definition.alignment,
+                    0,
+                    &definition.name,
+                )?),
                 DefinitionKind::Enum(variants) => {
                     let layout = builder.layouts.variants(variants, definition.alignment)?;
                     let mut result = Vec::with_capacity(variants.len());
                     for variant in variants {
                         let variant_options = variant.targets.get(&language);
-                        let mut fields =
-                            builder.fields(&variant.fields, 1, layout.payload_offset)?;
-                        for field in &mut fields {
+                        let mut fields = builder.fields(
+                            &variant.fields,
+                            1,
+                            layout.payload_offset,
+                            &format!("{}.{}", definition.name, variant.name),
+                        )?;
+                        for (field, declaration) in fields.iter_mut().zip(&variant.fields) {
                             field.options.apply(variant_options, language);
+                            // Variant policies supply defaults; explicit field choices
+                            // still select their own accessor families.
+                            field
+                                .options
+                                .apply(declaration.targets.get(&language), language);
                         }
                         result.push(Variant {
+                            source_name: variant.name.clone(),
+                            explicit_name: variant_options.and_then(|options| options.name.clone()),
                             name: identifier(
                                 &variant_options
                                     .and_then(|options| options.name.clone())
@@ -227,6 +356,10 @@ impl TypeGraph {
                     Kind::Enum(result)
                 }
             };
+            builder.plan.nodes[id].value_enum = matches!(
+                &kind,
+                Kind::Enum(variants) if variants.iter().all(|variant| variant.fields.is_empty())
+            );
             builder.plan.nodes[id].kind = kind;
             builder.plan.nodes[id].transparent = definition.transparent;
             builder.plan.nodes[id].docs.clone_from(&definition.docs);
@@ -339,6 +472,9 @@ impl TypeGraph {
         if let Some(field) = self.folded_field(id) {
             return self.borrows_content(field.ty);
         }
+        if self.nodes[id].is_value_enum() {
+            return false;
+        }
         match self.nodes[id].kind {
             Kind::Record(_) | Kind::Enum(_) | Kind::Sequence(_) | Kind::Array { .. } => true,
             Kind::Optional { value, .. } | Kind::Boxed(value) => self.borrows_content(value),
@@ -353,6 +489,9 @@ impl TypeGraph {
         if let Some(field) = self.folded_field(id) {
             return self.caches_view(field.ty);
         }
+        if self.nodes[id].is_value_enum() {
+            return false;
+        }
         match self.nodes[id].kind {
             Kind::Record(_) | Kind::Enum(_) | Kind::Sequence(_) | Kind::Array { .. } => true,
             Kind::Boxed(value) | Kind::Optional { value, .. } => self.caches_view(value),
@@ -360,22 +499,16 @@ impl TypeGraph {
         }
     }
 
-    /// Numeric projection opts into lane-level access without constructing a
-    /// borrowed array wrapper for each element in a record collection.
+    /// Resolves the lane type of a numeric field. `FieldHelpers` separately
+    /// checks the explicit opt-in before emitting direct component accessors.
     pub fn component_scalar(&self, field: &Field) -> Option<Scalar> {
-        if !self.backend.native_numeric_array_views {
-            return None;
-        }
-        match field.options.exposure {
-            Exposure::TypedArray(scalar) => Some(scalar),
-            _ => None,
-        }
+        self.numeric_region(field).map(|region| region.scalar)
     }
 
     /// Standalone construction/access APIs and views returned by their accessors
     /// form the view graph. Encoding a nested record does not require its view.
-    /// Inline scalar, Option, and Box layouts need no wrapper of their own unless
-    /// the caller explicitly exports one as a standalone buffer entry point.
+    /// Inline scalar, value-enum, Option, and Box layouts need no wrapper of their
+    /// own unless explicitly exported as a standalone buffer entry point.
     fn collect_views(&self) -> BTreeSet<Id> {
         let mut views = BTreeSet::new();
         for id in self.exports.values().copied().chain(
@@ -384,7 +517,10 @@ impl TypeGraph {
                 .take(self.canonical_nodes)
                 .enumerate()
                 .filter_map(|(id, node)| {
-                    matches!(node.kind, Kind::Record(_) | Kind::Enum(_)).then_some(id)
+                    (self.backend.language.has_value_types()
+                        && matches!(node.kind, Kind::Record(_) | Kind::Enum(_))
+                        && !node.is_value_enum())
+                    .then_some(id)
                 }),
         ) {
             let generation = self.nodes[id].options.generation;
@@ -414,33 +550,59 @@ impl TypeGraph {
     fn include_child_views(&self, id: Id, views: &mut BTreeSet<Id>) {
         let node = &self.nodes[id];
         match &node.kind {
-            Kind::Record(fields) => self.include_field_views(node, fields, views),
+            Kind::Record(fields) => self.include_field_views(node, fields, None, views),
             Kind::Enum(variants) => {
                 for variant in variants {
-                    self.include_field_views(node, &variant.fields, views);
+                    self.include_field_views(node, &variant.fields, Some(variant), views);
                 }
             }
             Kind::Sequence(element) | Kind::Array { element, .. }
                 if node.options.generation.getters || node.options.generation.setters =>
             {
-                self.include_value_view(*element, self.nodes[*element].options.exposure, views);
+                if crate::api::CollectionAccessors::new(self, node, *element).getter {
+                    self.include_value_view(*element, self.nodes[*element].options.exposure, views);
+                }
+                // Indexed accessors may return a field's child view without ever
+                // constructing the enclosing record's element view.
+                let child = &self.nodes[*element];
+                if self.folded_node(child).is_none() {
+                    for (field, variant) in child.fields() {
+                        if crate::api::IndexedAccessors::new(self, node, child, field, variant)
+                            .getter
+                            .is_some()
+                        {
+                            self.include_value_view(field.ty, field.options.exposure, views);
+                        }
+                    }
+                }
             }
-            _ if node.options.generation.getters || node.options.generation.setters => {
+            _ if node.options.values()
+                && (node.options.generation.getters || node.options.generation.setters) =>
+            {
                 self.include_value_view(id, node.options.exposure, views);
             }
             _ => {}
         }
     }
 
-    fn include_field_views(&self, node: &Node, fields: &[Field], views: &mut BTreeSet<Id>) {
+    fn include_field_views(
+        &self,
+        node: &Node,
+        fields: &[Field],
+        variant: Option<&Variant>,
+        views: &mut BTreeSet<Id>,
+    ) {
         for field in fields {
-            if field_generation(node, field).getters || field_generation(node, field).setters {
+            if crate::api::Accessor::field(self, node, field, variant).getter {
                 self.include_value_view(field.ty, field.options.exposure, views);
             }
         }
     }
 
     fn include_value_view(&self, id: Id, exposure: Exposure, views: &mut BTreeSet<Id>) {
+        if self.nodes[id].is_value_enum() {
+            return;
+        }
         if self.backend.native_numeric_array_views && matches!(exposure, Exposure::TypedArray(_)) {
             return;
         }
@@ -539,13 +701,46 @@ impl TypeGraph {
     }
 
     fn check_exposure(&self, node: &Node, exposure: Exposure) -> Result<(), GenerateError> {
-        if self.backend.language.has_value_types() && exposure == Exposure::Indexed {
+        if self.backend.language.has_value_types()
+            && matches!(
+                exposure,
+                Exposure::Indexed | Exposure::IndexedOnly | Exposure::Flatten
+            )
+        {
             return Err(GenerateError(format!(
-                "{:?} retains typed collection elements and does not support indexed projections",
+                "{:?} retains typed values and does not support {exposure:?} projections",
                 self.backend.language
             )));
         }
         match exposure {
+            Exposure::Indexed | Exposure::IndexedOnly => {
+                let projection = if exposure == Exposure::Indexed {
+                    "indexed"
+                } else {
+                    "indexed_only"
+                };
+                let element = match node.kind {
+                    Kind::Sequence(element) | Kind::Array { element, .. } => &self.nodes[element],
+                    _ => {
+                        return Err(GenerateError(format!(
+                            "{projection} projection requires a collection of records or payload enums: {}",
+                            node.name
+                        )));
+                    }
+                };
+                if !element.has_field_payload() || self.folded_node(element).is_some() {
+                    return Err(GenerateError(format!(
+                        "{projection} projection requires non-transparent records or payload enums: {}",
+                        node.name
+                    )));
+                }
+            }
+            Exposure::Flatten if !matches!(node.kind, Kind::Record(_) | Kind::Array { .. }) => {
+                return Err(GenerateError(format!(
+                    "flatten projection requires an inline record or fixed array: {}",
+                    node.name
+                )));
+            }
             Exposure::TypedArray(scalar) => {
                 if !self.backend.native_numeric_array_views {
                     return Err(GenerateError(format!(
@@ -565,12 +760,6 @@ impl TypeGraph {
                         node.name
                     )));
                 }
-            }
-            Exposure::Indexed if !matches!(node.kind, Kind::Sequence(_) | Kind::Array { .. }) => {
-                return Err(GenerateError(format!(
-                    "indexed projection requires a collection: {}",
-                    node.name
-                )));
             }
             _ => {}
         }
@@ -644,11 +833,19 @@ impl<'a> Builder<'a> {
             .view_name(&self.plan.names, &name, source);
         self.plan.nodes.push(Node {
             codec: id,
+            numeric_input: None,
+            schema_name: name.clone(),
+            source_name: if let Type::Named(identity) = &ty {
+                self.schema.definitions[identity].name.clone()
+            } else {
+                self.type_label(&ty)
+            },
             name,
             view_name: identifier(&view_name)?,
             docs: String::new(),
             kind: Kind::Unit,
             transparent: false,
+            value_enum: false,
             layout: self.layouts.of(&ty)?,
             buffer_alignment: self.layouts.buffer_alignment(&ty)?,
             options: Options::default(),
@@ -720,10 +917,10 @@ impl<'a> Builder<'a> {
         fields: &[intrlay_schema::Field],
         alignment: usize,
         base: usize,
+        source: &str,
     ) -> Result<Vec<Field>, GenerateError> {
         let layout = self.layouts.record(fields, alignment)?;
         let mut result = Vec::with_capacity(fields.len());
-        let mut names = BTreeSet::new();
         for (field, offset) in fields.iter().zip(layout.fields) {
             let ty = self.index(&field.ty)?;
             let inherited = match &field.ty {
@@ -753,20 +950,18 @@ impl<'a> Builder<'a> {
                     self.plan.backend.input_field_modifiers,
                 )
             });
-            let property_name = explicit_name.unwrap_or_else(|| {
+            let property_name = explicit_name.clone().unwrap_or_else(|| {
                 self.plan.names.property(
                     &source_name,
                     !options.generation.setters || !matches!(field.ty, Type::Scalar(_)),
                 )
             });
             let name = identifier(&name)?;
-            if !names.insert(name.clone()) {
-                return Err(GenerateError(format!(
-                    "field names collide after casing: {name}; provide an explicit target name"
-                )));
-            }
             result.push(Field {
                 source_name,
+                source_path: format!("{source}.{}", field.name),
+                flattened: false,
+                explicit_name,
                 name,
                 property_name: identifier(&property_name)?,
                 ty,
@@ -801,12 +996,16 @@ pub fn field_generation(node: &Node, field: &Field) -> ApiGeneration {
 }
 
 /// Indexed helpers expose an element's field on its enclosing collection.
-/// Both declarations' emission hints participate; neither grants extra access.
+/// Only indexed projections emit them. Both declarations' emission hints apply.
 pub fn indexed_field_generation(collection: &Node, element: &Node, field: &Field) -> ApiGeneration {
+    let indexed = matches!(
+        collection.options.exposure,
+        Exposure::Indexed | Exposure::IndexedOnly
+    );
     let generation = field_generation(element, field);
     ApiGeneration {
-        getters: collection.options.generation.getters && generation.getters,
-        setters: collection.options.generation.setters && generation.setters,
-        create: collection.options.generation.create && generation.create,
+        getters: indexed && collection.options.generation.getters && generation.getters,
+        setters: indexed && collection.options.generation.setters && generation.setters,
+        create: indexed && collection.options.generation.create && generation.create,
     }
 }

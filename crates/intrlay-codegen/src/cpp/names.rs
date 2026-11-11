@@ -5,7 +5,22 @@ use intrlay_schema::NameCase;
 use crate::{NameStyle, NamingPolicy, NamingRule, SymbolKind, SymbolSelector, Visibility};
 
 /// Object-like runtime macros expand in every identifier position.
-pub const OBJECT_MACROS: &[&str] = &["INTRLAY_RESTRICT"];
+pub const OBJECT_MACROS: &[&str] = &["INTRLAY_RESTRICT", "INTRLAY_DETAIL_PARENS"];
+
+/// Function-like runtime macros cannot name generated methods or constructors.
+pub const FUNCTION_MACROS: &[&str] = &[
+    "INTRLAY_MEMBER",
+    "INTRLAY_ADAPT_STRUCT",
+    "INTRLAY_DETAIL_EXPAND1",
+    "INTRLAY_DETAIL_EXPAND2",
+    "INTRLAY_DETAIL_EXPAND4",
+    "INTRLAY_DETAIL_EXPAND8",
+    "INTRLAY_DETAIL_EXPAND16",
+    "INTRLAY_DETAIL_EXPAND32",
+    "INTRLAY_DETAIL_EXPAND64",
+    "INTRLAY_DETAIL_FIELDS_AGAIN",
+    "INTRLAY_DETAIL_FIELDS",
+];
 
 /// Both generated declarations and original source-member mappings must survive
 /// the preprocessor and use ordinary C++ identifiers.

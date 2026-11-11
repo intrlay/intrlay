@@ -7,13 +7,15 @@
 
 #![forbid(unsafe_code)]
 
+mod adapters;
 mod annotations;
+mod compiler;
 mod documentation;
 mod extract;
 
-use std::{error::Error, fmt, path::Path, sync::Mutex};
+use std::{collections::BTreeMap, error::Error, fmt, path::Path, sync::Mutex};
 
-use clang::{Clang, CompilationDatabase, Index, diagnostic::Severity};
+use clang::{Clang, Index, TranslationUnit, diagnostic::Severity};
 use intrlay_schema::{Layouts, Schema};
 
 /// Compiler settings used when parsing a schema translation unit.
@@ -56,67 +58,63 @@ pub fn extract(path: impl AsRef<Path>, options: &Options) -> Result<Schema, Fron
         .map_err(|error| FrontendError(error.to_string()))?;
     let clang = Clang::new().map_err(FrontendError)?;
     let index = Index::new(&clang, false, false);
-    let arguments = compiler_arguments(&path, options)?;
-    let unit = index
+    let arguments = compiler::arguments(&path, options)?;
+    let mut unit = index
         .parser(&path)
         .arguments(&arguments)
         .parse()
         .map_err(|error| FrontendError(format!("cannot parse {}: {error:?}", path.display())))?;
-    let errors: Vec<_> = unit
-        .get_diagnostics()
-        .into_iter()
-        .filter(|diagnostic| diagnostic.get_severity() >= Severity::Error)
-        .map(|diagnostic| diagnostic.to_string())
-        .collect();
-    if !errors.is_empty() {
-        return Err(FrontendError(errors.join("\n")));
-    }
-    let schema = extract::Extractor::default().extract(unit.get_entity())?;
+    check_diagnostics(&unit)?;
+
+    // Reparse only when adapters exist, and only for concrete types reachable
+    // from exports. Each pass batches newly discovered schema_type requests.
+    let enabled = adapters::has_specializations(unit.get_entity());
+    let original = if enabled {
+        std::fs::read_to_string(&path).map_err(|error| FrontendError(error.to_string()))?
+    } else {
+        String::new()
+    };
+    let mut queries = Vec::new();
+    let schema = loop {
+        let resolved = if queries.is_empty() {
+            BTreeMap::new()
+        } else {
+            adapters::resolved(unit.get_entity(), &queries)?
+        };
+        let mut mappings = adapters::Adapters::new(enabled, resolved);
+        let result = extract::Extractor::new(&mut mappings).extract(unit.get_entity());
+        if mappings.pending.is_empty() {
+            break result?;
+        }
+        for (_, query) in mappings.pending {
+            // An expression that resolves a namesake must never silently select
+            // its adapter, nor keep appending the same unresolved request.
+            if queries.contains(&query) {
+                return Err(FrontendError(format!(
+                    "adapter probe does not name the exported source type: {}",
+                    query.expression
+                )));
+            }
+            queries.push(query);
+        }
+        unit = adapters::parse(&index, &path, &arguments, &original, &queries)?;
+    };
     Layouts::new(&schema)
         .validate()
         .map_err(|error| FrontendError(error.to_string()))?;
     Ok(schema)
 }
 
-fn compiler_arguments(path: &Path, options: &Options) -> Result<Vec<String>, FrontendError> {
-    let mut result = vec!["-x".into(), "c++".into(), "-std=c++20".into()];
-    if let Some(directory) = &options.compilation_database {
-        let database = CompilationDatabase::from_directory(directory)
-            .map_err(|error| FrontendError(format!("compilation database: {error:?}")))?;
-        let commands = database.get_compile_commands(path).map_err(|error| {
-            FrontendError(format!("compile command for {}: {error:?}", path.display()))
-        })?;
-        let commands = commands.get_commands();
-        let command = commands
-            .first()
-            .ok_or_else(|| FrontendError("empty compile command".into()))?;
-        let working_directory = command.get_directory();
-        let source = resolved_source(&command.get_filename(), &working_directory);
-        let input = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        result.push(format!(
-            "-working-directory={}",
-            working_directory.display()
-        ));
-        let mut arguments = command.get_arguments().into_iter().skip(1);
-        while let Some(argument) = arguments.next() {
-            if argument == "-o" {
-                arguments.next();
-            } else if argument != "-c" && argument != "/c" && !argument.starts_with("/Fo") {
-                if !argument.starts_with('-') {
-                    let candidate = resolved_source(Path::new(&argument), &working_directory);
-                    if candidate == source || candidate == input {
-                        continue;
-                    }
-                }
-                result.push(argument);
-            }
-        }
+fn check_diagnostics(unit: &TranslationUnit<'_>) -> Result<(), FrontendError> {
+    let errors: Vec<_> = unit
+        .get_diagnostics()
+        .into_iter()
+        .filter(|diagnostic| diagnostic.get_severity() >= Severity::Error)
+        .filter(|diagnostic| !compiler::is_parser_option_diagnostic(diagnostic))
+        .map(|diagnostic| diagnostic.to_string())
+        .collect();
+    if !errors.is_empty() {
+        return Err(FrontendError(errors.join("\n")));
     }
-    result.extend(options.arguments.iter().cloned());
-    Ok(result)
-}
-
-fn resolved_source(path: &Path, directory: &Path) -> std::path::PathBuf {
-    let path = directory.join(path);
-    path.canonicalize().unwrap_or(path)
+    Ok(())
 }

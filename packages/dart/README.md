@@ -26,11 +26,11 @@ void main() {
   final point = PointView.create(const PointInput(x: 1, y: 2, z: 3));
   point.x = 4;
 
-  assert(PointView(point.bytes).x == 4);
+  assert(PointView(point.storage.bytes).x == 4);
 }
 ```
 
-`point.bytes` is a `Uint8List`, suitable for passing through an application's
+`point.storage.bytes` is a `Uint8List`, suitable for passing through an application's
 FFI or web transport. `createInPlace` can use storage allocated by the caller.
 
 ## Documentation

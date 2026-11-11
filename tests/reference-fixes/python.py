@@ -1,23 +1,27 @@
 from pathlib import Path
+from array import array
 import sys
 from collections.abc import Callable
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'target/reference-fixes'))
 from bindings import FixtureInput, FixtureView, DeepRootView, CachedRootView, ChoiceKind, ChoiceView
-from intrlay import Storage, Some, IntView
+from intrlay import Storage, Some, IntView, FloatView, zeroed
+
+def padded(value: float) -> FloatView:
+    return memoryview(array("f", [value, 0, 0, 0]))
 
 value: FixtureInput = {
     'custom': {'value': 1}, 'deep': 7, 'nested': Some(8), 'absent': None,
     'missing_inner': Some(None), 'values': [9],
-    'items': [{'scalar': 10, 'child': Some({'value': 11}), 'projected': Some(12.0)}],
-    'cached': Some({'value': 13}), 'projected': Some(14.0), 'lanes': [15.0, 16.0],
+    'items': [{'scalar': 10, 'child': Some({'value': 11}), 'projected': Some(padded(12.0))}],
+    'cached': Some({'value': 13}), 'projected': Some(padded(14.0)), 'lanes': memoryview(array('f', [15, 0, 0, 0, 16, 0, 0, 0])),
     'choice': {'kind': ChoiceKind.Selected, 'scalar': Some(17), 'child': Some({'value': 18})},
-    'inactive': {'kind': ChoiceKind.Empty}, 'before': 19, 'empty': {}, 'after': 20,
-    'empty_items': [{}, {}], 'read_only': Some(21),
+    'inactive': {'kind': ChoiceKind.Empty}, 'before': 19, 'empty': memoryview(array('f')), 'after': 20,
+    'empty_items': zeroed(2), 'read_only': Some(21),
 }
 owned = FixtureView.create(value)
-assert bytes(owned.buffer) == (ROOT / 'target/reference-fixes/fixture.bin').read_bytes()
+assert bytes(owned.storage.bytes) == (ROOT / 'target/reference-fixes/fixture.bin').read_bytes()
 
 class CountingStorage(Storage):
     reads: int = 0
@@ -27,7 +31,7 @@ class CountingStorage(Storage):
         self.reads += 1
         return super().u32
 
-storage = CountingStorage(owned.buffer)
+storage = CountingStorage(owned.storage.bytes)
 view = FixtureView(storage)
 def reads[T](expected: int, action: Callable[[], T]) -> T:
     storage.reads = 0
@@ -54,7 +58,7 @@ cached = reads(2, lambda: view.cached)
 assert cached is not None and cached.value is not None
 assert reads(0, lambda: view.cached) is cached
 cached.value.value = 23
-fresh = FixtureView(owned.buffer).cached
+fresh = FixtureView(owned.storage.bytes).cached
 assert fresh is not None and fresh.value is not None and fresh.value.value == 23
 projected = reads(2, lambda: view.projected)
 assert projected is not None and projected.value is not None and projected.value[0] == 14.0

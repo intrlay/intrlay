@@ -17,7 +17,7 @@ static class GenericInputTests
         byte[] expectedBytes = FlatPacketView.Create(in expected).Bytes.ToArray();
         Span<byte> buffer = stackalloc byte[expectedBytes.Length + 2];
         buffer.Fill(0xa5);
-        var result = FlatPacketSpanView.CreateInPlace(buffer[1..^1], in mixed);
+        var result = FlatPacketSpanView.CreateInPlace(buffer[1..^1], mixed);
         Check(result.Bytes.SequenceEqual(expectedBytes) && buffer[0] == 0xa5 && buffer[^1] == 0xa5,
             "mixed borrowed and zeroed sources match canonical bytes with unaligned storage");
 
@@ -28,10 +28,15 @@ static class GenericInputTests
             "Memory input mixes value copies with zeroed sequences and fixed extents");
 
         // The public overloads and generic codecs retain the allocation-free reuse path.
-        for (int i = 0; i < 1000; ++i) FlatPacketSpanView.CreateInPlace(buffer, in mixed);
+        for (int i = 0; i < 1000; ++i) FlatPacketSpanView.CreateInPlace(buffer, mixed);
         long allocated = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 1000; ++i) FlatPacketSpanView.CreateInPlace(buffer, in mixed);
+        for (int i = 0; i < 1000; ++i) FlatPacketSpanView.CreateInPlace(buffer, mixed);
         Check(GC.GetAllocatedBytesForCurrentThread() == allocated, "generic ref struct sources must not box");
+        Check(CreateFromStack().Color[2] == 7 && CreateReadOnlyFromStack().Color[2] == 7,
+            "allocating span factories do not retain generic stack sources");
+        Check(CreateInPlaceFromStack(buffer).Color[2] == 7
+            && CreateReadOnlyInPlaceFromStack(buffer).Color[2] == 7,
+            "in-place span factories borrow only the caller's destination");
 
         var badExtent = FlatPacketSpanInput.FromSources(23, new ZeroedSequence<VertexInput>(0),
             new ZeroedSequence<float>(0), default, SequenceSpanInput<uint>.From(color[..2]), false);
@@ -57,6 +62,38 @@ static class GenericInputTests
     }
 
     private sealed class ReadCount { public int Value; }
+
+    private static FlatPacketSpanView CreateFromStack()
+    {
+        Span<uint> color = stackalloc uint[] { 5, 6, 7 };
+        var input = FlatPacketSpanInput.FromSources(23, new ZeroedSequence<VertexInput>(0),
+            new ZeroedSequence<float>(0), default, SequenceSpanInput<uint>.From(color), true);
+        return FlatPacketSpanView.Create(input);
+    }
+
+    private static FlatPacketSpanViewReadOnly CreateReadOnlyFromStack()
+    {
+        Span<uint> color = stackalloc uint[] { 5, 6, 7 };
+        var input = FlatPacketSpanInput.FromSources(23, new ZeroedSequence<VertexInput>(0),
+            new ZeroedSequence<float>(0), default, SequenceSpanInput<uint>.From(color), true);
+        return FlatPacketSpanViewReadOnly.Create(input);
+    }
+
+    private static FlatPacketSpanView CreateInPlaceFromStack(Span<byte> storage)
+    {
+        Span<uint> color = stackalloc uint[] { 5, 6, 7 };
+        var input = FlatPacketSpanInput.FromSources(23, new ZeroedSequence<VertexInput>(0),
+            new ZeroedSequence<float>(0), default, SequenceSpanInput<uint>.From(color), true);
+        return FlatPacketSpanView.CreateInPlace(storage, input);
+    }
+
+    private static FlatPacketSpanViewReadOnly CreateReadOnlyInPlaceFromStack(Span<byte> storage)
+    {
+        Span<uint> color = stackalloc uint[] { 5, 6, 7 };
+        var input = FlatPacketSpanInput.FromSources(23, new ZeroedSequence<VertexInput>(0),
+            new ZeroedSequence<float>(0), default, SequenceSpanInput<uint>.From(color), true);
+        return FlatPacketSpanViewReadOnly.CreateInPlace(storage, input);
+    }
 
     private readonly struct ShrinkingSource(ReadCount count) : ISequenceSource<float>
     {

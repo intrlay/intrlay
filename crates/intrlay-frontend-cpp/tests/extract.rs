@@ -1,5 +1,7 @@
 //! Real compiler coverage for the C++20 source frontend.
 
+mod common;
+
 use std::path::PathBuf;
 
 use intrlay_frontend_cpp::{Options, extract};
@@ -21,7 +23,7 @@ fn custom_character_traits_preserve_the_string_schema() -> Result<(), Box<dyn st
         ..Options::default()
     };
     let schema = extract(directory.join("tests/fixtures/codec_cases.hpp"), &options)?;
-    let DefinitionKind::Record(fields) = &schema.definitions["codec_fixture::Text"].kind else {
+    let DefinitionKind::Record(fields) = &common::definition(&schema, "Text").kind else {
         return Err("text record expected".into());
     };
     assert_eq!(fields[0].ty, Type::String);
@@ -43,11 +45,11 @@ fn forward_declarations_preserve_complete_definitions() -> Result<(), Box<dyn st
     options.arguments.push("-DINTRLAY_DEFINE_FIRST".into());
     let defined_first = extract(&path, &options)?;
     assert_eq!(forward, defined_first);
-    let child = &forward.definitions["forward_fixture::Child"];
+    let child = common::definition(&forward, "Child");
     assert!(child.transparent);
     assert_eq!(child.alignment, 16);
     assert_eq!(child.docs, "An explicitly aligned child.");
-    let mode = &forward.definitions["forward_fixture::Mode"];
+    let mode = common::definition(&forward, "OperatingMode");
     assert_eq!(mode.name, "OperatingMode");
     let DefinitionKind::Enum(variants) = &mode.kind else {
         return Err("mode enum expected".into());
@@ -133,7 +135,7 @@ fn concrete_cpp_types_use_the_shared_layout() -> Result<(), Box<dyn std::error::
     };
     let schema = extract(directory.join("tests/fixtures/schema.hpp"), &options)?;
     assert_eq!(schema.exports.len(), 4);
-    let point = &schema.definitions["fixture::Point"];
+    let point = common::definition(&schema, "Point");
     assert_eq!(
         point.docs,
         "A point in world space.\n\n    Preserve example indentation."
@@ -143,10 +145,10 @@ fn concrete_cpp_types_use_the_shared_layout() -> Result<(), Box<dyn std::error::
     };
     assert_eq!(point_fields[0].docs, "Position along X.");
     assert_eq!(
-        schema.definitions["fixture::Frame"].docs,
+        common::definition(&schema, "Frame").docs,
         "Drawing frame.\n\n    Keep this indentation too."
     );
-    let DefinitionKind::Enum(variants) = &schema.definitions["fixture::Mode"].kind else {
+    let DefinitionKind::Enum(variants) = &common::definition(&schema, "Mode").kind else {
         return Err("mode enum expected".into());
     };
     assert_eq!(variants[1].docs, "Device is enabled.");
@@ -162,7 +164,7 @@ fn concrete_cpp_types_use_the_shared_layout() -> Result<(), Box<dyn std::error::
     }
     assert_eq!(
         Layouts::new(&schema)
-            .of(&Type::Named("fixture::Point".into()))?
+            .of(&common::named(&schema, "Point"))?
             .size(),
         16
     );
@@ -177,7 +179,7 @@ fn concrete_cpp_types_use_the_shared_layout() -> Result<(), Box<dyn std::error::
         fields[1].ty,
         Type::Optional(Box::new(Type::Scalar(Scalar::U64)))
     );
-    assert!(schema.definitions.contains_key("fixture::Node"));
+    let _ = common::definition(&schema, "Node");
     Ok(())
 }
 
@@ -192,12 +194,10 @@ fn annotations_preserve_source_identity() -> Result<(), Box<dyn std::error::Erro
         ..Options::default()
     };
     let schema = extract(directory.join("tests/fixtures/annotations.hpp"), &options)?;
-    let id = &schema.definitions["annotation_fixture::CppId"];
+    let id = common::definition(&schema, "CppId");
     assert!(id.transparent);
     assert_eq!(id.alignment, 16);
-    let DefinitionKind::Record(fields) =
-        &schema.definitions["annotation_fixture::RenamedField"].kind
-    else {
+    let DefinitionKind::Record(fields) = &common::definition(&schema, "RenamedField").kind else {
         panic!("record expected")
     };
     assert_eq!(fields[0].name, "native_value");
@@ -209,8 +209,7 @@ fn annotations_preserve_source_identity() -> Result<(), Box<dyn std::error::Erro
         fields[0].targets[&Language::TypeScript].name.as_deref(),
         Some("literalValue")
     );
-    let DefinitionKind::Enum(variants) = &schema.definitions["annotation_fixture::CppChoice"].kind
-    else {
+    let DefinitionKind::Enum(variants) = &common::definition(&schema, "CppChoice").kind else {
         panic!("enum expected")
     };
     assert_eq!(variants[0].name, "Original");
@@ -234,13 +233,12 @@ fn top_level_qualifiers_share_the_underlying_named_type() -> Result<(), Box<dyn 
     };
     let schema = extract(directory.join("tests/fixtures/qualifiers.hpp"), &options)?;
     assert_eq!(schema.definitions.len(), 7);
-    let DefinitionKind::Record(fields) = &schema.definitions["qualifier_fixture::Qualified"].kind
-    else {
+    let DefinitionKind::Record(fields) = &common::definition(&schema, "Qualified").kind else {
         panic!("record expected");
     };
-    let child = Type::Named("qualifier_fixture::Child".into());
+    let child = common::named(&schema, "Child");
     assert!(fields[..4].iter().all(|field| field.ty == child));
-    let mode = Type::Named("qualifier_fixture::Mode".into());
+    let mode = common::named(&schema, "Mode");
     assert!(fields[4..8].iter().all(|field| field.ty == mode));
     assert_eq!(fields[8].ty, fields[9].ty);
     assert_eq!(fields[10].ty, Type::Boxed(Box::new(child.clone())));
@@ -255,12 +253,12 @@ fn top_level_qualifiers_share_the_underlying_named_type() -> Result<(), Box<dyn 
     assert_eq!(fields[12].ty, schema.exports["PlainHolder"]);
     assert_eq!(fields[14].ty, schema.exports["ConstHolder"]);
     assert_ne!(schema.exports["PlainHolder"], schema.exports["ConstHolder"]);
-    let DefinitionKind::Record(fields) = &schema.definitions["qualifier_fixture::Node"].kind else {
+    let DefinitionKind::Record(fields) = &common::definition(&schema, "Node").kind else {
         panic!("recursive record expected");
     };
     assert_eq!(
         fields[0].ty,
-        Type::Boxed(Box::new(Type::Named("qualifier_fixture::Node".into())))
+        Type::Boxed(Box::new(common::named(&schema, "Node")))
     );
     Ok(())
 }
@@ -277,12 +275,11 @@ fn only_native_variant_alternatives_have_synthetic_payloads()
         ..Options::default()
     };
     let schema = extract(directory.join("tests/fixtures/qualifiers.hpp"), &options)?;
-    let DefinitionKind::Enum(variants) = &schema.definitions["qualifier_fixture::Mode"].kind else {
+    let DefinitionKind::Enum(variants) = &common::definition(&schema, "Mode").kind else {
         panic!("enum expected");
     };
     assert!(variants.iter().all(|variant| !variant.synthetic_payload));
-    let DefinitionKind::Record(fields) = &schema.definitions["qualifier_fixture::Qualified"].kind
-    else {
+    let DefinitionKind::Record(fields) = &common::definition(&schema, "Qualified").kind else {
         panic!("record expected");
     };
     let Type::Named(choice) = &fields[8].ty else {

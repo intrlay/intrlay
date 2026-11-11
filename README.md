@@ -66,7 +66,7 @@ import { PointView } from "./generated/point.js";
 const point = PointView.create({ x: 1, y: 2, z: 3 });
 point.x = 4;
 
-const received = new PointView(point.bytes);
+const received = new PointView(point.storage.bytes);
 console.log(received.x); // 4
 ```
 
@@ -101,8 +101,9 @@ target below.
 - [Generated names](https://intrlay.github.io/intrlay/reference/naming/)
 
 Intrlay targets cooperating producers and consumers that agree on a schema.
-Views assume a valid encoding; transport, schema negotiation, and validation of
-untrusted input belong at the application's boundary.
+Rust and C++ offer checked view constructors and explicit unchecked paths.
+Transport, schema selection, buffer lifetime, and synchronization remain the
+application's responsibility.
 
 ## Contributing
 

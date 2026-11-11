@@ -228,7 +228,8 @@ fn main() {
 
     {
         let mut bytes = [0u8; 4];
-        let mut view = unsafe { <generated::ReadOnly as Intrlay>::view_mut(&mut bytes, 0) };
+        let mut view =
+            unsafe { <generated::ReadOnly as Intrlay>::view_mut_unchecked(&mut bytes, 0) };
         view.value_mut().set(7);
     }
     println!("Rust regenerated layouts, accessor generation, and scalar entry points passed");

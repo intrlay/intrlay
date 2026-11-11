@@ -16,7 +16,6 @@ pub fn expand(model: &Model<'_>, shape: &Fields) -> syn::Result<TokenStream> {
     let offset = model.binding("offset");
     let bytes = model.binding("bytes");
     let registry = model.binding("registry");
-    let initialized_fields = model.binding("fields");
     let fields = Field::parse(shape, model)?;
     validate_fields(model, shape, &fields)?;
     let generics = model.generics(&fields);
@@ -35,27 +34,21 @@ pub fn expand(model: &Model<'_>, shape: &Fields) -> syn::Result<TokenStream> {
         .collect();
     let alignment = model.options.alignment;
     let native = native_layout(model, &fields);
+    let all_bits_valid = fields.iter().map(|field| {
+        let codec = &field.codec;
+        quote!(<#codec as #runtime::Intrlay>::ALL_BITS_VALID)
+    });
+    let decode_depth = fixed_decode_depth(model, &fields);
     let (payload, in_place, zeroable) = encoding_properties(model, &fields);
-    let fixed = fields.iter().map(|field| {
-        let codec = &field.codec;
-        quote!(<#codec as #runtime::Intrlay>::WRITES_FIXED_LAYOUT)
-    });
-    let sizes = layouts.iter().map(|layout| quote!((#layout).size()));
-    let initialization = fields.iter().map(|field| {
-        let codec = &field.codec;
-        quote!((<#codec as #runtime::Intrlay>::LAYOUT, <#codec as #runtime::Intrlay>::INITIALIZATION))
-    });
-    let measure = fields.iter().map(|field| {
+    let initialization = initialization(model, &fields, &layouts);
+    let measure = crate::encoding::fallible_sequence(fields.iter().map(|field| {
         let codec = &field.codec;
         let access = field.access(model);
-        quote!(<#codec as #runtime::Intrlay>::measure(#access, #cursor)?;)
-    });
-    let write = fields.iter().enumerate().map(|(index, field)| {
-        let codec = &field.codec;
-        let access = field.access(model);
-        quote!(<#codec as #runtime::Intrlay>::write(#access, #writer, #offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) })?;)
-    });
-    let decode = decode(model, shape, &fields, &layouts)?;
+        quote!(<#codec as #runtime::Intrlay>::measure(#access, #cursor))
+    }));
+    let write = write_fields(model, &fields, &layouts);
+    let unchecked_decode = decode(model, shape, &fields, &layouts, false)?;
+    let checked_methods = checked_codec(model, shape, &fields, &layouts)?;
     let (getters, mutators) = accessors(model, &fields, &layouts);
     let declaration = view::declaration(model, &generics, &getters, &mutators);
     let metadata = metadata(model, &fields);
@@ -75,43 +68,139 @@ pub fn expand(model: &Model<'_>, shape: &Fields) -> syn::Result<TokenStream> {
             type ViewMut<'__intrlay> = #view_name<&'__intrlay mut [::core::primitive::u8], #(#args),*>;
             const LAYOUT: #runtime::layout::Layout = #runtime::layout::record(&[#(#layouts),*], #alignment);
             const NATIVE_LAYOUT: ::core::primitive::bool = #native;
+            const ALL_BITS_VALID: ::core::primitive::bool = true #(&& #all_bits_valid)*;
+            #decode_depth
             const ZEROABLE: ::core::primitive::bool = #zeroable;
             const HAS_PAYLOAD: ::core::primitive::bool =  #payload;
-            const IN_PLACE_WRITE: ::core::primitive::bool = #in_place;
-            const WRITES_FIXED_LAYOUT: ::core::primitive::bool = true #(&& #fixed)*
-                && <Self as #runtime::Intrlay>::LAYOUT.size() == 0usize #(+ #sizes)*;
-            const INITIALIZATION: #runtime::Initialization = {
-                let #initialized_fields = [#(#initialization),*];
-                #runtime::Initialization::record(<Self as #runtime::Intrlay>::LAYOUT, &#initialized_fields)
-            };
+            const IN_PLACE_WRITE: ::core::primitive::bool = <Self as #runtime::Intrlay>::NATIVE_LAYOUT || #in_place;
+            #initialization
+            #[inline]
             fn measure(#value: &Self::Value, #cursor: &mut #runtime::SizeCursor) -> ::core::result::Result<(), #runtime::EncodeError> {
-                #(#measure)*
-                ::core::result::Result::Ok(())
+                #measure
             }
             fn write(#value: &Self::Value, #writer: &mut #runtime::Writer<'_>, #offset: ::core::primitive::usize) -> ::core::result::Result<(), #runtime::EncodeError> {
                 if <Self as #runtime::Intrlay>::NATIVE_LAYOUT {
-                    // SAFETY: The const proof excludes padding and checks every native field offset.
+                    // SAFETY: NATIVE_LAYOUT follows checked offsets or the adapter's explicit unsafe proof.
                     unsafe { #runtime::__private::write_native(#value, #writer, #offset); }
-                } else { #(#write)* }
-                ::core::result::Result::Ok(())
+                    ::core::result::Result::Ok(())
+                } else { #write }
             }
             #[inline]
-            unsafe fn view(#bytes: &[::core::primitive::u8], #offset: ::core::primitive::usize) -> Self::View<'_> {
+            unsafe fn view_unchecked(#bytes: &[::core::primitive::u8], #offset: ::core::primitive::usize) -> Self::View<'_> {
                 // SAFETY: The caller guarantees a complete valid encoding at this offset.
                 unsafe { #view_name::from_parts_unchecked(#bytes, #offset) }
             }
             #[inline]
-            unsafe fn view_mut(#bytes: &mut [::core::primitive::u8], #offset: ::core::primitive::usize) -> Self::ViewMut<'_> {
+            unsafe fn view_mut_unchecked(#bytes: &mut [::core::primitive::u8], #offset: ::core::primitive::usize) -> Self::ViewMut<'_> {
                 // SAFETY: The caller guarantees a complete valid encoding at this offset.
                 unsafe { #view_name::from_parts_unchecked(#bytes, #offset) }
             }
-            unsafe fn decode(#bytes: &[::core::primitive::u8], #offset: ::core::primitive::usize) -> Self::Value {
+            #checked_methods
+            unsafe fn decode_unchecked(#bytes: &[::core::primitive::u8], #offset: ::core::primitive::usize) -> Self::Value {
                 if <Self as #runtime::Intrlay>::NATIVE_LAYOUT {
                     // SAFETY: The caller supplies valid encoded bytes and the native layout is identical.
                     unsafe { #runtime::__private::read_native(#bytes, #offset) }
-                } else { #decode }
+                } else { #unchecked_decode }
             }
         }
+    })
+}
+
+fn write_fields(model: &Model<'_>, fields: &[Field], layouts: &[TokenStream]) -> TokenStream {
+    let runtime = &model.runtime;
+    let writer = model.binding("writer");
+    let offset = model.binding("offset");
+    let write = crate::encoding::fallible_sequence(fields.iter().enumerate().map(|(index, field)| {
+        let codec = &field.codec;
+        let access = field.access(model);
+        quote!(<#codec as #runtime::Intrlay>::write(#access, #writer, #offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) }))
+    }));
+    crate::encoding::write_header(
+        model,
+        &quote!(<Self as #runtime::Intrlay>::LAYOUT),
+        fields.iter().enumerate().map(|(index, field)| {
+            let codec = &field.codec;
+            crate::encoding::NativeField {
+                proof: quote!(<#codec as #runtime::Intrlay>::NATIVE_LAYOUT),
+                value_type: quote!(<#codec as #runtime::Intrlay>::Value),
+                value: field.access(model),
+                offset: quote!(const { #runtime::layout::field_offset(&[#(#layouts),*], #index) }),
+            }
+        }),
+        &write,
+    )
+}
+
+fn fixed_decode_depth(model: &Model<'_>, fields: &[Field]) -> TokenStream {
+    let runtime = &model.runtime;
+    let depths = fields.iter().map(|field| {
+        let codec = &field.codec;
+        quote!(<#codec as #runtime::Intrlay>::FIXED_DECODE_DEPTH)
+    });
+    quote! {
+            const FIXED_DECODE_DEPTH: ::core::option::Option<::core::primitive::usize> =
+                if <Self as #runtime::Intrlay>::NATIVE_LAYOUT && <Self as #runtime::Intrlay>::ALL_BITS_VALID {
+                    ::core::option::Option::Some(1)
+                } else if <Self as #runtime::Intrlay>::ALL_BITS_VALID {
+                    #runtime::__private::fixed_decode_depth(&[#(#depths),*])
+                } else {
+                    ::core::option::Option::None
+                };
+    }
+}
+
+fn initialization(model: &Model<'_>, fields: &[Field], layouts: &[TokenStream]) -> TokenStream {
+    let runtime = &model.runtime;
+    let initialized_fields = model.binding("fields");
+    let fixed = fields.iter().map(|field| {
+        let codec = &field.codec;
+        quote!(<#codec as #runtime::Intrlay>::WRITES_FIXED_LAYOUT)
+    });
+    let sizes = layouts.iter().map(|layout| quote!((#layout).size()));
+    let initialization = fields.iter().map(|field| {
+        let codec = &field.codec;
+        quote!((<#codec as #runtime::Intrlay>::LAYOUT, <#codec as #runtime::Intrlay>::INITIALIZATION))
+    });
+    quote! {
+            const WRITES_FIXED_LAYOUT: ::core::primitive::bool = <Self as #runtime::Intrlay>::NATIVE_LAYOUT
+                || (true #(&& #fixed)* && <Self as #runtime::Intrlay>::LAYOUT.size() == 0usize #(+ #sizes)*);
+            const INITIALIZATION: #runtime::Initialization = {
+                let #initialized_fields = [#(#initialization),*];
+                if <Self as #runtime::Intrlay>::NATIVE_LAYOUT {
+                    #runtime::Initialization::FIXED
+                } else {
+                    #runtime::Initialization::record(<Self as #runtime::Intrlay>::LAYOUT, &#initialized_fields)
+                }
+            };
+    }
+}
+
+fn checked_codec(
+    model: &Model<'_>,
+    shape: &Fields,
+    fields: &[Field],
+    layouts: &[TokenStream],
+) -> syn::Result<TokenStream> {
+    let runtime = &model.runtime;
+    let offset = model.binding("offset");
+    let decoder = model.binding("decoder");
+    let validator = model.binding("validator");
+    let checked_decode = decode(model, shape, fields, layouts, true)?;
+    let validate = fields.iter().enumerate().map(|(index, field)| {
+        let codec = &field.codec;
+        quote!(#validator.field::<#codec>(#offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) })?;)
+    });
+    Ok(quote! {
+            #[inline]
+            fn validate_fields(#validator: &mut #runtime::Validator<'_>, #offset: ::core::primitive::usize) -> ::core::result::Result<(), #runtime::DecodeError> {
+                #(#validate)*
+                ::core::result::Result::Ok(())
+            }
+            #[inline]
+            fn decode_from(#decoder: &mut #runtime::Decoder<'_>, #offset: ::core::primitive::usize) -> ::core::result::Result<Self::Value, #runtime::DecodeError> {
+                #decoder.range(#offset, <Self as #runtime::Intrlay>::LAYOUT.size())?;
+                ::core::result::Result::Ok(#checked_decode)
+            }
     })
 }
 
@@ -159,7 +248,17 @@ fn encoding_properties(
 
 fn native_layout(model: &Model<'_>, fields: &[Field]) -> TokenStream {
     let runtime = &model.runtime;
-    if model.options.remote.is_some() {
+    let source = &model.source;
+    let compatible = quote!(cfg!(target_endian = "little")
+        && !::core::mem::needs_drop::<#source>()
+        && ::core::mem::size_of::<#source>() == <Self as #runtime::Intrlay>::LAYOUT.size()
+        && !<Self as #runtime::Intrlay>::HAS_PAYLOAD);
+    if let Some(proof) = &model.options.native_layout {
+        // The unsafe annotation guarantees initialized padding, field semantics,
+        // and decode validity. Mechanical checks still gate the selected target.
+        return quote!(#compatible && (#proof));
+    }
+    if model.options.from.is_some() || fields.iter().any(|field| field.options.getter.is_some()) {
         return quote!(false);
     }
     let parts = fields
@@ -173,15 +272,13 @@ fn native_layout(model: &Model<'_>, fields: &[Field]) -> TokenStream {
         let codec = &field.codec;
         let member = &field.member;
         quote!( && <#codec as #runtime::Intrlay>::NATIVE_LAYOUT
-            && ::core::mem::offset_of!(Self, #member) == #runtime::layout::field_offset(&[#(#parts),*], #index))
+            && ::core::mem::offset_of!(#source, #member) == #runtime::layout::field_offset(&[#(#parts),*], #index))
     });
     let sizes = fields.iter().map(|field| {
         let codec = &field.codec;
         quote!(+ <#codec as #runtime::Intrlay>::LAYOUT.size())
     });
-    quote!(cfg!(target_endian = "little") && !::core::mem::needs_drop::<Self>()
-        && ::core::mem::size_of::<Self>() == <Self as #runtime::Intrlay>::LAYOUT.size()
-        && <Self as #runtime::Intrlay>::LAYOUT.size() == 0usize #(#sizes)* #(#checks)*)
+    quote!(#compatible && <Self as #runtime::Intrlay>::LAYOUT.size() == 0usize #(#sizes)* #(#checks)*)
 }
 
 fn decode(
@@ -189,14 +286,21 @@ fn decode(
     shape: &Fields,
     fields: &[Field],
     layouts: &[TokenStream],
+    checked: bool,
 ) -> syn::Result<TokenStream> {
     let runtime = &model.runtime;
     let bytes = model.binding("bytes");
     let offset = model.binding("offset");
+    let decoder = model.binding("decoder");
     let ident = &model.input.ident;
     let values = fields.iter().enumerate().map(|(index, field)| {
         let codec = &field.codec;
-        quote!(unsafe { <#codec as #runtime::Intrlay>::decode(#bytes, #offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) }) })
+        let position = quote!(#offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) });
+        if checked {
+            quote!(#decoder.decode::<#codec>(#position)?)
+        } else {
+            quote!(unsafe { <#codec as #runtime::Intrlay>::decode_unchecked(#bytes, #position) })
+        }
     }).collect::<Vec<_>>();
     let constructor = if model.options.from.is_some() {
         quote!(#ident)
@@ -257,7 +361,7 @@ fn accessors(
                 #[inline]
                 pub fn #getter(&self) -> <#codec as #runtime::Intrlay>::View<'_> {
                     // SAFETY: This view retains a valid parent encoding and fields have constant offsets.
-                    unsafe { <#codec as #runtime::Intrlay>::view(self.storage.as_bytes(), self.storage.byte_offset() + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) }) }
+                    unsafe { <#codec as #runtime::Intrlay>::view_unchecked(self.storage.as_bytes(), self.storage.byte_offset() + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) }) }
                 }
         });
         mutators.extend(quote! {
@@ -266,14 +370,14 @@ fn accessors(
                 pub fn #setter(&mut self, #value: &<#codec as #runtime::Intrlay>::Value) -> ::core::result::Result<(), #runtime::EncodeError> {
                     let #offset = self.storage.byte_offset() + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) };
                     // SAFETY: The field is a valid encoding exclusively borrowed from its parent.
-                    unsafe { #runtime::ValueView::<#codec, _>::new_unchecked(self.storage.as_bytes_mut_unchecked(), #offset) }.replace(#value)
+                    unsafe { #runtime::ValueView::<#codec, _>::from_parts_unchecked(self.storage.as_bytes_mut_unchecked(), #offset) }.replace(#value)
                 }
                 #[doc = #mutable_docs]
                 #[must_use]
                 #[inline]
                 pub fn #mutable(&mut self) -> <#codec as #runtime::Intrlay>::ViewMut<'_> {
                     // SAFETY: Reborrowing storage excludes other mutable field access for this lifetime.
-                    unsafe { let #offset = self.storage.byte_offset(); <#codec as #runtime::Intrlay>::view_mut(self.storage.as_bytes_mut_unchecked(), #offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) }) }
+                    unsafe { let #offset = self.storage.byte_offset(); <#codec as #runtime::Intrlay>::view_mut_unchecked(self.storage.as_bytes_mut_unchecked(), #offset + const { #runtime::layout::field_offset(&[#(#layouts),*], #index) }) }
                 }
         });
     }

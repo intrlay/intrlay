@@ -30,8 +30,9 @@ int main() {
 
     auto point = PointView::create(PointInput{1.0f, 2.0f, 3.0f});
     auto view = point.view();
-    view.set_x(4.0f);
-    assert(view.x() == 4.0f);
+    assert(view);
+    view->set_x(4.0f);
+    assert(view->x() == 4.0f);
 }
 ```
 
@@ -40,6 +41,14 @@ views over existing byte storage.
 
 C++ schema extraction uses libclang. Compiling and using generated headers does
 not require Clang.
+
+`intrlay::Adapter<T>` maps external types to existing schemas and borrowed
+encoding sources. `INTRLAY_ADAPT_STRUCT` provides a public-field mirror;
+adapters also apply inside collections and other nested values.
+
+`<intrlay/adapters/glm.hpp>` provides optional GLM vector, matrix, and quaternion
+adapters. See [Library adapters](https://intrlay.github.io/intrlay/reference/library-adapters/)
+for configuration and dual-quaternion support.
 
 ## Documentation
 

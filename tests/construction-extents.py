@@ -26,7 +26,7 @@ for cls, key, small, large in [
         for create in [
             cls.create,
             lambda value: cls.create_in_place(memoryview(backing)[16:80], value),
-            lambda value: cls.create_in_place(cls.create({key: large}).buffer, value),
+            lambda value: cls.create_in_place(cls.create({key: large}).storage.bytes, value),
         ]:
             try:
                 create(Changing(key, first, second))
@@ -36,7 +36,7 @@ for cls, key, small, large in [
                 raise AssertionError('changed extent was published')
         assert backing[:16] == backing[80:] == bytes([0xa5]) * 16
         recovered = cls.create_in_place(memoryview(backing)[16:80], {key: large})
-        assert bytes(recovered.buffer) == bytes(cls.create({key: large}).buffer)
+        assert bytes(recovered.storage.bytes) == bytes(cls.create({key: large}).storage.bytes)
 
 same_size = CountedView.create(Changing('values', [1], [42]))
 assert list(same_size.values) == [42]

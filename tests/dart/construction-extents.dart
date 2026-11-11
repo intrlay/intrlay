@@ -22,7 +22,7 @@ void main() {
       ExtentView.create,
       (value) => ExtentView.createInPlace(Uint8List.sublistView(backing, 16, 80), value),
       (value) => ExtentView.createInPlace(
-          ExtentView.create(const ExtentInput(value: EmptyInput())).bytes, value),
+          ExtentView.create(const ExtentInput(value: EmptyInput())).storage.bytes, value),
     ]) {
       var rejected = false;
       try {
@@ -38,7 +38,7 @@ void main() {
     }
     final recovered = ExtentView.createInPlace(
         Uint8List.sublistView(backing, 16, 80), const ExtentInput(value: EmptyInput()));
-    if (recovered.bytes.length != 16 || recovered.value == null) {
+    if (recovered.storage.bytes.length != 16 || recovered.value == null) {
       throw StateError('recovery after rejection');
     }
   }

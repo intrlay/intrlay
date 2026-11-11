@@ -14,7 +14,9 @@ pub fn is_reserved(name: &str, _kind: NameKind) -> bool {
 pub fn validate(generation: &GenerationPlan) -> Result<(), GenerateError> {
     let plan = &generation.encoding.types;
     let mut declarations = Scope::module(plan);
-    declarations.reserve("INTRLAY_MEMBER", "generated member-access macro");
+    for name in super::names::FUNCTION_MACROS {
+        declarations.reserve(name, "runtime macro");
+    }
     for node in &plan.nodes {
         if matches!(node.kind, Kind::Record(_) | Kind::Enum(_)) {
             declarations.input(node, &node.input_name())?;
@@ -61,7 +63,9 @@ pub fn validate(generation: &GenerationPlan) -> Result<(), GenerateError> {
 
 fn native_fields(plan: &TypeGraph, fields: &[Field]) -> Result<(), GenerateError> {
     let mut members = Scope::new(plan);
-    members.reserve("INTRLAY_MEMBER", "generated member-access macro");
+    for name in super::names::FUNCTION_MACROS {
+        members.reserve(name, "runtime macro");
+    }
     members.reserve("intrlay_input", "input source marker");
     for field in fields {
         members.member(&field.name, "native field")?;
@@ -102,10 +106,32 @@ fn infrastructure<'a>(plan: &'a TypeGraph, node: &Node) -> Result<Scope<'a>, Gen
     if collection && !super::collections::has_custom_names(plan)? {
         return Ok(members);
     }
-    let mut keys = vec!["bytes", "byte_size", "alignment"];
+    let mut keys = vec![
+        "bytes",
+        "byte_size",
+        "alignment",
+        "from_bytes",
+        "from_parts",
+        "from_bytes_unchecked",
+        "from_parts_unchecked",
+    ];
     if collection {
-        keys.extend(["storage", "metadata", "size_property", "get", "set"]);
-        for name in ["Descriptor", "Byte", "Constructible", "extent"] {
+        keys.extend([
+            "storage",
+            "metadata",
+            "size_property",
+            "get",
+            "copy_to",
+            "set",
+        ]);
+        for name in [
+            "Descriptor",
+            "Byte",
+            "Constructible",
+            "extent",
+            "begin",
+            "end",
+        ] {
             members.declaration(name, "collection infrastructure")?;
         }
         members.declaration(
@@ -126,7 +152,9 @@ fn infrastructure<'a>(plan: &'a TypeGraph, node: &Node) -> Result<Scope<'a>, Gen
         // the descriptor or const Byte makes replacement unavailable.
         members.runtime_member("replace", "in-place value replacement")?;
     }
-    members.declaration("INTRLAY_MEMBER", "generated member-access macro")?;
+    for name in super::names::FUNCTION_MACROS {
+        members.declaration(name, "runtime macro")?;
+    }
     Ok(members)
 }
 

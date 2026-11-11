@@ -6,7 +6,8 @@ use intrlay_schema::Exposure;
 
 use crate::{
     GenerateError,
-    api::{Accessor, IndexedAccessors},
+    api::{Accessor, CollectionAccessors, IndexedAccessors},
+    name_validation::Scope,
     plan::{Field, Id, Kind, TypeGraph},
     symbols,
 };
@@ -29,7 +30,7 @@ pub(super) fn view(plan: &TypeGraph, id: Id) -> Result<BTreeSet<String>, Generat
             references.codec("measure", id)?;
         }
     }
-    if node.options.generation.setters && !plan.has_payload(id) {
+    if node.options.generation.setters && node.options.values() && !plan.has_payload(id) {
         references.input(id);
         references.codec("write", node.codec)?;
     }
@@ -47,23 +48,26 @@ pub(super) fn view(plan: &TypeGraph, id: Id) -> Result<BTreeSet<String>, Generat
             }
         }
         Kind::Sequence(element) | Kind::Array { element, .. } => {
-            if node.options.generation.getters
-                || (node.options.generation.setters && plan.borrows_content(*element))
-            {
+            let api = CollectionAccessors::new(plan, node, *element);
+            if api.getter {
                 references.output(*element);
-                references.load(*element, plan.nodes[*element].options.exposure);
+                references.load(*element, plan.nodes[*element].options.exposure, true, false)?;
             }
-            if node.options.generation.setters && plan.nodes[*element].options.generation.setters {
+            if api.setter.is_some() {
                 references.mutation(*element)?;
             }
-            if plan.folded_field(*element).is_none()
-                && let Kind::Record(fields) = &plan.nodes[*element].kind
-            {
-                for field in fields {
-                    let api = IndexedAccessors::new(plan, node, &plan.nodes[*element], field);
+            if plan.folded_field(*element).is_none() {
+                for (field, variant) in plan.nodes[*element].fields() {
+                    let api =
+                        IndexedAccessors::new(plan, node, &plan.nodes[*element], field, variant);
                     if api.getter.is_some() {
                         references.output(field.ty);
-                        references.load(field.ty, field.options.exposure);
+                        references.load(
+                            field.ty,
+                            field.options.exposure,
+                            true,
+                            variant.is_some(),
+                        )?;
                     }
                     if api.setter.is_some() {
                         references.mutation(field.ty)?;
@@ -75,7 +79,7 @@ pub(super) fn view(plan: &TypeGraph, id: Id) -> Result<BTreeSet<String>, Generat
             let api = Accessor::root(plan, id)?;
             if api.getter {
                 references.output(id);
-                references.load(id, node.options.exposure);
+                references.load(id, node.options.exposure, false, false)?;
             }
             if api.setter.is_some() {
                 references.mutation(id)?;
@@ -104,6 +108,9 @@ impl<'a> References<'a> {
 
     /// Native aliases remain named in input signatures, even when folded.
     fn input(&mut self, id: Id) {
+        if self.plan.nodes[id].numeric_input.is_some() {
+            return;
+        }
         match self.plan.nodes[id].kind {
             Kind::Record(_) | Kind::Enum(_) => self.insert(self.plan.input_name(id)),
             Kind::Sequence(value)
@@ -125,6 +132,7 @@ impl<'a> References<'a> {
         }
         match node.kind {
             Kind::Optional { value, .. } | Kind::Boxed(value) => self.output(value),
+            Kind::Enum(_) if node.is_value_enum() => self.insert(node.tag_type_name()),
             Kind::Scalar(_) | Kind::String | Kind::Unit => {}
             _ => self.insert(self.plan.view_name(id)),
         }
@@ -138,28 +146,55 @@ impl<'a> References<'a> {
             self.plan.nodes[id].options.exposure,
             Exposure::TypedArray(_)
         ) {
-            self.insert(self.plan.view_name(id));
+            self.insert(if self.plan.nodes[id].is_value_enum() {
+                self.plan.nodes[id].tag_type_name()
+            } else {
+                self.plan.view_name(id)
+            });
         } else {
             self.output(id);
         }
     }
 
     /// A folded accessor can use a field-specific projection in its body.
-    fn load(&mut self, id: Id, exposure: Exposure) {
+    fn load(
+        &mut self,
+        id: Id,
+        exposure: Exposure,
+        indexed: bool,
+        position: bool,
+    ) -> Result<(), GenerateError> {
         if matches!(exposure, Exposure::TypedArray(_)) {
-            return;
+            return Ok(());
         }
         if let Some(field) = self.plan.folded_field(id) {
-            self.load(field.ty, field.options.exposure);
-            return;
+            return self.load(field.ty, field.options.exposure, indexed, position);
         }
         match self.plan.nodes[id].kind {
             Kind::Optional { value, .. } | Kind::Boxed(value) => {
-                self.load(value, self.plan.nodes[value].options.exposure);
+                self.load(
+                    value,
+                    self.plan.nodes[value].options.exposure,
+                    indexed,
+                    true,
+                )?;
+            }
+            Kind::Enum(_) if self.plan.nodes[id].is_value_enum() => {
+                let name = self.plan.nodes[id].tag_type_name();
+                let mut locals = Scope::new(self.plan);
+                if indexed {
+                    locals.reserve("index", "enum reader parameter");
+                }
+                if position {
+                    locals.reserve("position", "enum reader local");
+                }
+                locals.declaration(&name, "referenced enum")?;
+                self.insert(name);
             }
             Kind::Scalar(_) | Kind::String | Kind::Unit => {}
             _ => self.insert(self.plan.view_name(id)),
         }
+        Ok(())
     }
 
     fn codec(&mut self, operation: &str, id: Id) -> Result<(), GenerateError> {
@@ -170,7 +205,8 @@ impl<'a> References<'a> {
     fn mutation(&mut self, id: Id) -> Result<(), GenerateError> {
         if let Some(mutation) = self.plan.mutation(id) {
             self.input(mutation.value);
-            if !matches!(self.plan.nodes[mutation.value].kind, Kind::Scalar(_)) {
+            let value = &self.plan.nodes[mutation.value];
+            if value.numeric_input.is_some() || !matches!(value.kind, Kind::Scalar(_)) {
                 self.codec("write", mutation.value)?;
             }
         }
@@ -186,7 +222,7 @@ impl<'a> References<'a> {
         let api = Accessor::field(self.plan, &self.plan.nodes[owner], field, variant);
         if api.getter {
             self.projected(field.ty, field.options.exposure);
-            self.load(field.ty, field.options.exposure);
+            self.load(field.ty, field.options.exposure, false, false)?;
         }
         if api.setter.is_some() {
             self.mutation(field.ty)?;

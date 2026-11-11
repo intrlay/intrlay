@@ -42,12 +42,12 @@ void main() {
       final previous = Uint8List.fromList(owner);
       final reused = FrameView.createInPlace(Uint8List.sublistView(owner, 16), inputs[index]);
       for (final view in [fresh, reused]) {
-        if (view.bytes.length != expected.length) throw StateError('encoded length');
+        if (view.storage.bytes.length != expected.length) throw StateError('encoded length');
         for (var i = 0; i < expected.length; ++i) {
-          if (view.bytes[i] != expected[i]) throw StateError('Rust byte parity at $i');
+          if (view.storage.bytes[i] != expected[i]) throw StateError('Rust byte parity at $i');
         }
         view.enabled = !inputs[index].enabled;
-        if (FrameView(view.bytes).enabled != !inputs[index].enabled) throw StateError('mutable view');
+        if (FrameView(view.storage.bytes).enabled != !inputs[index].enabled) throw StateError('mutable view');
       }
       for (var i = 0; i < owner.length; ++i) {
         if ((i < 16 || i >= 16 + expected.length) && owner[i] != previous[i]) {

@@ -33,6 +33,13 @@ enum Choice {
 }
 
 #[derive(Intrlay)]
+#[intrlay(python(name = "__Status"))]
+enum Status {
+    Idle = 1,
+    Ready = 3,
+}
+
+#[derive(Intrlay)]
 #[intrlay(python(name = "__Root"))]
 struct Root {
     child: Child,
@@ -41,6 +48,11 @@ struct Root {
     boxed: Box<Child>,
     choice: Choice,
     text: String,
+    status: Status,
+    #[intrlay(project = "u32")]
+    numeric_status: Status,
+    #[intrlay(project = "u32")]
+    statuses: Vec<Status>,
 }
 
 #[derive(Intrlay)]
@@ -98,5 +110,27 @@ mod fixture_tests {
     fn private_names_work_in_factories_and_child_accessors()
     -> Result<(), Box<dyn std::error::Error>> {
         super::private_names_work_in_factories_and_child_accessors(&mut super::Fixtures::default())
+    }
+
+    #[test]
+    fn private_enum_aliases_still_reject_real_name_collisions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        #[derive(intrlay::Intrlay)]
+        #[intrlay(python(name = "_intrlay__Status"))]
+        enum Collision {
+            Value,
+        }
+
+        let mut registry = super::Registry::new();
+        registry.export::<super::Root>("Root");
+        registry.export::<Collision>("Collision");
+        let error = super::generate(&registry.finish(), super::Language::Python)
+            .err()
+            .ok_or("private reference alias shadowed a distinct enum")?;
+        assert!(
+            error.to_string().contains("_intrlay__Status conflicts"),
+            "{error}"
+        );
+        Ok(())
     }
 }

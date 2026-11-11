@@ -67,7 +67,11 @@ internal sealed partial class Emitter
 
     private void Write(Node node, bool spanInput = false)
     {
-        if (node.Scalar || (node.Kind == "Record" && node.Fields.Count <= 4)) Inline();
+        // A native fixed-array writer is a single range copy after specialization.
+        // Inlining lets the JIT remove temporary inline-array values in enclosing
+        // records and union payloads instead of materializing them across a call.
+        if (node.Scalar || (node.Kind == "Record" && node.Fields.Count <= 4)
+            || (node.Kind == "Array" && Node(node.Value).NativeLayout)) Inline();
         var type = spanInput ? SpanInputType(node) : Input(node.Id);
         Open($"internal static void @{node.WriteName}(global::System.Span<byte> buffer, int offset, {(spanInput ? "scoped " : "")}in {type} value, ref global::Intrlay.Cursor cursor)");
         if (node.Scalar) Line(Store(node, "buffer", "offset", "value"));
@@ -95,7 +99,7 @@ internal sealed partial class Emitter
                 {
                     Open("switch (value)");
                     foreach (var variant in node.Variants)
-                        Line($"case {Input(node.Id)}.@{variant.Name}:");
+                        Line($"case {Input(node.Id, qualified: true)}.@{variant.Name}:");
                     Line("    break;");
                     Line("default: throw new global::System.ArgumentException(\"Unknown enum tag.\", nameof(value));");
                     Close();

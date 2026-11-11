@@ -9,7 +9,9 @@ struct ByteArrayDescriptor : intrlay::Array<ByteArrayView, intrlay::Scalar<std::
 
 int main() {
     const std::array<std::byte, 3> bytes{std::byte{1}, std::byte{7}, std::byte{3}};
-    ByteArrayView<const std::byte> values(bytes);
+    const auto result = ByteArrayView<const std::byte>::from_bytes(bytes);
+    if (!result) return 1;
+    const auto values = *result;
     std::array<std::byte, 4> encoded{};
     intrlay::detail::Cursor cursor{4};
     intrlay::ScalarCodec<std::uint32_t>::write(encoded, 0, 0x1234u, cursor);

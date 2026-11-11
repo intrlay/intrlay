@@ -64,9 +64,9 @@ RejectUnknownTag(() => { NonZeroTagSpanView.CreateInPlace(tagBuffer.AsSpan(), de
 RejectUnknownTag(() => NonZeroPayloadTagView.ComputeByteLength(default));
 RejectUnknownTag(() => NonZeroPayloadTagView.Create(default));
 RejectUnknownTag(() => NonZeroPayloadTagView.CreateInPlace(tagBuffer, default));
-RejectUnknownTag(() => TaggedItemsView.Create(new TaggedItemsInput(new NonZeroTagInput[] { default })));
+RejectUnknownTag(() => TaggedItemsView.Create(new TaggedItemsInput(new NonZeroTag[] { default })));
 
-var validTag = NonZeroTagView.CreateInPlace(tagBuffer, NonZeroTagInput.Second);
-if (validTag.Tag != 2) throw new Exception("valid enum after rejected construction");
+var validTag = NonZeroTagView.CreateInPlace(tagBuffer, NonZeroTag.Second);
+if (validTag.Tag != NonZeroTag.Second) throw new Exception("valid enum after rejected construction");
 if (RestrictedView.Create(default).Tag != 0) throw new Exception("declared zero-tag variant must remain valid");
 Console.WriteLine("C#: default enum tags without a declared variant are rejected");

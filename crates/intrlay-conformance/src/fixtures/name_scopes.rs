@@ -9,8 +9,8 @@ use intrlay_codegen::{
     Visibility, generate, generate_with_options,
 };
 use intrlay_schema::{
-    Definition, DefinitionKind, Field, Language, NameCase, Scalar, Schema, TargetOptions, Type,
-    Variant,
+    Definition, DefinitionKind, Exposure, Field, Language, NameCase, Scalar, Schema, TargetOptions,
+    Type, Variant,
 };
 
 fn scalar(name: &str) -> Field {
@@ -96,6 +96,31 @@ fn save_reference_with_tail(
 fn dart_members_cannot_shadow_referenced_codecs(
     fixtures: &mut Fixtures,
 ) -> Result<(), Box<dyn Error>> {
+    let mut numeric = Field::new("value", Type::Scalar(Scalar::F32));
+    numeric.targets.insert(
+        Language::Dart,
+        TargetOptions {
+            exposure: Some(Exposure::TypedArray(Scalar::F32)),
+            ..Default::default()
+        },
+    );
+    let mut shadow = scalar("shadow");
+    shadow
+        .targets
+        .insert(Language::Dart, named("_writeIntrlayF32Numeric"));
+    let mut source = schema(record("Packet", vec![numeric, shadow]));
+    rejects(
+        &source,
+        Language::Dart,
+        GenerateOptions::default(),
+        "referenced type or codec",
+    )?;
+    // With no mutation or construction, the helper is not referenced by the class.
+    let options = root_options(&mut source, Language::Dart)?;
+    options.create = Some(false);
+    options.generate_setters = Some(false);
+    generate(&source, Language::Dart)?;
+
     let mut source = reference_schema(Language::Dart, "_writePacket");
     rejects(
         &source,
@@ -188,6 +213,25 @@ fn root_options(
 fn dart_members_reserve_only_types_used_in_their_class(
     fixtures: &mut Fixtures,
 ) -> Result<(), Box<dyn Error>> {
+    let mut value = Field::new("value", Type::Scalar(Scalar::F32));
+    value.targets.insert(Language::Dart, named("core"));
+    let mut source = schema(record("Packet", vec![value]));
+    source
+        .definitions
+        .get_mut("Packet")
+        .ok_or("Packet")?
+        .targets
+        .insert(
+            Language::Dart,
+            TargetOptions {
+                exposure: Some(Exposure::TypedArray(Scalar::F32)),
+                generate_getters: Some(false),
+                generate_setters: Some(false),
+                ..Default::default()
+            },
+        );
+    save_reference_fixture(fixtures, &source, Language::Dart, "numeric_alias.dart")?;
+
     for name in ["ChildInput", "ChildView"] {
         let mut source = reference_schema(Language::Dart, name);
         rejects(
@@ -479,13 +523,14 @@ fn typescript_infrastructure_checks_each_class_scope() -> Result<(), Box<dyn Err
         NamingRule {
             selector: SymbolSelector {
                 kind: Some(SymbolKind::Field),
-                visibility: Some(Visibility::Private),
+                visibility: Some(Visibility::Public),
+                require: vec![Modifier::Readonly],
                 ..Default::default()
             },
             style: NameStyle {
                 case: NameCase::SnakeCase,
                 prefix: String::new(),
-                suffix: "_bytes".into(),
+                suffix: "_value".into(),
             },
         },
         NamingRule {
@@ -793,8 +838,16 @@ fn collection_members_reject_collisions_for_every_element_shape() -> Result<(), 
 #[test]
 fn collection_getter_validation_preserves_write_only_borrowing() -> Result<(), Box<dyn Error>> {
     let language = Language::TypeScript;
-    for (element, borrows) in [(Type::Named("Choice".into()), true), (Type::String, false)] {
-        let mut source = value_enum_schema(language, "Ready");
+    for (element, payload, borrows) in [
+        (Type::Named("Choice".into()), false, false),
+        (Type::Named("Choice".into()), true, true),
+        (Type::String, false, false),
+    ] {
+        let mut source = if payload {
+            enum_schema(language, "Ready", scalar("number"))
+        } else {
+            value_enum_schema(language, "Ready")
+        };
         let mut root = record(
             "Root",
             vec![Field::new("items", Type::Sequence(Box::new(element)))],
@@ -856,6 +909,170 @@ fn collection_scopes_generate_compilable_members(
             collection_method_naming(Language::TypeScript, "set"),
         )?,
     )?;
+    Ok(())
+}
+
+fn indexed_only_collections_reserve_only_emitted_types(
+    fixtures: &mut Fixtures,
+) -> Result<(), Box<dyn Error>> {
+    for (language, filename) in [
+        (Language::Python, "indexed_only.py"),
+        (Language::Dart, "indexed_only.dart"),
+    ] {
+        let element = Type::Named("GetValue".into());
+        let fields = [
+            ("items", Type::Sequence(Box::new(element.clone()))),
+            (
+                "fixed_items",
+                Type::Array {
+                    element: Box::new(element),
+                    length: 2,
+                },
+            ),
+        ]
+        .map(|(name, ty)| {
+            let mut field = Field::new(name, ty);
+            field.targets.insert(
+                language,
+                TargetOptions {
+                    exposure: Some(Exposure::IndexedOnly),
+                    ..Default::default()
+                },
+            );
+            field
+        });
+        let mut source = schema(record("Root", fields.into()));
+        source.definitions.insert(
+            "GetValue".into(),
+            record("GetValue", vec![scalar("value_view")]),
+        );
+        let mut naming = NamingPolicy::for_language(language);
+        naming.rules.push(NamingRule {
+            selector: SymbolSelector {
+                kind: Some(SymbolKind::Method),
+                ..Default::default()
+            },
+            style: NameStyle::new(NameCase::PascalCase),
+        });
+        let options = GenerateOptions {
+            naming: Some(naming),
+            ..Default::default()
+        };
+
+        // GetValueView is an indexed scalar getter, not an element-view type
+        // reference: indexed_only deliberately omits whole-element reads.
+        let generated = generate_with_options(&source, language, options.clone())?;
+        assert!(!generated.contains("class GetValueView"));
+        fixtures.insert(
+            std::path::Path::new("reference-scopes").join(filename),
+            generated,
+        )?;
+
+        // Restoring whole-element reads makes the same name a real collision.
+        let DefinitionKind::Record(fields) = &mut source
+            .definitions
+            .get_mut("Root")
+            .ok_or("missing Root")?
+            .kind
+        else {
+            unreachable!()
+        };
+        for field in fields {
+            field.targets.entry(language).or_default().exposure = Some(Exposure::Indexed);
+        }
+        rejects(&source, language, options, "GetValueView")?;
+    }
+    Ok(())
+}
+
+fn numeric_inputs_do_not_declare_layout_members(
+    fixtures: &mut Fixtures,
+) -> Result<(), Box<dyn Error>> {
+    for (language, path) in [
+        (Language::TypeScript, "naming/numeric-input-names.ts"),
+        (Language::Python, "reference-scopes/numeric_input_names.py"),
+        (Language::Dart, "reference-scopes/numeric_input_names.dart"),
+    ] {
+        let mut payload = Field::new("payload", Type::Named("Payload".into()));
+        payload.targets.insert(
+            language,
+            TargetOptions {
+                exposure: Some(Exposure::TypedArray(Scalar::U32)),
+                ..Default::default()
+            },
+        );
+        let mut source = schema(record("Packet", vec![payload]));
+        source.definitions.insert(
+            "Payload".into(),
+            record(
+                "Payload",
+                vec![scalar("class"), scalar("first_value"), scalar("firstValue")],
+            ),
+        );
+        fixtures.insert(path, generate(&source, language)?)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn structured_input_member_collisions_remain_invalid() -> Result<(), Box<dyn Error>> {
+    for language in [
+        Language::Rust,
+        Language::Cpp,
+        Language::CSharp,
+        Language::TypeScript,
+        Language::Python,
+        Language::Dart,
+    ] {
+        let fields = vec![scalar("first_value"), scalar("firstValue")];
+        for source in [
+            schema(record("Root", fields.clone())),
+            enum_schema_with_fields(language, "Data", fields),
+        ] {
+            rejects(&source, language, GenerateOptions::default(), "input field")?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn numeric_inputs_still_validate_emitted_view_members() -> Result<(), Box<dyn Error>> {
+    for language in [Language::TypeScript, Language::Python, Language::Dart] {
+        let mut root = record("Root", vec![scalar("first_value"), scalar("firstValue")]);
+        root.targets.insert(
+            language,
+            TargetOptions {
+                exposure: Some(Exposure::TypedArray(Scalar::U32)),
+                ..Default::default()
+            },
+        );
+        rejects(
+            &schema(root),
+            language,
+            GenerateOptions::default(),
+            "field accessor",
+        )?;
+    }
+    for language in [Language::Python, Language::Dart] {
+        // The keyword is invalid in a structured input or an exported view,
+        // even when the view's construction input is a numeric alias.
+        for exposure in [None, Some(Exposure::TypedArray(Scalar::U32))] {
+            let mut root = record("Root", vec![scalar("class")]);
+            root.targets.insert(
+                language,
+                TargetOptions {
+                    exposure,
+                    ..Default::default()
+                },
+            );
+            rejects(
+                &schema(root),
+                language,
+                GenerateOptions::default(),
+                "reserved",
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -1288,6 +1505,228 @@ fn value_enum_schema(language: Language, variant: &str) -> Schema {
     enum_schema_with_fields(language, variant, Vec::new())
 }
 
+fn plain_enum_reference_schema(language: Language, name: &str, ty: Type) -> Schema {
+    let mut value = record("ZChoice", Vec::new());
+    value.targets.insert(language, named(name));
+    value.kind = DefinitionKind::Enum(vec![Variant {
+        name: "Ready".into(),
+        tag: 3,
+        fields: Vec::new(),
+        synthetic_payload: false,
+        docs: String::new(),
+        targets: BTreeMap::new(),
+    }]);
+    let mut source = schema(record("Packet", vec![Field::new("item", ty)]));
+    source.definitions.insert("ZChoice".into(), value);
+    source
+}
+
+#[test]
+fn plain_enum_writers_reserve_only_live_parameters() -> Result<(), Box<dyn Error>> {
+    for language in [Language::TypeScript, Language::Python] {
+        for name in ["storage", "offset", "value", "_cursor"] {
+            let mut source =
+                plain_enum_reference_schema(language, name, Type::Named("ZChoice".into()));
+            rejects(
+                &source,
+                language,
+                GenerateOptions::default(),
+                "enum writer parameter",
+            )?;
+            let options = root_options(&mut source, language)?;
+            options.create = Some(false);
+            options.generate_setters = Some(false);
+            // A read-only parent needs no writer. Python's annotation still
+            // cannot refer to an enum shadowed by its public storage property.
+            if language == Language::Python && name == "storage" {
+                rejects(
+                    &source,
+                    language,
+                    GenerateOptions::default(),
+                    "view infrastructure",
+                )?;
+            } else {
+                generate(&source, language)?;
+            }
+
+            // Numeric inputs do not refer to enum constants. A field override
+            // restores that reference even when the canonical writer is unused.
+            root_options(&mut source, language)?.create = Some(true);
+            let options = source
+                .definitions
+                .get_mut("ZChoice")
+                .ok_or("enum")?
+                .targets
+                .entry(language)
+                .or_default();
+            options.exposure = Some(intrlay_schema::Exposure::TypedArray(Scalar::U32));
+            options.create = Some(false);
+            options.generate_getters = Some(false);
+            options.generate_setters = Some(false);
+            generate(&source, language)?;
+            reference_fields(&mut source)?[0]
+                .targets
+                .entry(language)
+                .or_default()
+                .exposure = Some(intrlay_schema::Exposure::Fields);
+            rejects(
+                &source,
+                language,
+                GenerateOptions::default(),
+                "enum writer parameter",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn plain_enum_readers_reserve_only_live_locals() -> Result<(), Box<dyn Error>> {
+    use intrlay_schema::Exposure;
+
+    for language in [Language::Python, Language::Dart] {
+        let value = Type::Named("ZChoice".into());
+        let mut cases = vec![
+            ("index", Type::Sequence(Box::new(value.clone()))),
+            (
+                "index",
+                Type::Array {
+                    element: Box::new(value.clone()),
+                    length: 2,
+                },
+            ),
+            ("position", Type::Optional(Box::new(value.clone()))),
+            ("position", Type::Boxed(Box::new(value.clone()))),
+        ];
+        if language == Language::Python {
+            cases.push(("self", value.clone()));
+        }
+        for (name, ty) in cases {
+            let mut source = plain_enum_reference_schema(language, name, ty);
+            rejects(&source, language, GenerateOptions::default(), "enum reader")?;
+            let mut projected = source.clone();
+            projected
+                .definitions
+                .get_mut("ZChoice")
+                .ok_or("missing enum")?
+                .targets
+                .entry(language)
+                .or_default()
+                .exposure = Some(Exposure::TypedArray(Scalar::U32));
+            generate(&projected, language)?;
+            let options = root_options(&mut source, language)?;
+            options.generate_getters = Some(false);
+            options.generate_setters = Some(false);
+            generate(&source, language)?;
+        }
+        for name in ["index", "position"] {
+            // Direct fields introduce neither an index nor a traversal local.
+            generate(
+                &plain_enum_reference_schema(language, name, value.clone()),
+                language,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn indexed_enum_fields_reserve_the_reader_index() -> Result<(), Box<dyn Error>> {
+    for language in [Language::Python, Language::Dart] {
+        let mut source = plain_enum_reference_schema(
+            language,
+            "index",
+            Type::Sequence(Box::new(Type::Named("Row".into()))),
+        );
+        source.definitions.insert(
+            "Row".into(),
+            record(
+                "Row",
+                vec![Field::new("value", Type::Named("ZChoice".into()))],
+            ),
+        );
+        // Ordinary element views do not introduce an indexed field reader.
+        generate(&source, language)?;
+        reference_fields(&mut source)?[0].targets.insert(
+            language,
+            TargetOptions {
+                exposure: Some(intrlay_schema::Exposure::Indexed),
+                ..Default::default()
+            },
+        );
+        rejects(
+            &source,
+            language,
+            GenerateOptions::default(),
+            "enum reader parameter",
+        )?;
+        source
+            .definitions
+            .get_mut("Row")
+            .ok_or("missing row")?
+            .targets
+            .insert(
+                language,
+                TargetOptions {
+                    generate_getters: Some(false),
+                    generate_setters: Some(false),
+                    ..Default::default()
+                },
+            );
+        generate(&source, language)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn dart_enum_conversion_reserves_its_parameter() -> Result<(), Box<dyn Error>> {
+    let language = Language::Dart;
+    let source = plain_enum_reference_schema(language, "tag", Type::Named("ZChoice".into()));
+    let mut naming = NamingPolicy::for_language(language);
+    naming.rules.push(NamingRule {
+        selector: SymbolSelector {
+            kind: Some(SymbolKind::Property),
+            ..Default::default()
+        },
+        style: NameStyle {
+            prefix: "wire_".into(),
+            ..NameStyle::new(NameCase::SnakeCase)
+        },
+    });
+    rejects(
+        &source,
+        language,
+        GenerateOptions {
+            naming: Some(naming),
+            ..Default::default()
+        },
+        "enum tag conversion parameter",
+    )
+}
+
+fn python_plain_enum_builtin_names_compile_and_run(
+    fixtures: &mut Fixtures,
+) -> Result<(), Box<dyn Error>> {
+    for name in ["int", "len"] {
+        let language = Language::Python;
+        let mut source = plain_enum_reference_schema(language, name, Type::Named("ZChoice".into()));
+        reference_fields(&mut source)?.push(Field::new(
+            "items",
+            Type::Sequence(Box::new(Type::Named("ZChoice".into()))),
+        ));
+        save_reference_with_tail(
+            fixtures,
+            &source,
+            language,
+            &format!("plain_enum_{name}.py"),
+            &format!(
+                "\nview = PacketView.create({{'item': {name}.Ready, 'items': [{name}.Ready]}})\nassert view.item is {name}.Ready and view.items[0] is {name}.Ready\n"
+            ),
+        )?;
+    }
+    Ok(())
+}
+
 fn enum_schema_with_fields(language: Language, variant: &str, fields: Vec<Field>) -> Schema {
     let mut root = record("Choice", Vec::new());
     root.kind = DefinitionKind::Enum(vec![Variant {
@@ -1312,7 +1751,8 @@ fn native_value_enum_members_reserve_their_actual_scopes() -> Result<(), Box<dyn
         "toString",
         "noSuchMethod",
         "core",
-        "ChoiceInput",
+        "fromTag",
+        "Choice",
     ] {
         rejects(
             &value_enum_schema(Language::Dart, name),
@@ -1327,7 +1767,7 @@ fn native_value_enum_members_reserve_their_actual_scopes() -> Result<(), Box<dyn
             Language::Dart,
         )?;
     }
-    for name in ["value__", "ChoiceInput"] {
+    for name in ["value__", "Choice"] {
         rejects(
             &value_enum_schema(Language::CSharp, name),
             Language::CSharp,
@@ -1369,7 +1809,7 @@ fn python_value_enum_members_reject_metaclass_and_ignored_names() -> Result<(), 
         "__members__",
         "__doc__",
         "__hidden",
-        "_ChoiceInput__hidden",
+        "_Choice__hidden",
         "mro",
         "name",
         "as_integer_ratio",
@@ -1390,7 +1830,7 @@ fn python_value_enum_members_reject_metaclass_and_ignored_names() -> Result<(), 
             GenerateOptions::default(),
             "Python IntEnum",
         )?;
-        if name == "_ChoiceInput__hidden" {
+        if name == "_Choice__hidden" {
             generate(
                 &enum_schema(Language::Python, name, scalar("number")),
                 Language::Python,
@@ -1453,7 +1893,7 @@ fn python_accepted_enum_names_compile_and_run(
     for (name, tag) in names.iter().zip(37_u32..) {
         write!(
             output,
-            "\nassert ValueNamesView.create(ValueNamesInput.{name}).tag == {tag}\n\
+            "\nassert ValueNamesView.create(ValueNames.{name}).tag == {tag}\n\
              assert PayloadNamesView.create({{'kind': PayloadNamesKind.{name}, 'number': 7}}).tag == {tag}\n"
         )?;
     }
@@ -1584,9 +2024,9 @@ fn value_enum_validation_uses_final_names_and_ignores_accessor_flags() -> Result
     }
     // The enclosing enum follows the export alias and any explicit type name.
     for language in [Language::Dart, Language::CSharp] {
-        let mut source = value_enum_schema(language, "AliasInput");
+        let mut source = value_enum_schema(language, "Alias");
         source.exports = BTreeMap::from([("Alias".into(), Type::Named("Choice".into()))]);
-        rejects(&source, language, GenerateOptions::default(), "AliasInput")?;
+        rejects(&source, language, GenerateOptions::default(), "Alias")?;
         source
             .definitions
             .get_mut("Choice")
@@ -1741,9 +2181,9 @@ fn cpp_alternative_operators_are_reserved_identifiers() -> Result<(), Box<dyn Er
 }
 
 #[test]
-fn python_runtime_view_members_keep_their_literal_names() -> Result<(), Box<dyn Error>> {
+fn python_view_members_reserve_runtime_and_storage_names() -> Result<(), Box<dyn Error>> {
     for name in [
-        "buffer",
+        "storage",
         "_storage",
         "_offset",
         "__init__",
@@ -1762,9 +2202,93 @@ fn python_runtime_view_members_keep_their_literal_names() -> Result<(), Box<dyn 
             "view infrastructure",
         )?;
     }
-    let mut field = scalar("buffer");
-    field.targets.insert(Language::Python, named("payload"));
-    generate(&schema(record("Root", vec![field])), Language::Python)?;
+    generate(
+        &schema(record("Root", vec![scalar("buffer")])),
+        Language::Python,
+    )?;
+    Ok(())
+}
+
+fn managed_storage_follows_public_readonly_field_naming(
+    fixtures: &mut Fixtures,
+) -> Result<(), Box<dyn Error>> {
+    for (language, path, consumer) in [
+        (
+            Language::TypeScript,
+            "naming/public-storage.ts",
+            r"
+export function checkPublicStorage(): boolean {
+    const bytes = new Uint8Array(8);
+    const view = new ChoiceView(bytes);
+    view.presentNumber = 17;
+    return view.backedStorage.bytes === bytes && view.backedStorage.u32[1] === 17 &&
+        new ChoiceView(view.backedStorage.bytes).presentNumber === 17;
+}
+",
+        ),
+        (
+            Language::Python,
+            "reference-scopes/public_storage.py",
+            r"
+def check_public_storage() -> _builtins.bool:
+    buffer = _builtins.bytearray(8)
+    view = ChoiceView(buffer)
+    view.present_number = 17
+    return (view.backedStorage.bytes.obj is buffer and view.backedStorage.u32[1] == 17
+            and ChoiceView(view.backedStorage.bytes).present_number == 17)
+",
+        ),
+        (
+            Language::Dart,
+            "reference-scopes/public-storage.dart",
+            r"
+core.bool checkPublicStorage() {
+  final bytes = typed.Uint8List(8);
+  final view = ChoiceView(bytes);
+  view.setPresentNumber(17);
+  return core.identical(view.backedStorage.bytes, bytes) &&
+      view.backedStorage.u32(4) == 17 &&
+      ChoiceView(view.backedStorage.bytes).presentNumber == 17;
+}
+",
+        ),
+    ] {
+        let mut naming = NamingPolicy::for_language(language);
+        naming.rules.push(NamingRule {
+            selector: SymbolSelector {
+                kind: Some(SymbolKind::Field),
+                visibility: Some(Visibility::Public),
+                require: vec![Modifier::Readonly],
+                ..Default::default()
+            },
+            style: NameStyle {
+                prefix: "backed".into(),
+                ..NameStyle::new(NameCase::PascalCase)
+            },
+        });
+        let options = GenerateOptions {
+            naming: Some(naming),
+            ..Default::default()
+        };
+        let source = enum_schema(language, "Present", scalar("number"));
+        fixtures.insert(
+            path,
+            generate_with_options(&source, language, options.clone())? + consumer,
+        )?;
+
+        let mut field = scalar("number");
+        field.targets.insert(language, named("backedStorage"));
+        rejects(
+            &schema(record("Packet", vec![field])),
+            language,
+            options,
+            "infrastructure",
+        )?;
+        generate(
+            &schema(record("Packet", vec![scalar("bytes"), scalar("buffer")])),
+            language,
+        )?;
+    }
     Ok(())
 }
 
@@ -1979,16 +2503,25 @@ fn native_and_view_object_member_scopes_are_checked_independently() -> Result<()
                 suffix: String::new(),
             },
         });
-        rejects(
-            &source,
-            language,
-            GenerateOptions {
-                naming: Some(naming),
-                ..Default::default()
-            },
-            "field accessor",
-        )?;
+        let options = GenerateOptions {
+            naming: Some(naming),
+            ..Default::default()
+        };
+        if language == Language::CSharp {
+            // Input properties and method-setter view properties are both
+            // readonly declarations, so this policy renames both safely.
+            generate_with_options(&source, language, options)?;
+        } else {
+            rejects(&source, language, options, "field accessor")?;
+        }
     }
+    // Neither input segment conflicts, but their composed view property does.
+    rejects(
+        &enum_schema(Language::CSharp, "To", scalar("string")),
+        Language::CSharp,
+        GenerateOptions::default(),
+        "field accessor",
+    )?;
     rejects(
         &enum_schema(Language::CSharp, "ToString", scalar("number")),
         Language::CSharp,
@@ -2420,6 +2953,9 @@ fn cpp_view_scopes_reserve_actual_template_alias_and_macro_names() -> Result<(),
         "Metadata",
         "INTRLAY_MEMBER",
         "INTRLAY_RESTRICT",
+        "INTRLAY_ADAPT_STRUCT",
+        "INTRLAY_DETAIL_PARENS",
+        "INTRLAY_DETAIL_FIELDS",
     ] {
         let mut field = scalar("number");
         field.targets.insert(Language::Cpp, named(name));
@@ -2586,13 +3122,61 @@ fn renamed_fields_and_unrelated_helper_names_generate_compilable_csharp(
     Ok(())
 }
 
+fn csharp_enum_names_can_match_codec_parameters(
+    fixtures: &mut Fixtures,
+) -> Result<(), Box<dyn Error>> {
+    let mut source = schema(record("Packet", Vec::new()));
+    let mut fields = Vec::new();
+    for name in ["buffer", "offset", "cursor", "value"] {
+        let mut definition = record(name, Vec::new());
+        definition.kind = DefinitionKind::Enum(vec![Variant {
+            name: "Ready".into(),
+            tag: 7,
+            fields: Vec::new(),
+            synthetic_payload: false,
+            docs: String::new(),
+            targets: BTreeMap::new(),
+        }]);
+        definition.targets.insert(Language::CSharp, named(name));
+        source.definitions.insert(name.into(), definition);
+        fields.push(Field::new(name, Type::Named(name.into())));
+    }
+    source
+        .definitions
+        .get_mut("Packet")
+        .ok_or("missing Packet")?
+        .kind = DefinitionKind::Record(fields);
+    let generated = generate_with_options(
+        &source,
+        Language::CSharp,
+        GenerateOptions {
+            csharp: intrlay_codegen::CSharpOptions {
+                namespace: Some("IntrlayGenerated.EnumNames".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )?;
+    fixtures.insert(
+        "naming/enum-names.cs",
+        // Lowercase type names are intentional inputs to the shadowing test.
+        format!("#pragma warning disable CS8981\n{generated}"),
+    )?;
+    Ok(())
+}
+
 pub(super) fn collect(fixtures: &mut Fixtures) -> Result<(), Box<dyn std::error::Error>> {
+    managed_storage_follows_public_readonly_field_naming(fixtures)?;
+    csharp_enum_names_can_match_codec_parameters(fixtures)?;
     omitted_factories_generate_compilable_members(fixtures)?;
     collection_scopes_generate_compilable_members(fixtures)?;
+    indexed_only_collections_reserve_only_emitted_types(fixtures)?;
+    numeric_inputs_do_not_declare_layout_members(fixtures)?;
     dart_members_cannot_shadow_referenced_codecs(fixtures)?;
     dart_members_reserve_only_types_used_in_their_class(fixtures)?;
     python_annotations_reserve_types_but_method_bodies_keep_module_lookup(fixtures)?;
     python_accepted_enum_names_compile_and_run(fixtures)?;
+    python_plain_enum_builtin_names_compile_and_run(fixtures)?;
     python_object_names_without_properties_compile_and_run(fixtures)?;
     csharp_intrinsic_keywords_are_rejected_only_in_unescaped_declarations(fixtures)?;
     rust_derives_use_the_names_validated_by_codegen(fixtures)?;
@@ -2605,6 +3189,23 @@ pub(super) fn collect(fixtures: &mut Fixtures) -> Result<(), Box<dyn std::error:
 
 #[cfg(test)]
 mod fixture_tests {
+    #[test]
+    fn numeric_inputs_do_not_declare_layout_members() -> Result<(), Box<dyn std::error::Error>> {
+        super::numeric_inputs_do_not_declare_layout_members(&mut super::Fixtures::default())
+    }
+
+    #[test]
+    fn indexed_only_collections_reserve_only_emitted_types()
+    -> Result<(), Box<dyn std::error::Error>> {
+        super::indexed_only_collections_reserve_only_emitted_types(&mut super::Fixtures::default())
+    }
+
+    #[test]
+    fn managed_storage_follows_public_readonly_field_naming()
+    -> Result<(), Box<dyn std::error::Error>> {
+        super::managed_storage_follows_public_readonly_field_naming(&mut super::Fixtures::default())
+    }
+
     #[test]
     fn rust_enum_derive_names_are_valid_identifiers() -> Result<(), Box<dyn std::error::Error>> {
         super::rust_enum_derive_names_are_valid_identifiers(&mut super::Fixtures::default())

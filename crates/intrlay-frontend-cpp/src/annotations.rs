@@ -111,6 +111,15 @@ impl Annotation {
             if language.supports_accessor_generation() {
                 target.generate_getters = target.generate_getters.or(common.generate_getters);
                 target.generate_setters = target.generate_setters.or(common.generate_setters);
+                target.generate_component_accessors = target
+                    .generate_component_accessors
+                    .or(common.generate_component_accessors);
+                target.generate_byte_range_accessors = target
+                    .generate_byte_range_accessors
+                    .or(common.generate_byte_range_accessors);
+                target.generate_value_accessors = target
+                    .generate_value_accessors
+                    .or(common.generate_value_accessors);
             }
             target.create = target.create.or(common.create);
         }
@@ -175,6 +184,13 @@ fn parse_option(target: &mut TargetOptions, key: &str, value: &str) -> Result<()
         "name" => target.name = Some(value.into()),
         "generate_getters" => target.generate_getters = Some(boolean(value)?),
         "generate_setters" => target.generate_setters = Some(boolean(value)?),
+        "generate_component_accessors" => {
+            target.generate_component_accessors = Some(boolean(value)?);
+        }
+        "generate_byte_range_accessors" => {
+            target.generate_byte_range_accessors = Some(boolean(value)?);
+        }
+        "generate_value_accessors" => target.generate_value_accessors = Some(boolean(value)?),
         "create" => target.create = Some(boolean(value)?),
         "project" => target.exposure = Some(projection(value)?),
         _ => return Err(FrontendError(format!("unknown Intrlay annotation: {key}"))),
@@ -185,7 +201,9 @@ fn parse_option(target: &mut TargetOptions, key: &str, value: &str) -> Result<()
 fn projection(value: &str) -> Result<Exposure, FrontendError> {
     Ok(match value {
         "fields" => Exposure::Fields,
+        "flatten" => Exposure::Flatten,
         "indexed" => Exposure::Indexed,
+        "indexed_only" => Exposure::IndexedOnly,
         _ => Exposure::TypedArray(match value {
             "i8" => Scalar::I8,
             "u8" => Scalar::U8,
@@ -199,7 +217,7 @@ fn projection(value: &str) -> Result<Exposure, FrontendError> {
             "f64" => Scalar::F64,
             _ => {
                 return Err(FrontendError(format!(
-                    "unsupported projection: {value}; expected fields, indexed, or a numeric scalar (i8, u8, i16, u16, i32, u32, i64, u64, f32, f64)"
+                    "unsupported projection: {value}; expected fields, flatten, indexed, indexed_only, or a numeric scalar (i8, u8, i16, u16, i32, u32, i64, u64, f32, f64)"
                 )));
             }
         }),
@@ -217,8 +235,14 @@ fn check_scope(
     key: &str,
     language: Option<Language>,
 ) -> Result<(), FrontendError> {
-    if matches!(key, "generate_getters" | "generate_setters")
-        && language.is_some_and(|language| !language.supports_accessor_generation())
+    if matches!(
+        key,
+        "generate_getters"
+            | "generate_setters"
+            | "generate_component_accessors"
+            | "generate_byte_range_accessors"
+            | "generate_value_accessors"
+    ) && language.is_some_and(|language| !language.supports_accessor_generation())
     {
         return Err(FrontendError(
             "accessor generation options apply only to typescript, python, and dart".into(),
@@ -234,7 +258,10 @@ fn check_scope(
         EntityKind::TypeAliasDecl | EntityKind::TypedefDecl => key == "name" && language.is_none(),
         EntityKind::FieldDecl => !matches!(key, "align" | "transparent" | "create"),
         EntityKind::EnumConstantDecl => {
-            matches!(key, "name" | "generate_getters" | "generate_setters")
+            matches!(
+                key,
+                "name" | "generate_getters" | "generate_setters" | "generate_value_accessors"
+            )
         }
         EntityKind::EnumDecl => key != "transparent",
         _ => true,
@@ -308,19 +335,51 @@ mod tests {
                 assert_eq!(options.generate_setters, Some(true));
             }
         }
+        for language in ["typescript", "python", "dart"] {
+            for option in ["generate_byte_range_accessors", "generate_value_accessors"] {
+                for text in [
+                    format!("intrlay:{language}.{option}=true,{option}=false"),
+                    format!("intrlay:{option}=false,{language}.{option}=true"),
+                ] {
+                    let annotation =
+                        Annotation::parse_text([text.as_str()].into_iter(), EntityKind::FieldDecl)?;
+                    for target in [Language::TypeScript, Language::Python, Language::Dart] {
+                        let options = &annotation.targets[&target];
+                        let actual = if option == "generate_value_accessors" {
+                            options.generate_value_accessors
+                        } else {
+                            options.generate_byte_range_accessors
+                        };
+                        assert_eq!(actual, Some(target == parse_language(language)?));
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
     #[test]
     fn common_accessor_options_apply_only_to_reference_targets() -> Result<(), FrontendError> {
         let annotation = Annotation::parse_text(
-            ["intrlay:generate_getters=false,generate_setters=false"].into_iter(),
+            ["intrlay:generate_getters=false,generate_setters=false,generate_component_accessors=true,generate_byte_range_accessors=true,generate_value_accessors=false"].into_iter(),
             EntityKind::StructDecl,
         )?;
         for language in LANGUAGES {
             if language.supports_accessor_generation() {
                 assert_eq!(annotation.targets[&language].generate_getters, Some(false));
                 assert_eq!(annotation.targets[&language].generate_setters, Some(false));
+                assert_eq!(
+                    annotation.targets[&language].generate_byte_range_accessors,
+                    Some(true)
+                );
+                assert_eq!(
+                    annotation.targets[&language].generate_value_accessors,
+                    Some(false)
+                );
+                assert_eq!(
+                    annotation.targets[&language].generate_component_accessors,
+                    Some(true)
+                );
             } else {
                 assert!(!annotation.targets.contains_key(&language));
             }
@@ -332,7 +391,9 @@ mod tests {
     fn common_projection_preserves_value_type_targets() -> Result<(), FrontendError> {
         for (value, exposure) in [
             ("fields", Exposure::Fields),
+            ("flatten", Exposure::Flatten),
             ("indexed", Exposure::Indexed),
+            ("indexed_only", Exposure::IndexedOnly),
             ("f32", Exposure::TypedArray(Scalar::F32)),
         ] {
             for scope in [EntityKind::StructDecl, EntityKind::FieldDecl] {

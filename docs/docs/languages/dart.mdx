@@ -37,7 +37,7 @@ void main() {
   drawing.selectedPoint = 0;
   drawing.command.replace(const DrawingCommandClearInput());
 
-  final received = DrawingView(drawing.bytes);
+  final received = DrawingView(drawing.storage.bytes);
   assert(received.points[0].x == 10);
   assert(received.command.drawPointPosition == null);
 }
@@ -48,7 +48,9 @@ Enums with payloads are a sealed input class with a concrete class for each
 variant. Payload-free enums use a Dart enum whose `tag` is the declared wire
 value, independent of its ordinal `index`.
 Variant-specific getters return `null` when inactive; `tag` exposes the encoded
-number. `drawing.bytes` is a `Uint8List`. Borrowing it does not copy the payload.
+number. The final `storage` field exposes the shared `intrlay.Storage`.
+`drawing.storage.bytes` is its `Uint8List`, and `drawing.storage.data` provides
+numeric `ByteData` access. Borrowing them does not copy the payload.
 The runtime shares buffer initialization and UTF-8 size calculation; generated
 code keeps explicit typed accessors.
 

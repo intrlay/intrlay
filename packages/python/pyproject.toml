@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "intrlay"
-version = "0.1.3"
+version = "0.1.4"
 description = "Typed storage for generated Intrlay memory views"
 requires-python = ">=3.12"
 readme = "README.md"

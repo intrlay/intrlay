@@ -36,13 +36,15 @@ drawing.points.get(0).x = 10;
 drawing.selectedPoint = 0;
 drawing.command.replace({ kind: DrawingCommandKind.Clear });
 
-const received = new DrawingView(drawing.bytes);
+const received = new DrawingView(drawing.storage.bytes);
 console.log(received.points.get(0).x);           // 10
 console.log(received.command.drawPointPosition); // undefined
 ```
 
 The constructor borrows bytes. `create` encodes a native input into newly
-allocated storage. `drawing.bytes` exposes a `Uint8Array` over that storage.
+allocated storage. The readonly `storage` field exposes the shared `intrlay.Storage`;
+`drawing.storage.bytes` is its `Uint8Array`, and numeric views such as
+`drawing.storage.f32` address the same allocation.
 Scalar accessors use TypedArrays; strings are decoded to JavaScript strings
 when read. The runtime checks little-endian TypedArray storage once at load time.
 
@@ -95,14 +97,17 @@ Enums with payloads use a `kind` discriminant whose type is a generated numeric
 modules with TypeScript; Node.js type stripping alone does not transform enum
 declarations. Variant-specific view getters return
 `undefined` for an inactive variant. `tag` returns the encoded number with its
-enum type: `DrawingCommandKind` for a payload enum, or the native `ModeInput`
-enum for a payload-free `Mode`. This adds no runtime conversion. Optional
+enum type: `DrawingCommandKind` for a payload enum, or `Mode` for a
+payload-free `Mode`. Fields and collection elements read `Mode` directly;
+only explicit exports have a standalone `ModeView`. This adds no runtime
+conversion. Optional
 values use nullable APIs; nested optional states that would otherwise collapse into `null`
 use a `Some<T>` presence wrapper. That distinction preserves `None`, `Some(None)`,
 and `Some(value)`.
 
-Record collections expose element views through `get(index)`. For a loop that
-only needs one field, indexed access avoids creating an element wrapper:
+Record collections expose element views through `get(index)`. Mark the collection
+field with `project = "indexed"` to add field helpers. For example, after adding
+that annotation to `Drawing.points`, a loop can avoid creating an element wrapper:
 
 ```typescript
 let totalX = 0;

@@ -86,11 +86,11 @@ construction examples.
 
 Rust's `View::LAYOUT` is the fixed **header** layout. For allocating a complete
 message, use `compute_layout` or `compute_layout_from`, which also account for
-payload alignment. A native receiving boundary must arrange suitable storage for
-the agreed schema; a plain
-`Vec<u8>` allocation does not promise every possible schema alignment. The
+payload alignment. Caller-provided construction storage must satisfy that
+alignment; a plain `Vec<u8>` allocation does not promise every possible schema
+alignment. Rust and C++ receiving views can read unaligned byte storage. The
 [Rust guide](../languages/rust.mdx#caller-storage-and-received-bytes) demonstrates
-`OwnedBuffer` and a borrowed receiving view. Python also provides
+aligned `OwnedBuffer` construction and borrowed receiving views. Python also provides
 `intrlay.allocate(size, alignment)` for aligned writable storage.
 
 ## Keep the owner alive
@@ -107,7 +107,8 @@ Do not retain views after a buffer has been freed, returned to a pool, transferr
 away, or detached. When reusing a larger allocation, send the current encoded
 region, not its spare capacity.
 
-Opening a received view assumes valid bytes for the agreed schema. It is not a
-validation operation. Multiple read views can share storage; mutation requires
+Rust and C++ checked view constructors validate an encoding once; their unchecked
+constructors and the other targets' ordinary view constructors assume valid bytes
+for the agreed schema. Multiple read views can share storage; mutation requires
 appropriate exclusive access or application-level synchronization. See
 [Mutation](mutation.mdx) for replacement and aliasing rules.

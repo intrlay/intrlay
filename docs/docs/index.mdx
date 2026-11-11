@@ -68,13 +68,15 @@ view APIs without learning a new example in each language.
 | Task | Reference |
 | --- | --- |
 | Generate from a Cargo library, C++ header, or metadata file | [Code generation](reference/code-generation.mdx) |
-| Select projections, omit unused APIs, or adapt a Rust type | [Schema annotations](reference/annotations.mdx) |
+| Select projections, omit unused APIs, or adapt an external type | [Schema annotations](reference/annotations.mdx) |
+| Use built-in glam, GLM, smol_str, or smallvec adapters | [Library adapters](reference/library-adapters.mdx) |
 | Configure casing, literal names, or namespaces | [Generated names](reference/naming.mdx) |
 | Inspect alignment, headers, and relative offsets | [Binary layout](reference/binary-layout.mdx) |
 
 Intrlay targets cooperating producers and consumers that agree on a schema.
-The application manages transport, validation of untrusted input, buffer lifetime,
-and synchronization.
+Rust and C++ provide checked view constructors and explicit unchecked paths;
+other targets' views assume valid encodings. The application manages transport,
+schema selection, buffer lifetime, and synchronization.
 
 ## Contributing
 

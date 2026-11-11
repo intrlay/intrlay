@@ -87,6 +87,7 @@ fn generate_cpp_shared_collections(fixtures: &mut Fixtures) -> Result<(), Box<dy
     let mut registry = Registry::new();
     registry.export::<Collections>("Collections");
     registry.export::<[f32; 3]>("Triplet");
+    registry.export::<[(); 3]>("UnitTriplet");
     registry.export::<Vec<Option<Box<u32>>>>("OptionalSequence");
     let schema = registry.finish();
     let directory = std::path::PathBuf::from("cpp-collections");

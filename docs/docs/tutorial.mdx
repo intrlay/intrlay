@@ -113,7 +113,7 @@ The remaining snippets can be appended to this file.
 ## 4. Read a received message
 
 ```typescript
-const received = new DrawingView(drawing.bytes);
+const received = new DrawingView(drawing.storage.bytes);
 
 console.log(received.points.get(1).x); // 4
 console.log(received.selectedPoint);  // null

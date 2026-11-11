@@ -4,16 +4,19 @@ use intrlay_schema::{Exposure, Scalar};
 
 use crate::{
     GenerateError,
-    api::{Accessor, CollectionAccessors, IndexedAccessors},
+    api::{Accessor, CollectionAccessors},
     plan::{Field, GenerationPlan, Id, Kind, Node, TypeGraph, WriterParameters},
 };
 
 mod api;
 mod documentation;
+mod field_helpers;
+mod indexed;
 mod load;
 mod mutation;
 mod name_validation;
 mod names;
+mod numeric_input;
 
 pub const BACKEND: crate::backend::Backend = crate::backend::Backend {
     language: intrlay_schema::Language::Dart,
@@ -86,13 +89,34 @@ pub fn generate(
             && (*alias != plan.nodes[*id].name
                 || !matches!(plan.nodes[*id].kind, Kind::Record(_) | Kind::Enum(_)))
         {
-            writeln!(output, "typedef {alias}Input = {};", input_type(plan, *id))?;
+            let suffix = if plan.nodes[*id].is_value_enum() {
+                ""
+            } else {
+                "Input"
+            };
+            let target = if plan.nodes[*id].is_value_enum() {
+                plan.nodes[*id].tag_type_name()
+            } else {
+                input_type(plan, *id)
+            };
+            writeln!(output, "typedef {alias}{suffix} = {target};")?;
         }
     }
     Ok(output)
 }
 
 fn input(output: &mut String, plan: &TypeGraph, node: &Node) -> Result<(), GenerateError> {
+    if node.is_enum_input_context() {
+        return Ok(());
+    }
+    if let Some(ty) = numeric_input::input_type(plan, node)
+        && matches!(node.kind, Kind::Record(_))
+    {
+        writeln!(output)?;
+        documentation::write(output, &node.docs, "")?;
+        writeln!(output, "typedef {} = {ty};", node.input_name())?;
+        return Ok(());
+    }
     if let Some(field) = plan.folded_node(node) {
         writeln!(output)?;
         documentation::write(output, &node.docs, "")?;
@@ -125,7 +149,19 @@ fn input(output: &mut String, plan: &TypeGraph, node: &Node) -> Result<(), Gener
                 }
                 writeln!(
                     output,
-                    "\n  final core.int $[tag];\n\n  const {name}(this.$[tag]);\n}}"
+                    "\n  final core.int $[tag];\n\n  const {name}(this.$[tag]);"
+                )?;
+                writeln!(
+                    output,
+                    "\n  /// Returns the enum value for its encoded tag.\n  static {name} {}(core.int tag) => switch (tag) {{",
+                    names::enum_from_tag(plan)
+                )?;
+                for variant in variants {
+                    writeln!(output, "    {} => {name}.{},", variant.tag, variant.name)?;
+                }
+                writeln!(
+                    output,
+                    "    _ => throw core.StateError('Unknown enum tag.'),\n  }};\n}}"
                 )?;
                 return Ok(());
             }
@@ -225,6 +261,11 @@ fn measure(
         "\nvoid $[measure:{id}]({} {value}, intrlay.Cursor cursor) {{",
         input_type(plan, id)
     )?;
+    if let Some(numeric) = node.numeric_input {
+        numeric_input::measure(output, plan, node, numeric)?;
+        writeln!(output, "}}")?;
+        return Ok(());
+    }
     match &node.kind {
         Kind::String => writeln!(
             output,
@@ -263,9 +304,10 @@ fn measure(
         }
         Kind::Sequence(element) | Kind::Array { element, .. } => {
             if matches!(node.kind, Kind::Sequence(_)) {
+                sequence_count(output, "value.length")?;
                 writeln!(
                     output,
-                    "  cursor.reserve(value.length * {}, {});",
+                    "  cursor.reserve(count * {}, {});",
                     plan.nodes[*element].layout.size(),
                     plan.nodes[*element].layout.alignment()
                 )?;
@@ -305,6 +347,14 @@ fn measure(
     Ok(())
 }
 
+fn sequence_count(output: &mut String, value: &str) -> Result<(), GenerateError> {
+    writeln!(
+        output,
+        "  final count = {value};\n  if (count < 0 || count > 0xffffffff) {{\n    throw core.RangeError.range(count, 0, 0xffffffff, 'sequence length');\n  }}"
+    )?;
+    Ok(())
+}
+
 fn initialize_fixed_array(
     output: &mut String,
     plan: &TypeGraph,
@@ -341,6 +391,11 @@ fn write(output: &mut String, plan: &TypeGraph, id: Id, node: &Node) -> Result<(
         "\nvoid $[write:{id}](intrlay.WriteStorage {storage}, core.int {offset}, {} {value}, intrlay.Cursor{optional} {cursor}) {{",
         input_type(plan, id)
     )?;
+    if let Some(numeric) = node.numeric_input {
+        numeric_input::write(output, plan, node, numeric)?;
+        writeln!(output, "}}")?;
+        return Ok(());
+    }
     initialize_fixed_array(output, plan, id, node)?;
     match &node.kind {
         Kind::Scalar(scalar) => match scalar {
@@ -418,16 +473,17 @@ fn write_array(
     element: Id,
 ) -> Result<(), GenerateError> {
     if matches!(node.kind, Kind::Sequence(_)) {
+        sequence_count(output, "value.length")?;
         writeln!(
             output,
-            "  final payloadOffset = cursor.reserve(value.length * {}, {});\n  storage.writeUint32(offset, payloadOffset - offset);\n  storage.writeUint32(offset + 4, value.length);",
+            "  final payloadOffset = cursor.reserve(count * {}, {});\n  storage.writeUint32(offset, payloadOffset - offset);\n  storage.writeUint32(offset + 4, count);",
             plan.nodes[element].layout.size(),
             plan.nodes[element].layout.alignment()
         )?;
         if plan.zeroable(element) {
             writeln!(
                 output,
-                "  final items = value.values;\n  if (items == null) {{\n    storage.bytes.fillRange(payloadOffset, payloadOffset + value.length * {}, 0);\n    return;\n  }}",
+                "  final items = value.values;\n  if (items == null) {{\n    storage.bytes.fillRange(payloadOffset, payloadOffset + count * {}, 0);\n    return;\n  }}",
                 plan.nodes[element].layout.size()
             )?;
         }
@@ -530,10 +586,6 @@ fn view(
             writeln!(output, "\n  {name}._(this.$[storage], {offset});")?;
         }
     }
-    writeln!(
-        output,
-        "\n  typed.Uint8List get $[bytes] => $[storage].bytes;"
-    )?;
     if node.options.generation.create {
         construction(output, plan, id)?;
     }
@@ -548,11 +600,11 @@ fn view_members(
     id: Id,
     node: &Node,
 ) -> Result<(), GenerateError> {
-    if node.options.generation.setters && !plan.has_payload(id) {
+    if node.options.generation.setters && node.options.values() && !plan.has_payload(id) {
         let codec = node.codec;
         writeln!(
             output,
-            "\n  /// Replaces the inline value without reallocating its backing storage.\n  void $[replace]({} value) {{\n    $[write:{codec}]($[storage].writer, $[offset], value, null);\n  }}",
+            "\n  /// Replaces the inline value without reallocating its backing storage.\n  void $[replace]({} value) {{\n    $[write:{codec}](this.$[storage].writer, $[offset], value, null);\n  }}",
             input_type(plan, id)
         )?;
     }
@@ -567,7 +619,7 @@ fn view_members(
             if node.options.generation.getters {
                 writeln!(
                     output,
-                    "\n  core.int get $[tag] => $[storage].u32($[offset]);"
+                    "\n  @core.pragma('vm:prefer-inline')\n  core.int get $[tag] => this.$[storage].u32($[offset]);"
                 )?;
             }
             for variant in variants {
@@ -710,54 +762,7 @@ fn sequence_view(
             )
         )?;
     }
-    if plan.folded_field(element).is_none()
-        && let Kind::Record(fields) = &plan.nodes[element].kind
-    {
-        for field in fields {
-            let offset = format!(
-                "({position}) + index * {} + {}",
-                plan.nodes[element].layout.size(),
-                field.offset
-            );
-            let api = IndexedAccessors::new(plan, node, &plan.nodes[element], field);
-            numeric_component_accessors(output, plan, &api, field, &offset)?;
-            if let Some(getter) = &api.getter {
-                let index = load::index_parameter(plan, field.ty, field.options.exposure);
-                writeln!(output)?;
-                documentation::write(output, &crate::documentation::indexed(&field.docs), "  ")?;
-                read_method(
-                    output,
-                    plan,
-                    &format!(
-                        "{} {}(core.int {index})",
-                        output_type(plan, field.ty),
-                        getter
-                    ),
-                    &load::Read {
-                        id: field.ty,
-                        offset: &offset,
-                        exposure: field.options.exposure,
-                        tag: None,
-                    },
-                )?;
-            }
-            if let Some(setter) = &api.setter {
-                let mutation = &setter.mutation;
-                if api.getter.is_none() {
-                    writeln!(output)?;
-                }
-                documentation::write(output, &crate::documentation::indexed(&field.docs), "  ")?;
-                writeln!(
-                    output,
-                    "  void {}(core.int index, {} value) {{\n    {}\n  }}",
-                    setter.name,
-                    input_type(plan, mutation.value),
-                    mutation::body(plan, mutation, &offset)
-                )?;
-            }
-        }
-    }
-    Ok(())
+    indexed::fields(output, plan, node, element, &position)
 }
 
 fn property(
@@ -769,6 +774,15 @@ fn property(
 ) -> Result<(), GenerateError> {
     let name = &api.name;
     let offset = format!("$[offset] + {}", field.offset);
+    field_helpers::emit(
+        output,
+        plan,
+        &api.helpers,
+        field,
+        &offset,
+        tag.map(|tag| (tag, "$[offset]")),
+        false,
+    )?;
     let has_getter = api.getter;
     if has_getter {
         let ty = projected_type(plan, field.ty, field.options.exposure);
@@ -786,7 +800,7 @@ fn property(
                 id: field.ty,
                 offset: &offset,
                 exposure: field.options.exposure,
-                tag,
+                tag: tag.map(|tag| (tag, "$[offset]")),
             },
             &field.docs,
         )?;
@@ -794,7 +808,7 @@ fn property(
     if let Some(setter) = &api.setter {
         let mutation = &setter.mutation;
         let guard = tag.map_or(String::new(), |tag| {
-            format!("if ($[storage].u32($[offset]) != {tag}) return; ")
+            format!("if (this.$[storage].u32($[offset]) != {tag}) return; ")
         });
         if !has_getter {
             writeln!(output)?;
@@ -901,6 +915,9 @@ fn read_method(
 }
 
 fn input_type(plan: &TypeGraph, id: Id) -> String {
+    if let Some(ty) = numeric_input::input_type(plan, &plan.nodes[id]) {
+        return ty;
+    }
     match &plan.nodes[id].kind {
         Kind::Scalar(scalar) => scalar_type(*scalar).into(),
         Kind::Unit => "core.Null".into(),
@@ -939,6 +956,7 @@ fn output_type(plan: &TypeGraph, id: Id) -> String {
     }
     match &plan.nodes[id].kind {
         Kind::Scalar(scalar) => scalar_type(*scalar).into(),
+        Kind::Enum(_) if plan.nodes[id].is_value_enum() => plan.nodes[id].tag_type_name(),
         Kind::Unit => "core.Null".into(),
         Kind::String => "core.String".into(),
         Kind::Optional { value, .. } => optional_type(plan, *value, &output_type(plan, *value)),
@@ -1003,7 +1021,11 @@ fn projected_type(plan: &TypeGraph, id: Id, exposure: Exposure) -> String {
     if let Exposure::TypedArray(scalar) = exposure {
         numeric_type(scalar)
     } else if matches!(plan.nodes[id].options.exposure, Exposure::TypedArray(_)) {
-        plan.view_name(id)
+        if plan.nodes[id].is_value_enum() {
+            plan.nodes[id].tag_type_name()
+        } else {
+            plan.view_name(id)
+        }
     } else {
         output_type(plan, id)
     }
@@ -1030,48 +1052,4 @@ fn input_member(plan: &TypeGraph, node: &Node, field: &Field) -> String {
     } else {
         format!("value.{}", field.name)
     }
-}
-
-fn numeric_component_accessors(
-    output: &mut String,
-    plan: &TypeGraph,
-    api: &IndexedAccessors,
-    field: &Field,
-    offset: &str,
-) -> Result<(), GenerateError> {
-    if let Some(scalar) = plan.component_scalar(field) {
-        let mut prefix = format!("var position = {offset};\n");
-        if matches!(plan.nodes[field.ty].kind, Kind::Sequence(_)) {
-            prefix.push_str("position += $[storage].u32(position);\n");
-        }
-        let position = format!("position + component * {}", scalar.layout().size());
-        let docs = crate::documentation::indexed_component(&field.docs);
-        if let Some(getter) = &api.component_getter {
-            let value = load::scalar(scalar, &position);
-            writeln!(output)?;
-            documentation::write(output, &docs, "  ")?;
-            writeln!(
-                output,
-                "  {} {}(core.int index, core.int component) {{\n    {}return {value};\n  }}",
-                scalar_type(scalar),
-                getter,
-                prefix.replace('\n', "\n    ")
-            )?;
-        }
-        if let Some(setter) = &api.component_setter {
-            let write = store(scalar, &position, "value").replace("storage.", "$[storage].");
-            if api.component_getter.is_none() {
-                writeln!(output)?;
-            }
-            documentation::write(output, &docs, "  ")?;
-            writeln!(
-                output,
-                "  void {}(core.int index, core.int component, {} value) {{\n    {}{write};\n  }}",
-                setter,
-                scalar_type(scalar),
-                prefix.replace('\n', "\n    ")
-            )?;
-        }
-    }
-    Ok(())
 }

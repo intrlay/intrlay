@@ -25,11 +25,16 @@ pub struct Attributes {
     pub projection: Option<Exposure>,
     pub generate_getters: Option<bool>,
     pub generate_setters: Option<bool>,
+    pub generate_component_accessors: Option<bool>,
+    pub generate_byte_range_accessors: Option<bool>,
+    pub generate_value_accessors: Option<bool>,
     pub create: Option<bool>,
     pub runtime: Option<Path>,
     pub bounds: Option<Vec<WherePredicate>>,
     pub no_field_bounds: bool,
     pub transparent: bool,
+    /// The adapter author proves the source's initialized bytes match its wire layout.
+    pub native_layout: Option<Expr>,
 }
 
 #[derive(Default)]
@@ -37,12 +42,17 @@ pub struct ApiAttributes {
     pub name: Option<String>,
     pub generate_getters: Option<bool>,
     pub generate_setters: Option<bool>,
+    pub generate_component_accessors: Option<bool>,
+    pub generate_byte_range_accessors: Option<bool>,
+    pub generate_value_accessors: Option<bool>,
     pub create: Option<bool>,
 }
 
 pub enum Exposure {
     Fields,
+    Flatten,
     Indexed,
+    IndexedOnly,
     TypedArray(syn::Ident),
 }
 
@@ -85,6 +95,11 @@ impl Attributes {
             }
             attribute.parse_nested_meta(|meta| {
                 let key = option_name(&meta)?;
+                if key == "unsafe" {
+                    check_scope(&meta, &key, scope)?;
+                    options.native_layout = Some(parse_native_layout(&meta, &mut seen)?);
+                    return Ok(());
+                }
                 if let Some((language, _)) = LANGUAGES.iter().find(|(name, _)| *name == key) {
                     let api = options.languages.entry((*language).into()).or_default();
                     let seen = language_seen.entry((*language).into()).or_default();
@@ -103,12 +118,17 @@ impl Attributes {
                         let value = meta.value()?.parse::<LitStr>()?;
                         options.projection = Some(match value.value().as_str() {
                             "fields" => Exposure::Fields,
+                            "flatten" => Exposure::Flatten,
                             "indexed" => Exposure::Indexed,
+                            "indexed_only" => Exposure::IndexedOnly,
                             _ => Exposure::TypedArray(scalar(&value)?),
                         });
                     }
                     "generate_getters" => options.generate_getters = Some(meta.value()?.parse::<syn::LitBool>()?.value),
                     "generate_setters" => options.generate_setters = Some(meta.value()?.parse::<syn::LitBool>()?.value),
+                    "generate_component_accessors" => options.generate_component_accessors = Some(meta.value()?.parse::<syn::LitBool>()?.value),
+                    "generate_byte_range_accessors" => options.generate_byte_range_accessors = Some(meta.value()?.parse::<syn::LitBool>()?.value),
+                    "generate_value_accessors" => options.generate_value_accessors = Some(meta.value()?.parse::<syn::LitBool>()?.value),
                     "create" => options.create = Some(meta.value()?.parse::<syn::LitBool>()?.value),
                     "crate" => options.runtime = Some(meta.value()?.parse::<LitStr>()?.parse()?),
                     "bound" => {
@@ -159,11 +179,32 @@ impl Attributes {
                 .then(|| api.generate_setters.or(self.generate_setters))
                 .flatten();
             let create = api.create.or(self.create);
+            let components = reference_target
+                .then(|| {
+                    api.generate_component_accessors
+                        .or(self.generate_component_accessors)
+                })
+                .flatten();
             let name = api.name.as_ref().or(self.name.as_ref());
+            let ranges = reference_target
+                .then(|| {
+                    api.generate_byte_range_accessors
+                        .or(self.generate_byte_range_accessors)
+                })
+                .flatten();
+            let values = reference_target
+                .then(|| {
+                    api.generate_value_accessors
+                        .or(self.generate_value_accessors)
+                })
+                .flatten();
             if name.is_none()
                 && projection.is_none()
                 && getters.is_none()
                 && mutators.is_none()
+                && components.is_none()
+                && ranges.is_none()
+                && values.is_none()
                 && create.is_none()
             {
                 return None;
@@ -174,8 +215,14 @@ impl Attributes {
                 Some(Exposure::Fields) => {
                     quote!(::core::option::Option::Some(#runtime::schema::Exposure::Fields))
                 }
+                Some(Exposure::Flatten) => {
+                    quote!(::core::option::Option::Some(#runtime::schema::Exposure::Flatten))
+                }
                 Some(Exposure::Indexed) => {
                     quote!(::core::option::Option::Some(#runtime::schema::Exposure::Indexed))
+                }
+                Some(Exposure::IndexedOnly) => {
+                    quote!(::core::option::Option::Some(#runtime::schema::Exposure::IndexedOnly))
                 }
                 Some(Exposure::TypedArray(scalar)) => quote!(::core::option::Option::Some(
                     #runtime::schema::Exposure::TypedArray(#runtime::schema::Scalar::#scalar)
@@ -183,6 +230,9 @@ impl Attributes {
             };
             let getters = optional_bool(getters);
             let mutators = optional_bool(mutators);
+            let components = optional_bool(components);
+            let ranges = optional_bool(ranges);
+            let values = optional_bool(values);
             let create = optional_bool(create);
             let name = name.map_or_else(
                 || quote!(::core::option::Option::None),
@@ -195,6 +245,9 @@ impl Attributes {
                     exposure: #exposure,
                     generate_getters: #getters,
                     generate_setters: #mutators,
+                    generate_component_accessors: #components,
+                    generate_byte_range_accessors: #ranges,
+                    generate_value_accessors: #values,
                     create: #create,
                 }
             )))
@@ -232,8 +285,14 @@ impl ApiAttributes {
             );
         }
         check_scope(meta, &key, scope)?;
-        if matches!(key.as_str(), "generate_getters" | "generate_setters")
-            && matches!(language, "rust" | "cpp" | "csharp")
+        if matches!(
+            key.as_str(),
+            "generate_getters"
+                | "generate_setters"
+                | "generate_component_accessors"
+                | "generate_byte_range_accessors"
+                | "generate_value_accessors"
+        ) && matches!(language, "rust" | "cpp" | "csharp")
         {
             return Err(meta
                 .error("accessor generation options apply only to typescript, python, and dart"));
@@ -247,10 +306,21 @@ impl ApiAttributes {
             "generate_setters" => {
                 self.generate_setters = Some(meta.value()?.parse::<syn::LitBool>()?.value);
             }
+            "generate_component_accessors" => {
+                self.generate_component_accessors =
+                    Some(meta.value()?.parse::<syn::LitBool>()?.value);
+            }
+            "generate_byte_range_accessors" => {
+                self.generate_byte_range_accessors =
+                    Some(meta.value()?.parse::<syn::LitBool>()?.value);
+            }
+            "generate_value_accessors" => {
+                self.generate_value_accessors = Some(meta.value()?.parse::<syn::LitBool>()?.value);
+            }
             "create" => self.create = Some(meta.value()?.parse::<syn::LitBool>()?.value),
             _ => {
                 return Err(
-                    meta.error("expected name, generate_getters, generate_setters, or create")
+                    meta.error("expected name, generate_getters, generate_setters, generate_component_accessors, generate_byte_range_accessors, generate_value_accessors, or create")
                 );
             }
         }
@@ -278,12 +348,13 @@ fn unique(
 
 fn check_scope(meta: &syn::meta::ParseNestedMeta<'_>, key: &str, scope: Scope) -> syn::Result<()> {
     let valid = match key {
-        "crate" | "bound" | "no_field_bounds" | "remote" | "from" | "transparent" | "create" => {
-            scope == Scope::Container
-        }
+        "crate" | "bound" | "no_field_bounds" | "remote" | "from" | "transparent" | "create"
+        | "unsafe" => scope == Scope::Container,
         "with" | "getter" => scope == Scope::Field,
         "tag" => scope == Scope::Variant,
-        "project" => scope != Scope::Variant,
+        "project" | "generate_component_accessors" | "generate_byte_range_accessors" => {
+            scope != Scope::Variant
+        }
         _ => true,
     };
     if !valid {
@@ -316,7 +387,7 @@ fn scalar(value: &LitStr) -> syn::Result<syn::Ident> {
         _ => {
             return Err(syn::Error::new_spanned(
                 value,
-                "expected fields, indexed, or a numeric scalar (i8, u8, i16, u16, i32, u32, i64, u64, f32, f64)",
+                "expected fields, flatten, indexed, indexed_only, or a numeric scalar (i8, u8, i16, u16, i32, u32, i64, u64, f32, f64)",
             ));
         }
     };
@@ -372,5 +443,60 @@ pub fn with_documentation(text: &str, note: &str) -> String {
         note.into()
     } else {
         format!("{text}\n\n{note}")
+    }
+}
+
+fn parse_native_layout(
+    meta: &syn::meta::ParseNestedMeta<'_>,
+    seen: &mut BTreeSet<String>,
+) -> syn::Result<Expr> {
+    let mut expression = None;
+    meta.parse_nested_meta(|proof| {
+        if !proof.path.is_ident("native_layout") {
+            return Err(proof.error("expected native_layout"));
+        }
+        unique(&proof, "native_layout", seen)?;
+        expression = Some(if proof.input.peek(syn::Token![=]) {
+            proof.value()?.parse()?
+        } else {
+            syn::parse_quote!(true)
+        });
+        Ok(())
+    })?;
+    expression.ok_or_else(|| meta.error("expected native_layout"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Attributes, Scope};
+
+    #[test]
+    fn native_layout_proofs_are_explicit_container_annotations() -> syn::Result<()> {
+        let proof = syn::parse_quote!(#[intrlay(unsafe(native_layout))]);
+        assert!(
+            Attributes::parse(std::slice::from_ref(&proof), Scope::Container)?
+                .native_layout
+                .is_some()
+        );
+        for scope in [Scope::Field, Scope::Variant] {
+            assert!(Attributes::parse(std::slice::from_ref(&proof), scope).is_err());
+        }
+        for invalid in [
+            syn::parse_quote!(#[intrlay(native_layout)]),
+            syn::parse_quote!(#[intrlay(unsafe())]),
+            syn::parse_quote!(#[intrlay(unsafe(other))]),
+            syn::parse_quote!(#[intrlay(unsafe(native_layout, native_layout))]),
+        ] {
+            assert!(Attributes::parse(&[invalid], Scope::Container).is_err());
+        }
+        assert!(Attributes::parse(&[proof.clone(), proof], Scope::Container).is_err());
+        let conditional =
+            syn::parse_quote!(#[intrlay(unsafe(native_layout = Child::NATIVE_LAYOUT))]);
+        assert!(
+            Attributes::parse(&[conditional], Scope::Container)?
+                .native_layout
+                .is_some()
+        );
+        Ok(())
     }
 }

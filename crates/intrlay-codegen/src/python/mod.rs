@@ -4,16 +4,19 @@ use intrlay_schema::{Exposure, Scalar};
 
 use crate::{
     GenerateError,
-    api::{Accessor, CollectionAccessors, IndexedAccessors},
+    api::{Accessor, CollectionAccessors},
     plan::{Field, GenerationPlan, Id, Kind, Node, TypeGraph, WriterParameters},
 };
 
 mod api;
 mod documentation;
+mod field_helpers;
+mod indexed;
 mod load;
 mod mutation;
 mod name_validation;
 mod names;
+mod numeric_input;
 
 pub(crate) use names::reference as reference_name;
 
@@ -57,8 +60,15 @@ pub fn generate(
     {
         writeln!(output, "import enum as _enum")?;
     }
-    for (id, node) in plan.nodes.iter().enumerate() {
-        input(&mut output, plan, node, generation.encoding.needs_input(id))?;
+    // Plain enums have no declaration dependencies. Emit them before input
+    // annotations so names such as int and len resolve to these types rather
+    // than the builtins when a type checker visits an earlier parent record.
+    for value_enums in [true, false] {
+        for (id, node) in plan.nodes.iter().enumerate() {
+            if node.is_value_enum() == value_enums {
+                input(&mut output, plan, node, generation.encoding.needs_input(id))?;
+            }
+        }
     }
     for (id, node) in plan.nodes.iter().enumerate() {
         if generation.encoding.measures.contains(&id) {
@@ -94,7 +104,11 @@ pub fn generate(
                 || !matches!(plan.nodes[*id].kind, Kind::Record(_) | Kind::Enum(_)))
         {
             if plan.nodes[*id].is_value_enum() {
-                writeln!(output, "{name}Input = {}", input_type(plan, *id))?;
+                writeln!(
+                    output,
+                    "{name} = {}",
+                    names::reference(&plan.nodes[*id].tag_type_name())
+                )?;
             } else {
                 writeln!(output, "type {name}Input = {}", input_type(plan, *id))?;
             }
@@ -116,6 +130,7 @@ pub(crate) fn private_aliases(
         .filter(|(id, node)| {
             generation.encoding.needs_input(*id)
                 && matches!(node.kind, Kind::Record(_) | Kind::Enum(_))
+                && !node.is_enum_input_context()
         })
         .map(|(_, node)| node.input_name())
         .chain(
@@ -155,7 +170,17 @@ fn input(
     node: &Node,
     needed: bool,
 ) -> Result<(), GenerateError> {
+    if node.is_enum_input_context() {
+        return Ok(());
+    }
     if !needed && !matches!(node.kind, Kind::Enum(_)) {
+        return Ok(());
+    }
+    if let Some(ty) = numeric_input::input_type(plan, node)
+        && matches!(node.kind, Kind::Record(_))
+    {
+        writeln!(output, "\n\ntype {} = {ty}", node.input_name())?;
+        documentation::write(output, &node.docs, "")?;
         return Ok(());
     }
     if let Some(field) = plan.folded_node(node) {
@@ -269,6 +294,9 @@ fn measure(
         "\n\ndef $[measure:{id}]({value}: {}, cursor: _intrlay.Cursor) -> None:",
         input_type(plan, id)
     )?;
+    if let Some(numeric) = node.numeric_input {
+        return numeric_input::measure(output, plan, node, numeric);
+    }
     match &node.kind {
         Kind::String => writeln!(
             output,
@@ -371,6 +399,9 @@ fn write(output: &mut String, id: Id, node: &Node, plan: &TypeGraph) -> Result<(
         "\n\ndef $[write:{id}](\n    {storage}: _intrlay.Storage, {offset}: _builtins.int, {value}: {}, {cursor}: _intrlay.Cursor{optional}\n) -> None:",
         input_type(plan, id)
     )?;
+    if let Some(numeric) = node.numeric_input {
+        return numeric_input::write(output, plan, node, numeric);
+    }
     if let Kind::Array { length, .. } = node.kind {
         if plan.zeroable(id) {
             writeln!(
@@ -670,6 +701,12 @@ fn view_storage(
             }
         }
     }
+    // Keep runtime descriptors on the direct private slot. The public property
+    // follows naming policy without adding a property lookup to field reads.
+    writeln!(
+        output,
+        "\n    @_builtins.property\n    def $[storage](self) -> _intrlay.Storage:\n        \"\"\"Backing bytes and numeric projections shared by this view.\"\"\"\n        return self._storage"
+    )?;
     Ok(())
 }
 
@@ -681,7 +718,7 @@ fn view_members(
 ) -> Result<bool, GenerateError> {
     // Runtime property descriptors read the record offset indirectly.
     let mut descriptors = false;
-    if node.options.generation.setters && !plan.has_payload(id) {
+    if node.options.generation.setters && node.options.values() && !plan.has_payload(id) {
         let writer = names::reference(&crate::symbols::codec_function(plan, "write", node.codec)?);
         writeln!(
             output,
@@ -820,88 +857,30 @@ fn sequence_view(
             output_type(plan, element)
         )?;
     }
-    indexed_fields(output, plan, node, element, &position)
-}
-
-fn indexed_fields(
-    output: &mut String,
-    plan: &TypeGraph,
-    node: &Node,
-    element: Id,
-    position: &str,
-) -> Result<(), GenerateError> {
-    if plan.folded_field(element).is_none()
-        && let Kind::Record(fields) = &plan.nodes[element].kind
-    {
-        for field in fields {
-            let offset = format!(
-                "({position}) + index * {} + {}",
-                plan.nodes[element].layout.size(),
-                field.offset
-            );
-            let api = IndexedAccessors::new(plan, node, &plan.nodes[element], field);
-            numeric_component_accessors(output, plan, &api, field, &offset)?;
-            if let Some(getter) = &api.getter {
-                let unused_index = if load::uses_index(plan, field.ty, field.options.exposure) {
-                    ""
-                } else {
-                    "  # noqa: ARG002 - Keep the public index keyword for unit values."
-                };
-                writeln!(
-                    output,
-                    "\n    def {}(self, index: _builtins.int) -> {}:{unused_index}",
-                    getter,
-                    output_type(plan, field.ty),
-                )?;
-                documentation::write(
-                    output,
-                    &crate::documentation::indexed(&field.docs),
-                    "        ",
-                )?;
-                writeln!(
-                    output,
-                    "        {}",
-                    load::body(
-                        plan,
-                        &load::Read {
-                            id: field.ty,
-                            offset: &offset,
-                            exposure: field.options.exposure,
-                            tag: None
-                        },
-                        None
-                    )
-                    .replace('\n', "\n        ")
-                )?;
-            }
-            if let Some(setter) = &api.setter {
-                let mutation = &setter.mutation;
-                if api.getter.is_none() {
-                    writeln!(output)?;
-                }
-                writeln!(
-                    output,
-                    "    def {}(self, index: _builtins.int, value: {}) -> None:",
-                    setter.name,
-                    input_type(plan, mutation.value),
-                )?;
-                documentation::write(
-                    output,
-                    &crate::documentation::indexed(&field.docs),
-                    "        ",
-                )?;
-                writeln!(
-                    output,
-                    "        {}",
-                    mutation::body(plan, mutation, &offset)?
-                )?;
-            }
-        }
-    }
-    Ok(())
+    indexed::fields(output, plan, node, element, &position)
 }
 
 fn property(
+    output: &mut String,
+    plan: &TypeGraph,
+    field: &Field,
+    api: &Accessor,
+    tag: Option<u32>,
+) -> Result<bool, GenerateError> {
+    let offset = format!("self._offset + {}", field.offset);
+    field_helpers::emit(
+        output,
+        plan,
+        &api.helpers,
+        field,
+        &offset,
+        tag.map(|tag| (tag, "self._offset")),
+        false,
+    )?;
+    value_property(output, plan, field, api, tag)
+}
+
+fn value_property(
     output: &mut String,
     plan: &TypeGraph,
     field: &Field,
@@ -964,7 +943,7 @@ fn property(
             id: field.ty,
             offset: &offset,
             exposure: field.options.exposure,
-            tag,
+            tag: tag.map(|tag| (tag, "self._offset")),
         };
         writeln!(
             output,
@@ -1005,6 +984,9 @@ fn property(
 }
 
 fn input_type(plan: &TypeGraph, id: Id) -> String {
+    if let Some(ty) = numeric_input::input_type(plan, &plan.nodes[id]) {
+        return ty;
+    }
     match &plan.nodes[id].kind {
         Kind::Scalar(scalar) => scalar_type(*scalar).into(),
         Kind::Unit => "None".into(),
@@ -1042,6 +1024,9 @@ fn output_type(plan: &TypeGraph, id: Id) -> String {
     }
     match &plan.nodes[id].kind {
         Kind::Scalar(scalar) => scalar_type(*scalar).into(),
+        Kind::Enum(_) if plan.nodes[id].is_value_enum() => {
+            names::reference(&plan.nodes[id].tag_type_name())
+        }
         Kind::Unit => "None".into(),
         Kind::String => "_builtins.str".into(),
         Kind::Optional { value, .. } => optional_type(plan, *value, false),
@@ -1109,7 +1094,11 @@ fn projected_type(plan: &TypeGraph, id: Id, exposure: Exposure) -> String {
     if let Exposure::TypedArray(scalar) = exposure {
         numeric_type(scalar)
     } else if matches!(plan.nodes[id].options.exposure, Exposure::TypedArray(_)) {
-        names::reference(&plan.view_name(id))
+        names::reference(&if plan.nodes[id].is_value_enum() {
+            plan.nodes[id].tag_type_name()
+        } else {
+            plan.view_name(id)
+        })
     } else {
         output_type(plan, id)
     }
@@ -1130,57 +1119,4 @@ fn input_member(plan: &TypeGraph, node: &Node, field: &Field) -> String {
     } else {
         format!("value['{}']", field.name)
     }
-}
-
-fn numeric_component_accessors(
-    output: &mut String,
-    plan: &TypeGraph,
-    api: &IndexedAccessors,
-    field: &Field,
-    offset: &str,
-) -> Result<(), GenerateError> {
-    if let Some(scalar) = plan.component_scalar(field) {
-        let mut prefix = format!("position = {offset}\n");
-        if matches!(plan.nodes[field.ty].kind, Kind::Sequence(_)) {
-            prefix.push_str("position += self._storage.u32[position // 4]\n");
-        }
-        let lane = format!(
-            "self._storage.{}[position // {} + component]",
-            format!("{scalar:?}").to_lowercase(),
-            scalar.layout().size()
-        );
-        let docs = crate::documentation::indexed_component(&field.docs);
-        if let Some(getter) = &api.component_getter {
-            writeln!(
-                output,
-                "\n    def {}(self, index: _builtins.int, component: _builtins.int) -> {}:",
-                getter,
-                scalar_type(scalar)
-            )?;
-            documentation::write(output, &docs, "        ")?;
-            writeln!(
-                output,
-                "        {}return {lane}",
-                prefix.replace('\n', "\n        ")
-            )?;
-        }
-        if let Some(setter) = &api.component_setter {
-            if api.component_getter.is_none() {
-                writeln!(output)?;
-            }
-            writeln!(
-                output,
-                "    def {}(self, index: _builtins.int, component: _builtins.int, value: {}) -> None:",
-                setter,
-                scalar_type(scalar)
-            )?;
-            documentation::write(output, &docs, "        ")?;
-            writeln!(
-                output,
-                "        {}{lane} = value",
-                prefix.replace('\n', "\n        ")
-            )?;
-        }
-    }
-    Ok(())
 }

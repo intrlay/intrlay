@@ -113,10 +113,16 @@ pub enum Exposure {
     /// Named field access, with typed child views.
     #[default]
     Fields,
+    /// Inline record and fixed-array paths become accessors on the containing view.
+    /// Each leaf retains its own type; this does not reinterpret numeric lanes.
+    Flatten,
     /// One numeric view over the complete representation, including padding.
     TypedArray(Scalar),
-    /// Collection-level field access by element index, without per-element views.
+    /// Record collection field access alongside ordinary element views.
     Indexed,
+    /// Request field access only; a shared collection view retains element access
+    /// if another reachable use needs it.
+    IndexedOnly,
 }
 
 /// Which APIs to emit, independently of storage mutability or access permissions.
@@ -153,6 +159,15 @@ pub struct TargetOptions {
     /// Emit setters in TypeScript, Python, and Dart, inheriting when absent.
     /// This does not restrict writes through a returned child view or numeric array.
     pub generate_setters: Option<bool>,
+    /// Emit numeric-lane helpers on ordinary fields and indexed collections.
+    /// Getters/setters still follow their respective emission hints. Defaults to false.
+    pub generate_component_accessors: Option<bool>,
+    /// Emit byte offset and byte length helpers for each field's inline wire layout.
+    /// Offsets are relative to the view's storage, and helpers allocate no child view.
+    pub generate_byte_range_accessors: Option<bool>,
+    /// Emit whole-value field and element accessors, independently of numeric helpers.
+    /// Defaults to true; read/write emission hints still apply to every helper family.
+    pub generate_value_accessors: Option<bool>,
     /// Whether to emit size calculation and construction APIs, inheriting when absent.
     pub create: Option<bool>,
 }

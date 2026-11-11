@@ -1,0 +1,29 @@
+error[E0277]: the trait bound `Unstable: StableBytes` is not satisfied
+  --> tests/ui/fail/unstable_view_storage.rs:13:36
+   |
+13 |     let _ = PacketView::from_bytes(Unstable);
+   |             ---------------------- ^^^^^^^^ unsatisfied trait bound
+   |             |
+   |             required by a bound introduced by this call
+   |
+help: the trait `StableBytes` is not implemented for `Unstable`
+  --> tests/ui/fail/unstable_view_storage.rs:7:1
+   |
+ 7 | struct Unstable;
+   | ^^^^^^^^^^^^^^^
+   = help: the following other types implement trait `StableBytes`:
+             &T
+             &mut T
+             Arc<[u8]>
+             Box<[u8]>
+             OwnedBuffer
+             Rc<[u8]>
+             Vec<u8>
+             [u8; N]
+             [u8]
+note: required by a bound in `PacketView::<__IntrlayBuffer>::from_bytes`
+  --> tests/ui/fail/unstable_view_storage.rs:3:10
+   |
+ 3 | #[derive(Intrlay)]
+   |          ^^^^^^^ required by this bound in `PacketView::<__IntrlayBuffer>::from_bytes`
+   = note: this error originates in the derive macro `Intrlay` (in Nightly builds, run with -Z macro-backtrace for more info)

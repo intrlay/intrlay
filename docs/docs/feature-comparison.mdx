@@ -42,8 +42,9 @@ binary representation while keeping application types in Rust or C++:
 - **Use source-language declarations.** Records, payload-bearing enums, optional
   values, fixed arrays, sequences, strings, and owned trees become a common
   schema. Export concrete generic instantiations and use adapters for supported
-  external Rust types. There is no separate IDL to keep aligned with those
-  declarations. See [Schema annotations](reference/annotations.mdx).
+  external Rust and C++ types. There is no separate IDL to keep aligned with those
+  declarations. See [Schema annotations](reference/annotations.mdx) and
+  [Library adapters](reference/library-adapters.mdx).
 - **Read only what you need.** Fixed headers and element strides let views reach
   a field or sequence element without decoding earlier elements, including when
   elements contain dynamic payloads. See [Binary layout](reference/binary-layout.mdx).
@@ -69,7 +70,7 @@ control over the generated API in its six targets.
 | Requirement | Intrlay's current contract |
 | --- | --- |
 | Independently upgrade readers and writers | Coordinate layout changes in the application; buffers do not negotiate schemas or preserve unknown fields. |
-| Read bytes from an untrusted producer | Establish a valid encoding before opening views. Intrlay has no general input validator. |
+| Read bytes from an untrusted producer | Rust and C++ provide checked view constructors. Other targets assume valid encodings; schema selection and lifetime remain application responsibilities. |
 | Grow a string or collection through a view | Construct a new encoding, optionally reusing storage. Views do not relocate payloads or resize collections. |
 | Preserve shared object identity | Owned trees are supported; shared references and arbitrary object graphs are outside the data model. |
 | Minimize transmitted bytes | Fixed-width values, reserved inline storage, and alignment padding take space. There is no built-in compression or omission of default-valued fields. |
@@ -93,10 +94,12 @@ See [Schemas](https://flatbuffers.dev/schema/) and
 [Evolution](https://flatbuffers.dev/evolution/).
 
 Intrlay is a closer fit when Rust or C++ declarations should define the schema
-and coordinated layout changes are acceptable. FlatBuffers also provides tools
-such as the C++ buffer verifier that Intrlay does not provide.
-[C++ validation](https://flatbuffers.dev/languages/cpp/#access-of-untrusted-buffers)
-is an optional pass before direct reads, not a cost incurred by every accessor.
+and coordinated layout changes are acceptable. Both projects provide checked
+buffer access in C++ and Rust. FlatBuffers also provides a
+[C# verifier](https://flatbuffers.dev/languages/c_sharp/#buffer-verification);
+Intrlay's C# views rely on runtime bounds checks. Verification runs before direct
+reads rather than being repeated by every accessor. The exact validation rules
+differ between libraries and targets.
 
 ### Cap'n Proto
 

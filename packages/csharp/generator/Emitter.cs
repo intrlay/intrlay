@@ -91,6 +91,7 @@ internal sealed partial class Emitter(Schema schema)
     {
         var node = Node(id);
         if (node.Scalar) return Scalar(node.Kind);
+        if (node.ValueEnum) return Input(id);
         return node.Kind switch
         {
             "Unit" => "global::System.ValueTuple",
@@ -126,6 +127,7 @@ internal sealed partial class Emitter(Schema schema)
     private bool Borrows(int id)
     {
         var node = Node(id);
+        if (node.ValueEnum) return false;
         return node.Kind switch
         {
             "Record" or "Enum" or "Array" or "Sequence" => true,
@@ -149,6 +151,8 @@ internal sealed partial class Emitter(Schema schema)
                 _ => $"global::System.Buffers.Binary.BinaryPrimitives.Read{ScalarMethod(node.Kind)}LittleEndian({bytes}.Slice({offset}, {node.Size}))",
             };
         }
+        if (node.ValueEnum)
+            return $"({Input(id)})global::System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian({bytes}.Slice({offset}, 4))";
         return node.Kind switch
         {
             "Unit" => "default(global::System.ValueTuple)",

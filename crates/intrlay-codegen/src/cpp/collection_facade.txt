@@ -8,12 +8,35 @@ public:
     static constexpr ::std::size_t $[alignment] = Descriptor::alignment;
     static constexpr ::std::size_t extent = Descriptor::extent;
 
-    explicit CollectionView(::std::span<Byte> bytes, ::std::size_t offset = 0)
-        : $[storage](bytes, offset) {}
+    explicit CollectionView(::std::span<Byte> bytes, ::std::size_t offset, ::intrlay::detail::Unchecked tag) noexcept
+        : $[storage](bytes, offset, tag) {}
+
+    static ::intrlay::Expected<CollectionView, ::intrlay::ViewError> $[from_bytes](::std::span<Byte> bytes) noexcept {
+        return $[from_parts](bytes, 0);
+    }
+    static ::intrlay::Expected<CollectionView, ::intrlay::ViewError> $[from_parts](::std::span<Byte> bytes, ::std::size_t offset) noexcept {
+        return ::intrlay::detail::CheckedViewFactory<CollectionView, Descriptor>::from_parts(bytes, offset);
+    }
+    static CollectionView $[from_bytes_unchecked](::std::span<Byte> bytes) noexcept {
+        return $[from_parts_unchecked](bytes, 0);
+    }
+    static CollectionView $[from_parts_unchecked](::std::span<Byte> bytes, ::std::size_t offset) noexcept {
+        return CollectionView(bytes, offset, ::intrlay::detail::Unchecked{});
+    }
 
     ::std::span<Byte> $[bytes]() const { return $[storage].bytes(); }
-    ::std::size_t $[size_property]() const { return $[storage].size(); }
-    auto $[get](::std::size_t index) const { return $[storage].get(index); }
+    ::std::size_t $[size_property]() const noexcept { return $[storage].size(); }
+    auto $[get](::std::size_t index) const noexcept { return $[storage].get(index); }
+
+    // Keep the standard range protocol names under custom API naming policies.
+    auto begin() const noexcept { return $[storage].begin(); }
+    ::std::default_sentinel_t end() const noexcept { return {}; }
+
+    template<class T, ::std::size_t Extent>
+    void $[copy_to](::std::span<T, Extent> destination) const
+        requires requires { $[storage].copy_to(destination); } {
+        $[storage].copy_to(destination);
+    }
 
     template<class Value>
     void $[set](::std::size_t index, const Value& value) const

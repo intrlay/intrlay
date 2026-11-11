@@ -26,6 +26,7 @@ struct Renamed {
 
 #[derive(Intrlay)]
 struct RenamedList {
+    #[intrlay(project = "indexed")]
     items: Vec<Renamed>,
 }
 
@@ -116,6 +117,59 @@ enum ValueChoice {
 #[derive(Intrlay)]
 struct ValueEnums {
     choice: ValueChoice,
+}
+
+#[derive(Intrlay)]
+#[repr(u8)]
+#[intrlay(project = "u32")]
+enum ProjectedMode {
+    Idle = 3,
+    Active = 255,
+}
+
+#[derive(Intrlay)]
+struct ProjectedEnums {
+    #[intrlay(project = "u32")]
+    states: Vec<SparseState>,
+    #[intrlay(project = "u32")]
+    fixed: [SparseState; 2],
+    #[intrlay(project = "u32")]
+    empty: Vec<SparseState>,
+    #[intrlay(project = "u32")]
+    current: SparseState,
+    mode: Option<ProjectedMode>,
+    modes: Vec<ProjectedMode>,
+}
+
+#[derive(Intrlay)]
+#[repr(u32, align(16))]
+enum PaddedState {
+    First = 3,
+    Middle = 37,
+    Last = u32::MAX,
+}
+
+#[derive(Intrlay)]
+struct EnumEntry {
+    state: PaddedState,
+    optional: Option<PaddedState>,
+}
+
+#[derive(Intrlay)]
+struct NestedEnumValues {
+    state: PaddedState,
+    optional: Option<PaddedState>,
+    boxed: Box<PaddedState>,
+    fixed: [PaddedState; 2],
+    states: Vec<PaddedState>,
+    #[intrlay(project = "indexed")]
+    indexed: Vec<EnumEntry>,
+    #[intrlay(project = "u32")]
+    projected: [PaddedState; 2],
+    #[intrlay(generate_getters = false)]
+    write_only: PaddedState,
+    #[intrlay(generate_setters = false)]
+    read_only: PaddedState,
 }
 
 #[derive(Intrlay)]
@@ -300,6 +354,7 @@ struct Root {
 }
 
 #[derive(Intrlay)]
+#[intrlay(generate_component_accessors = true)]
 struct NumericItem {
     id: u32,
     position: [f32; 3],
@@ -316,11 +371,13 @@ struct NumericItem {
 
 #[derive(Intrlay)]
 struct NumericItems {
+    #[intrlay(project = "indexed")]
     items: Vec<NumericItem>,
 }
 
 #[derive(Intrlay)]
 struct ComponentCollision {
+    #[intrlay(generate_component_accessors = true)]
     position: [f32; 3],
     position_component: f32,
 }
@@ -366,12 +423,17 @@ fn anonymous_collections_inherit_code_size_hints() -> Result<(), Box<dyn Error>>
 
 #[test]
 fn numeric_component_names_are_validated() {
+    #[derive(Intrlay)]
+    struct Items {
+        #[intrlay(project = "indexed_only")]
+        values: Vec<ComponentCollision>,
+    }
     let mut registry = Registry::new();
-    registry.export::<Vec<ComponentCollision>>("Items");
+    registry.export::<Items>("Items");
     let schema = registry.finish();
     for language in [Language::TypeScript, Language::Python, Language::Dart] {
         assert!(
-            matches!(generate(&schema, language), Err(error) if error.0.contains("indexed numeric component accessor"))
+            matches!(generate(&schema, language), Err(error) if error.0.contains("numeric component getter"))
         );
     }
 }
@@ -571,8 +633,11 @@ fn value_enums(fixtures: &mut Fixtures, directory: &Path) -> Result<(), Box<dyn 
     registry.export::<ValueChoice>("ValueChoice");
     registry.export::<ValueChoice>("ValueChoiceAlias");
     registry.export::<ValueEnums>("ValueEnums");
+    registry.export::<ProjectedEnums>("ProjectedEnums");
+    registry.export::<NestedEnumValues>("NestedEnumValues");
     let schema = registry.finish();
     for (language, extension) in [
+        (Language::Cpp, "hpp"),
         (Language::TypeScript, "ts"),
         (Language::Python, "py"),
         (Language::Dart, "dart"),
@@ -589,6 +654,9 @@ fn value_enums(fixtures: &mut Fixtures, directory: &Path) -> Result<(), Box<dyn 
                 &schema,
                 language,
                 GenerateOptions {
+                    cpp: intrlay_codegen::CppOptions {
+                        namespace: Some("value_enums".into()),
+                    },
                     csharp: intrlay_codegen::CSharpOptions {
                         namespace: Some("Composition.ValueEnums".into()),
                         ..Default::default()
@@ -610,6 +678,64 @@ fn value_enums(fixtures: &mut Fixtures, directory: &Path) -> Result<(), Box<dyn 
             },
         })?
         .as_bytes(),
+    )?;
+    let mut projected = ProjectedEnums {
+        states: vec![SparseState::Middle, SparseState::First, SparseState::Last],
+        fixed: [SparseState::First, SparseState::Last],
+        empty: vec![],
+        current: SparseState::Last,
+        mode: Some(ProjectedMode::Idle),
+        modes: vec![ProjectedMode::Idle, ProjectedMode::Active],
+    };
+    let original_bytes = ProjectedEnumsView::create(&projected)?;
+    fixtures.insert(
+        directory.join("projected-enums.bin"),
+        original_bytes.as_bytes(),
+    )?;
+    projected.states[1] = SparseState::Last;
+    projected.fixed[0] = SparseState::Middle;
+    projected.current = SparseState::First;
+    projected.mode = Some(ProjectedMode::Active);
+    projected.modes[1] = ProjectedMode::Idle;
+    let updated_bytes = ProjectedEnumsView::create(&projected)?;
+    fixtures.insert(
+        directory.join("projected-enums-updated.bin"),
+        updated_bytes.as_bytes(),
+    )?;
+    fixtures.insert(
+        directory.join("projected-enums-data.dart"),
+        format!(
+            "// Rust reference encodings for native and JavaScript Dart consumers.\nconst projectedEnumsBytes = {:?};\nconst updatedProjectedEnumsBytes = {:?};\n",
+            original_bytes.as_bytes(), updated_bytes.as_bytes(),
+        ),
+    )?;
+    nested_enum_bytes(fixtures, directory)?;
+    Ok(())
+}
+
+fn nested_enum_bytes(fixtures: &mut Fixtures, directory: &Path) -> Result<(), Box<dyn Error>> {
+    let nested = NestedEnumValues {
+        state: PaddedState::Last,
+        optional: Some(PaddedState::Middle),
+        boxed: Box::new(PaddedState::First),
+        fixed: [PaddedState::First, PaddedState::Last],
+        states: vec![PaddedState::Middle, PaddedState::First],
+        indexed: vec![EnumEntry {
+            state: PaddedState::Middle,
+            optional: Some(PaddedState::First),
+        }],
+        projected: [PaddedState::First, PaddedState::Last],
+        write_only: PaddedState::First,
+        read_only: PaddedState::Middle,
+    };
+    let nested_bytes = NestedEnumValuesView::create(&nested)?;
+    fixtures.insert(directory.join("nested-enums.bin"), nested_bytes.as_bytes())?;
+    fixtures.insert(
+        directory.join("nested-enums-data.dart"),
+        format!(
+            "// Rust reference encoding, including padded enum headers.\nconst nestedEnumsBytes = {:?};\n",
+            nested_bytes.as_bytes(),
+        ),
     )?;
     Ok(())
 }
@@ -757,8 +883,13 @@ fn reject_native_enum_collisions_and_invalid_namespaces() {
 
 #[test]
 fn reject_indexed_names_that_collide_after_method_casing() {
+    #[derive(Intrlay)]
+    struct Items {
+        #[intrlay(project = "indexed_only")]
+        values: Vec<IndexedCollision>,
+    }
     let mut registry = Registry::new();
-    registry.export::<Vec<IndexedCollision>>("Items");
+    registry.export::<Items>("Items");
     let schema = registry.finish();
     for language in [Language::TypeScript, Language::Python, Language::Dart] {
         assert!(
@@ -799,6 +930,56 @@ fn reject_dart_wrapped_scalar_setter_collisions() {
     assert!(
         matches!(generate(&registry.finish(), Language::Dart), Err(error) if error.0.contains("setValue") && error.0.contains("field setter"))
     );
+}
+
+#[test]
+fn enum_projections_require_payload_free_u32_tags() -> Result<(), Box<dyn Error>> {
+    use intrlay::schema::{DefinitionKind, Exposure, Scalar, Type};
+
+    #[derive(Intrlay)]
+    enum UnitPayload {
+        Value(()),
+    }
+
+    let mut registry = Registry::new();
+    registry.export::<ProjectedEnums>("ProjectedEnums");
+    registry.export::<ValueChoice>("ValueChoice");
+    registry.export::<UnitPayload>("UnitPayload");
+    let schema = registry.finish();
+    for language in [Language::TypeScript, Language::Python, Language::Dart] {
+        generate(&schema, language)?;
+        for (lane, element) in [
+            (Scalar::I32, None),
+            (Scalar::F32, None),
+            (Scalar::U8, None),
+            (Scalar::U64, None),
+            (Scalar::U32, Some(schema.exports["ValueChoice"].clone())),
+            (Scalar::U32, Some(schema.exports["UnitPayload"].clone())),
+        ] {
+            let mut invalid = schema.clone();
+            let definition = invalid
+                .definitions
+                .values_mut()
+                .find(|definition| definition.name == "ProjectedEnums")
+                .ok_or("missing projected enum fixture")?;
+            let DefinitionKind::Record(fields) = &mut definition.kind else {
+                return Err("projected enum fixture must be a record".into());
+            };
+            let field = &mut fields[0];
+            field.targets.entry(language).or_default().exposure = Some(Exposure::TypedArray(lane));
+            if let Some(element) = element {
+                field.ty = Type::Sequence(Box::new(element));
+            }
+            assert!(
+                matches!(generate(&invalid, language), Err(error) if error.0.contains("only homogeneous numeric fields and padding")),
+                "{language:?}: {lane:?}"
+            );
+        }
+    }
+    for language in [Language::Rust, Language::Cpp, Language::CSharp] {
+        generate(&schema, language)?;
+    }
+    Ok(())
 }
 
 pub(super) fn collect(fixtures: &mut Fixtures) -> Result<(), Box<dyn std::error::Error>> {

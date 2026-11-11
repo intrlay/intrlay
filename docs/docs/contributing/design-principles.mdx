@@ -16,6 +16,25 @@ payloads, optional values, fixed arrays, sequences, strings, and owned trees
 cover the intended data model. Arbitrary object graphs, closures, and executable
 behavior are outside that model.
 
+### C++ source support
+
+The C++ frontend supports practical data declarations and concrete export
+aliases. Its scope is narrower than the full C++ grammar: out-of-line
+definitions and template specializations are exported through namespace-scope
+type aliases. Clang resolves their types; Intrlay does not reconstruct arbitrary
+declarations or instrument macro expansions to make them exportable.
+
+Review C++ extraction against that documented scope. A compiler accepting an
+unusual syntax combination is not enough to justify additional frontend
+machinery. Broaden support when an ordinary schema or an external library's
+public types need it, considering whether a stable alias or adapter already
+expresses the same data. Regression tests preserve those use cases rather than
+enumerating every legal combination of C++ declaration syntax.
+
+This boundary applies to source extraction. C++ runtime and generated-code
+requirements still include correct type identity, encoding, object lifetime,
+const behavior, and checked-buffer safety.
+
 ## Make the representation explicit
 
 An encoded value has a defined byte layout independent of source-language
@@ -58,9 +77,11 @@ access patterns before claiming an improvement.
 
 ## Trust the boundary contract
 
-Intrlay assumes a valid encoding from a cooperating producer. It is not a
-validator for arbitrary network bytes. Applications decide how to authenticate,
-validate, version, and transport messages before exposing them through views.
+Rust and C++ provide checked entry points that validate a complete encoding once,
+and explicit unchecked entry points for trusted data. Normal field reads do not
+repeat validation. Numeric payloads are checked as regions when their element
+representations permit it. Applications select the matching schema and manage
+authentication, transport, storage lifetime, and synchronization.
 
 This does not make schema mistakes or construction failures acceptable. Reject
 invalid declarations, generated-name collisions, unsupported representations,

@@ -4,6 +4,10 @@ use intrlay_schema::NameCase;
 
 use crate::{NameStyle, NamingPolicy, NamingRule, SymbolKind, SymbolSelector, Visibility};
 
+pub(super) fn enum_from_tag(plan: &crate::plan::TypeGraph) -> String {
+    plan.names.method("from_tag", true)
+}
+
 pub fn policy() -> NamingPolicy {
     let mut policy = NamingPolicy::conventional(NameCase::CamelCase);
     policy.rules.push(NamingRule {

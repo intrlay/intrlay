@@ -74,6 +74,32 @@ The frontend supports records and containers such as `std::array`, `std::vector`
 Annotate concrete aliases to export template specializations. An alias does not
 create a second independently configurable identity for the same type.
 
+### Export declarations
+
+Place `INTRLAY` on an ordinary namespace-scope record or enum, or on a
+namespace-scope `using` or `typedef` alias to a concrete type. Names used by the
+frontend must remain accessible after the complete input has been preprocessed.
+Headers, compilation database flags, conditional compilation, and macros that
+produce these declarations use Clang's normal preprocessing rules.
+
+Export out-of-line definitions and template specializations through an alias:
+
+```cpp
+struct Model { enum class Kind; };
+enum class Model::Kind { Point, Curve };
+using ModelKind INTRLAY() = Model::Kind;
+
+template<class T> struct Sample { T value; };
+template<> struct Sample<float> { float value; };
+using FloatSample INTRLAY() = Sample<float>;
+```
+
+These definitions do not need `INTRLAY` themselves. An annotation directly on
+an out-of-line declaration or an explicit specialization is rejected with an
+alias diagnostic. An alias also gives a reusable name to a type involving
+`decltype` or an otherwise unnamed template argument. Referenced field types
+and adapter schemas are discovered through their resolved types.
+
 ## Use generated views
 
 The generated module supplies its own encoding input types in
@@ -95,7 +121,9 @@ int main() {
         DrawingCommandInput<>{DrawPointInput<>{{7.0f, 8.0f, 9.0f}, 0.5f}}
     };
     auto owner = DrawingView::create(value);
-    auto drawing = owner.view();
+    auto result = owner.view();
+    assert(result);
+    auto drawing = *result;
 
     assert(drawing.title() == "Sketch");
     assert(drawing.points().get(0).x() == 1.0f);
@@ -108,13 +136,17 @@ int main() {
     drawing.set_selected_point(0u);
     drawing.command().replace(DrawingCommandInput<>{ClearInput<>{}});
 
-    DrawingViewReadOnly received(owner.bytes());
-    assert(received.points().get(0).x() == 10.0f);
-    assert(!received.command().as_draw_point());
+    auto received = DrawingViewReadOnly::from_bytes(owner.bytes());
+    assert(received);
+    assert(received->points().get(0).x() == 10.0f);
+    assert(!received->command().as_draw_point());
 }
 ```
 
-`create` returns an owner; `view()` borrows its storage. Existing writable or const
+`create` returns an owner; `view()` validates and returns `Expected<View, ViewError>`.
+`view_unchecked()` borrows an already valid encoding without another validation
+pass. Raw `bytes()` access can invalidate metadata, so ownership alone is not
+a validity guarantee. Existing writable or const
 byte spans can be wrapped directly. A variant-specific accessor returns
 `std::optional`; an inactive payload is absent. `tag()` is available for numeric
 tag dispatch. The generated `DrawingCommandInput<>` contains
@@ -138,8 +170,9 @@ alternative by index:
 EndpointInput<> endpoint;
 endpoint.value.emplace<1>(PointInput<>{1.0f, 2.0f, 3.0f});
 auto owner = EndpointView::create(endpoint);
-assert(owner.view().as_end()->x() == 1.0f);
-assert(!owner.view().as_start());
+auto endpoint_view = owner.view().value();
+assert(endpoint_view.as_end()->x() == 1.0f);
+assert(!endpoint_view.as_start());
 ```
 
 Names do not change tags: `Start` is still tag `0`, and `End` is tag `1`.
@@ -160,7 +193,7 @@ field names. Its C++ construction and payload access therefore look like this:
 ```cpp
 DrawingCommandInput<> command{DrawingCommandDrawPointInput<>{{7.0f, 8.0f, 9.0f}, 0.5f}};
 auto owner = DrawingCommandView::create(command);
-assert(owner.view().draw_point_position()->x() == 7.0f);
+assert(owner.view().value().draw_point_position()->x() == 7.0f);
 ```
 
 Use the view API generated from your chosen schema. Matching encoded fields does
@@ -185,6 +218,9 @@ auto owner = DrawingView::create(input);
 This example uses the C++ schema above. Borrowed inputs can nest, and aliases
 retain the same input template parameters. `EncodeSourceFor<Source, Codec>`
 checks the required fields and elements before instantiating the writer body.
+Generated Input declarations also constrain their field source types, so invalid
+inputs fail even before a `create` call. Parameters such as `TitleSource` and
+`PointsSource` identify the fields whose representation they select.
 The original C++ schema structs remain valid sources too, even when generated
 field names differ.
 
@@ -223,8 +259,97 @@ be const-iterable forward ranges with `std::size` and indexed access; measuremen
 uses the same `std::ranges` customization points as the constraints.
 
 Sources must stay stable and repeatable through measurement and writing.
-Payload-free enums use `enum class TypeInput : std::uint32_t`; their values are
-wire tags rather than variant indices.
+Payload-free enums retain their name as `enum class Type : std::uint32_t`; their values are
+wire tags rather than variant indices. Nested accessors return this enum value
+directly. Explicit exports also provide a standalone `TypeView` for construction
+and buffer access.
+
+## Adapt external types
+
+Specialize `intrlay::Adapter<T>` when an external type needs a different schema
+or encoding source. Include the specialization in the schema translation unit
+and in applications that encode that native type:
+
+```cpp
+#include <intrlay/annotations.hpp>
+#include <string>
+#include <string_view>
+
+// An external library owns this declaration.
+class Label {
+    std::string text_;
+public:
+    explicit Label(std::string text) : text_(std::move(text)) {}
+    std::string_view text() const { return text_; }
+};
+
+template<>
+struct intrlay::Adapter<Label> {
+    using schema_type = std::string;
+    static std::string_view source(const Label& value) { return value.text(); }
+};
+
+struct INTRLAY() Message {
+    Label title;
+};
+```
+
+`schema_type` describes the encoded value using the ordinary supported types.
+Clang resolves the specialization, including partial template specializations;
+the common schema and target backends do not depend on the external library.
+The resulting `Message` has a string field in every target language. C++ can
+pass a native `Message` directly to `MessageView::create` or use its generated
+`MessageInput`.
+
+`source` supplies the encoder's input. It may return a reference, a `string_view`,
+a span, or a small aggregate of borrowed fields. It need not construct an owning
+`schema_type`. The encoder keeps temporary source aggregates alive while reading
+them. An adapter must not return references to its own expired locals.
+
+For a public-field record, the mirror macro defines the specialization:
+
+```cpp
+namespace external {
+struct Vector3 { float x, y, z; };
+}
+
+INTRLAY_ADAPT_STRUCT(external::Vector3, Position, x, y, z);
+
+struct INTRLAY() Path {
+    INTRLAY(project = "f32") std::vector<external::Vector3> positions;
+};
+```
+
+Include `<vector>` for this example. Invoke `INTRLAY_ADAPT_STRUCT` at global
+namespace scope. Its second argument names the schema record; listed public
+fields determine wire order. Use a type alias for a native type whose spelling
+contains template commas. MSVC requires `/Zc:preprocessor` for this C++20 macro;
+the `intrlay::intrlay` CMake target enables it. The macro supplies an identity source that borrows
+the original object. For private fields, write a specialization with a public
+schema record and a `source` aggregate containing the corresponding fields.
+
+Adapters apply recursively through records, arrays, sequences, optionals, boxes,
+and variant payloads. A custom collection adapter can use `std::vector<T>` as
+its `schema_type` and return `std::span<const T>` from `source`; each element's
+adapter still applies. A returned source may itself have an adapter. Cyclic
+source mappings are rejected by `EncodeSourceFor`.
+
+Normal schema annotations apply to the resolved schema. The `Path` above
+projects its positions to a numeric array in TypeScript, Python, and Dart;
+C++ retains typed position views. Projection describes the wire representation,
+not the external object's native padding.
+
+Sources must be stable across measurement and writing and must not overlap the
+destination buffer. Scalar types remain exact after adaptation: an `f32` schema
+requires a `float` source, not an implicit conversion from `double`.
+
+The default adapter and the public-field macro preserve eligible native-copy
+optimizations. A custom specialization can declare
+`static constexpr bool preserves_native_layout = true` only when `source`
+returns the exact, unchanged original object as `const T&`. Size, padding, field
+offsets, and nested layouts must still satisfy the codec's separate proof.
+Value-transforming adapters leave this flag absent, so bulk copies cannot skip
+their conversions.
 
 ## Caller-provided storage
 
@@ -241,10 +366,56 @@ An FFI-provided `std::span<std::byte>` can replace `storage.bytes()` if it has t
 required capacity, alignment, and lifetime. The span itself does not retain the
 foreign allocation. Construction inputs must not overlap the destination.
 
+## Checked and trusted buffer access
+
+`View::from_bytes(span)` and `View::from_parts(span, offset)` return
+`intrlay::Expected<View, intrlay::ViewError>`. They validate the complete encoding
+once, checking bounds, tags, UTF-8, and non-overlapping payloads in writer order.
+Forward gaps are allowed. Numeric arrays with all-bit-valid elements need only a
+range check, without scanning elements. Recursion is limited to 128 levels.
+
+```cpp
+auto result = DrawingViewReadOnly::from_bytes(received_bytes);
+if (!result) {
+    handle_error(result.error());
+    return;
+}
+auto drawing = *result;
+```
+
+`Expected` stores its value or error inline. `has_value()` and explicit boolean
+conversion report success; `operator*`, `operator->`, and `error()` require the
+corresponding alternative to be active. `value()` checks the alternative and throws
+`std::bad_variant_access` on an error. Validation itself returns errors without
+throwing or allocating.
+
+`from_bytes_unchecked` and `from_parts_unchecked` return the View directly. Use
+these only when validity is already established. Owners returned by `create`
+already hold valid encodings and can use `view_unchecked()` while those bytes
+remain valid. `owner.view()` validates their current contents. Ordinary field
+accessors and mutations do not repeat the scan.
+Collection `get(index)` and `set(index, value)` require `index < size()`, like
+`std::span` indexing; checking the encoding does not check future index arguments.
+
+The caller keeps storage alive and prevents raw-byte changes that invalidate
+metadata or active enum payloads. A child view must not outlive the payload it
+borrows: replacing a parent enum or optional can invalidate it. These lifetime
+rules also apply after successful validation. No native objects are presumed to
+exist inside the byte allocation.
+
 ## Typed access and const storage
 
 Generated `Metadata` describes fields and enum alternatives for the shared codec
 templates. Normal use does not require accessing it directly.
+
+For code operating on descriptors, `intrlay::view<Descriptor>(span, offset)`
+returns an `Expected` containing the descriptor's projected value.
+`intrlay::view_unchecked<Descriptor>` skips validation. For a generated record,
+`Descriptor` is `RecordView::Metadata`; primitives such as `intrlay::Scalar<float>`
+return their scalar value. A writable span selects mutable record/collection
+views, so C++ does not need a separate `view_mut` name. Descriptor-level `read`
+and `set` operations are codec implementation hooks that assume a validated
+region; they do not validate raw bytes themselves.
 
 Const and mutable views share an implementation, with mutation constrained by
 the `BufferByte` and `WritableBufferByte` concepts: only `std::byte` and
@@ -252,6 +423,38 @@ the `BufferByte` and `WritableBufferByte` concepts: only `std::byte` and
 Collections retain typed value-view access. Byte storage is not
 silently reinterpreted as live native objects: generated access respects C++20
 object lifetime rules even for externally supplied read-only bytes.
+
+Array and sequence views also support `range-for` and C++20 `std::ranges`:
+
+```cpp
+for (auto point : drawing.points()) {
+    consume(point.x(), point.y());
+}
+```
+
+The forward iterator advances through encoded element bytes. Scalars are returned
+by value; record elements are borrowed views that retain the complete buffer for
+relative references. Mutable record views keep their normal setters. Iteration
+does not create native objects in the buffer or require native alignment. The
+standard `begin` and `end` names remain available under custom naming policies.
+The buffer must outlive the iterator, and its structural layout must stay valid
+throughout traversal. Empty arrays and zero-size elements are supported.
+
+Array and sequence views provide `copy_to(std::span<T>)` when their element
+representation is proven identical to `T`. This copies into existing native
+objects without treating the source bytes as live C++ objects. The destination
+count must equal the collection size; a mismatch throws `std::length_error`.
+Unaligned source bytes and overlapping ranges are supported.
+
+```cpp
+std::vector<PointInput<>> points(drawing.points().size());
+drawing.points().copy_to(std::span(points));
+```
+
+The same operation can copy a sequence of matrices into a span of
+`std::array<float, 16>`. It copies the contiguous region directly instead of
+requiring a loop of scalar getters. Types requiring conversion or containing
+native padding retain ordinary typed view access.
 
 Keep owners alive and preserve the [mutation contract](../concepts/mutation.mdx).
 Default namespaces are `intrlay_generated::<module_name>`; override them with

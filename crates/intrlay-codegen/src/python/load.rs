@@ -8,7 +8,7 @@ pub(super) struct Read<'a> {
     pub id: Id,
     pub offset: &'a str,
     pub exposure: Exposure,
-    pub tag: Option<u32>,
+    pub tag: Option<(u32, &'a str)>,
 }
 
 /// Unchecked indexed getters can return a unit without consulting the index.
@@ -24,9 +24,9 @@ pub(super) fn uses_index(plan: &TypeGraph, id: Id, exposure: Exposure) -> bool {
 
 pub(super) fn body(plan: &TypeGraph, read: &Read<'_>, cache: Option<&ViewCache>) -> String {
     let mut lines = Vec::new();
-    if let Some(tag) = read.tag {
+    if let Some((tag, offset)) = read.tag {
         lines.push(format!(
-            "if self._storage.u32[self._offset // 4] != {tag}:\n    return None"
+            "if self._storage.u32[({offset}) // 4] != {tag}:\n    return None"
         ));
     }
     if let Some(cache) = cache.filter(|cache| cache.state.is_none()) {
@@ -142,6 +142,10 @@ pub(super) fn expression(
                 value
             }
         }
+        Kind::Enum(_) if plan.nodes[id].is_value_enum() => format!(
+            "{}(self._storage.u32[({offset}) // 4])",
+            super::names::reference(&plan.nodes[id].tag_type_name())
+        ),
         Kind::Unit => "None".into(),
         Kind::String => format!("self._storage.string_at({offset})"),
         Kind::Optional { .. } | Kind::Boxed(_) => return None,

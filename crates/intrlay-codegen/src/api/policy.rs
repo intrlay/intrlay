@@ -37,12 +37,28 @@ pub trait ApiPolicy: Sync {
         }
     }
 
-    fn variant_accessor(&self, plan: &TypeGraph, field: &Field, variant: &Variant) -> String {
-        if variant.synthetic_payload {
-            plan.names.member(&variant.name)
+    fn field_accessor(&self, plan: &TypeGraph, field: &Field, readonly: bool) -> String {
+        field
+            .explicit_name
+            .clone()
+            .unwrap_or_else(|| plan.names.property(&field.source_name, readonly))
+    }
+
+    /// Names a buffer property independently of the input's field naming policy.
+    fn variant_accessor(
+        &self,
+        plan: &TypeGraph,
+        field: &Field,
+        variant: &Variant,
+        readonly: bool,
+    ) -> String {
+        if variant.synthetic_payload && !field.flattened {
+            plan.names.property(variant.name_source(), readonly)
         } else {
-            plan.names
-                .member(&format!("{}_{}", variant.name, field.name))
+            plan.names.property(
+                &format!("{}_{}", variant.name_source(), field.name_source()),
+                readonly,
+            )
         }
     }
 

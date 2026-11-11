@@ -15,7 +15,7 @@ pub fn validate(generation: &GenerationPlan) -> Result<(), GenerateError> {
     let plan = &generation.encoding.types;
     let mut declarations = Scope::module(plan);
     for (id, node) in plan.nodes.iter().enumerate() {
-        if matches!(node.kind, Kind::Record(_) | Kind::Enum(_)) {
+        if matches!(node.kind, Kind::Record(_) | Kind::Enum(_)) && !node.is_enum_input_context() {
             declarations.schema(node)?;
             if generation.encoding.needs_input(id) {
                 declarations.declaration(&node.input_name(), "input value")?;
@@ -23,6 +23,26 @@ pub fn validate(generation: &GenerationPlan) -> Result<(), GenerateError> {
             }
         }
         if let Kind::Enum(variants) = &node.kind {
+            if node.is_value_enum()
+                && node.numeric_input.is_none()
+                && generation.encoding.writers.contains(&id)
+            {
+                let parameters = plan.writer_parameters(id);
+                let mut locals = Scope::new(plan);
+                locals.reserve_all(
+                    &[
+                        parameters.storage,
+                        parameters.offset,
+                        parameters.value,
+                        parameters.cursor,
+                    ],
+                    "enum writer parameter",
+                );
+                locals.declaration(&node.input_name(), "referenced enum")?;
+            }
+            if node.is_enum_input_context() {
+                continue;
+            }
             if !node.is_value_enum() {
                 declarations.declaration(&node.kind_name(), "enum kind")?;
             }
@@ -63,9 +83,7 @@ fn infrastructure(plan: &TypeGraph, id: Id) -> Result<Scope<'_>, GenerateError> 
     // each before combining reservations against schema-defined members.
     let mut instances = Scope::new(plan);
     instances.reserve("constructor", "view constructor");
-    for key in ["bytes", "storage"] {
-        instances.runtime_member(key, "view instance infrastructure")?;
-    }
+    instances.runtime_member("storage", "view instance infrastructure")?;
     let mut body = String::new();
     super::view_members(&mut body, plan, id, node)?;
     for key in ["offset", "element_offset", "element_count"] {
@@ -73,7 +91,7 @@ fn infrastructure(plan: &TypeGraph, id: Id) -> Result<Scope<'_>, GenerateError> 
             instances.runtime_member(key, "view storage")?;
         }
     }
-    if node.options.generation.setters && !plan.has_payload(id) {
+    if node.options.generation.setters && node.options.values() && !plan.has_payload(id) {
         instances.runtime_member("replace", "in-place value replacement")?;
     }
     match node.kind {

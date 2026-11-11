@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod attributes;
+mod encoding;
 mod enumeration;
 mod input;
 mod model;

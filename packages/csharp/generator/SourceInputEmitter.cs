@@ -228,6 +228,9 @@ internal sealed partial class Emitter
         string contract = InputContract(node);
         string size = Name("byte_size");
         string measure = Name("compute_byte_length");
+        // A returned span view borrows only its destination. Passing a scoped
+        // source by value also bounds any spans stored inside a ref struct.
+        string passing = scopedView ? "scoped " : "scoped in ";
         Line();
         Inline();
         Line($"public static int {measure}<TInput>(scoped in TInput value)");
@@ -239,7 +242,7 @@ internal sealed partial class Emitter
         Close();
         Line();
         Inline();
-        Line($"public static {view} {Name("create")}<TInput>(scoped in TInput value)");
+        Line($"public static {view} {Name("create")}<TInput>({passing}TInput value)");
         Line($"    where TInput : struct, {contract}, allows ref struct");
         Open("");
         Line($"var buffer = new byte[{measure}(in value)];");
@@ -250,7 +253,7 @@ internal sealed partial class Emitter
         Close();
         Line();
         Inline();
-        Line($"public static {view} {Name("create_in_place")}<TInput>(global::System.{(scopedView ? "Span" : "Memory")}<byte> buffer, scoped in TInput value)");
+        Line($"public static {view} {Name("create_in_place")}<TInput>(global::System.{(scopedView ? "Span" : "Memory")}<byte> buffer, {passing}TInput value)");
         Line($"    where TInput : struct, {contract}, allows ref struct");
         Open("");
         Line($"var storage = buffer.Slice(0, {measure}(in value));");

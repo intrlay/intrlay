@@ -33,6 +33,7 @@ const sidebars: SidebarsConfig = {
             items: [
                 "reference/code-generation",
                 "reference/annotations",
+                "reference/library-adapters",
                 "reference/naming",
                 "reference/binary-layout"
             ]

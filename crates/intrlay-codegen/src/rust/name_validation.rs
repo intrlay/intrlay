@@ -16,7 +16,8 @@ pub fn validate(generation: &GenerationPlan) -> Result<(), GenerateError> {
     for node in &plan.nodes {
         if matches!(node.kind, Kind::Record(_) | Kind::Enum(_)) {
             declarations.input(node, &node.name)?;
-            declarations.declaration(&node.input_name(), "encoding input")?;
+            // Rust emits source declarations; derive supplies their input API.
+            declarations.declaration(&format!("{}Input", node.name), "encoding input")?;
             shared::input_fields(plan, node, &[])?;
         }
         if let Kind::Record(fields) = &node.kind {
@@ -34,8 +35,12 @@ pub fn validate(generation: &GenerationPlan) -> Result<(), GenerateError> {
     }
 
     let views = &generation.views.types;
-    for &id in &generation.views.emitted {
-        declarations.declaration(&views.nodes[id].view_name, "view")?;
+    for (id, node) in views.nodes.iter().enumerate().filter(|(id, node)| {
+        generation.views.emitted.contains(id)
+            || matches!(node.kind, Kind::Record(_) | Kind::Enum(_))
+    }) {
+        // A Rust derive supplies its view independently of schema export roots.
+        declarations.declaration(&node.view_name, "view")?;
         view_members(views, id)?;
     }
     for (alias, id) in &views.exports {
@@ -82,6 +87,8 @@ fn view_members(plan: &TypeGraph, id: Id) -> Result<(), GenerateError> {
             "as_bytes",
             "as_view",
             "as_view_mut",
+            "from_bytes",
+            "from_parts",
             "from_bytes_unchecked",
             "from_parts_unchecked",
             "into_buffer",

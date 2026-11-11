@@ -2,6 +2,8 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'src/utf8.dart' as strings;
+
 const _isWeb = bool.fromEnvironment('dart.library.js_interop');
 const _wordBase = 4294967296;
 final _isLittleEndian = Endian.host == Endian.little;
@@ -172,17 +174,10 @@ class Storage {
 
   int u32(int offset) => data.getUint32(offset, Endian.little);
 
-  String stringAt(int offset) {
-    final start = offset + u32(offset);
-    final length = u32(offset + 4);
-    final value = utf8.decode(Uint8List.sublistView(bytes, start, start + length));
-    // utf8.decode consumes one leading BOM; it is part of our string value.
-    if (length >= 3 && bytes[start] == 0xef &&
-        bytes[start + 1] == 0xbb && bytes[start + 2] == 0xbf) {
-      return '\uFEFF$value';
-    }
-    return value;
-  }
+  @pragma('vm:prefer-inline')
+  @pragma('dart2js:tryInline')
+  String stringAt(int offset) =>
+      strings.decodeUtf8(bytes, offset + u32(offset), u32(offset + 4));
 }
 
 /// Numeric write storage with cached lanes for aligned construction buffers.

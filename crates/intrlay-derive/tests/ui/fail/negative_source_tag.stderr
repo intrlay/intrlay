@@ -28,4 +28,16 @@ error[E0080]: evaluation panicked: Intrlay enum tag must fit u32
  --> tests/ui/fail/negative_source_tag.rs:1:10
   |
 1 | #[derive(wire::Intrlay)]
-  |          ^^^^^^^^^^^^^ evaluation of `<Value as intrlay::Intrlay>::decode::{constant#0}` failed here
+  |          ^^^^^^^^^^^^^ evaluation of `<Value as intrlay::Intrlay>::validate_fields::{constant#0}` failed here
+
+error[E0080]: evaluation panicked: Intrlay enum tag must fit u32
+ --> tests/ui/fail/negative_source_tag.rs:1:10
+  |
+1 | #[derive(wire::Intrlay)]
+  |          ^^^^^^^^^^^^^ evaluation of `<Value as intrlay::Intrlay>::decode_from::{constant#0}` failed here
+
+error[E0080]: evaluation panicked: Intrlay enum tag must fit u32
+ --> tests/ui/fail/negative_source_tag.rs:1:10
+  |
+1 | #[derive(wire::Intrlay)]
+  |          ^^^^^^^^^^^^^ evaluation of `<Value as intrlay::Intrlay>::decode_unchecked::{constant#0}` failed here

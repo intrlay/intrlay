@@ -64,6 +64,7 @@ struct Fixture {
     absent: Mixed<Flat>,
     missing_inner: Mixed<Flat>,
     values: Vec<TenBoxes>,
+    #[intrlay(project = "indexed")]
     items: Vec<Item>,
     cached: Mixed<Child>,
     projected: Mixed<Projected>,

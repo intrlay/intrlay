@@ -67,12 +67,40 @@ static class SpanInputTests
         Check(typeof(VertexInput).Assembly.GetType("NativeViews.Generated.VertexSpanInput") is null,
             "fixed POD inputs retain their existing native copy path");
         CheckLargeOwnedInput();
+        Check(CreateLocalVertex().ToValue().Id == 7 && CreateLocalReadOnlyVertex().ToValue().Id == 7,
+            "allocating span factories do not borrow canonical local inputs");
+        Check(CreateLocalPacket().Label == "local" && CreateLocalReadOnlyPacket().Label == "local",
+            "canonical payload inputs do not escape through returned views");
         Console.WriteLine("C#: borrowed SpanInput, byte parity, fixed extents and zero-allocation reuse passed");
     }
 
     private sealed class LargeHolder
     {
         public LargeInlinePacketInput Value;
+    }
+
+    private static VertexSpanView CreateLocalVertex()
+    {
+        var input = new VertexInput(7, default, default);
+        return VertexSpanView.Create(in input);
+    }
+
+    private static VertexSpanViewReadOnly CreateLocalReadOnlyVertex()
+    {
+        var input = new VertexInput(7, default, default);
+        return VertexSpanViewReadOnly.Create(in input);
+    }
+
+    private static FlatPacketSpanView CreateLocalPacket()
+    {
+        var input = new FlatPacketInput(7, Array.Empty<VertexInput>(), Array.Empty<float>(), "local", default, true);
+        return FlatPacketSpanView.Create(in input);
+    }
+
+    private static FlatPacketSpanViewReadOnly CreateLocalReadOnlyPacket()
+    {
+        var input = new FlatPacketInput(7, Array.Empty<VertexInput>(), Array.Empty<float>(), "local", default, true);
+        return FlatPacketSpanViewReadOnly.Create(in input);
     }
 
     private static void CheckLargeOwnedInput()

@@ -4,6 +4,34 @@ use syn::{GenericParam, Generics};
 
 use crate::{attributes::with_documentation, model::Model};
 
+fn checked_constructors(model: &Model<'_>, buffer_type: &syn::Ident) -> TokenStream {
+    let runtime = &model.runtime;
+    let buffer = model.binding("buffer");
+    let offset = model.binding("offset");
+    quote! {
+            /// Validates and borrows a root encoding without reconstructing it.
+            ///
+            /// # Errors
+            /// Returns an error for malformed data or excessive nesting.
+            #[inline]
+            pub fn from_bytes(#buffer: #buffer_type) -> ::core::result::Result<Self, #runtime::DecodeError>
+            where #buffer_type: #runtime::StableBytes {
+                #runtime::ValueView::from_bytes(#buffer).map(|storage| Self { storage })
+            }
+
+            /// Validates a value within a larger buffer without copying it.
+            ///
+            /// # Errors
+            /// Returns an error for malformed or overlapping encoded regions.
+            #[inline]
+            pub fn from_parts(#buffer: #buffer_type, #offset: ::core::primitive::usize) -> ::core::result::Result<Self, #runtime::DecodeError>
+            where #buffer_type: #runtime::StableBytes {
+                #runtime::ValueView::from_parts(#buffer, #offset).map(|storage| Self { storage })
+            }
+
+    }
+}
+
 pub fn arguments(generics: &Generics) -> Vec<TokenStream> {
     generics
         .params
@@ -84,7 +112,7 @@ pub fn declaration(
                 #[inline]
                 fn from(#view_value: #view #view_types) -> Self {
                     // SAFETY: The view's constructor and mutation API preserve codec validity.
-                    unsafe { <#codec as #runtime::Intrlay>::decode(#view_value.storage.as_bytes(), #view_value.storage.byte_offset()) }
+                    unsafe { <#codec as #runtime::Intrlay>::decode_unchecked(#view_value.storage.as_bytes(), #view_value.storage.byte_offset()) }
                 }
             }
     };
@@ -106,6 +134,7 @@ pub fn declaration(
             }
     };
 
+    let checked_constructors = checked_constructors(model, &buffer_type);
     quote! {
         #[doc = #docs]
         #visibility struct #view #view_generics #view_where {
@@ -116,6 +145,7 @@ pub fn declaration(
             /// Fixed header layout, including trailing padding.
             pub const LAYOUT: #runtime::layout::Layout = <#codec as #runtime::Intrlay>::LAYOUT;
 
+            #checked_constructors
             /// Opens a trusted root encoding without an object-validation pass.
             ///
             /// # Safety
@@ -124,7 +154,7 @@ pub fn declaration(
             #[inline]
             pub unsafe fn from_bytes_unchecked(#buffer: #buffer_type) -> Self {
                 // SAFETY: The caller guarantees the complete root encoding.
-                Self { storage: unsafe { #runtime::ValueView::new_unchecked(#buffer, 0) } }
+                Self { storage: unsafe { #runtime::ValueView::from_parts_unchecked(#buffer, 0) } }
             }
 
             /// Opens a trusted value at a byte offset within a larger buffer.
@@ -134,7 +164,7 @@ pub fn declaration(
             #[inline]
             pub unsafe fn from_parts_unchecked(#buffer: #buffer_type, #offset: ::core::primitive::usize) -> Self {
                 // SAFETY: The caller guarantees the complete encoding at this offset.
-                Self { storage: unsafe { #runtime::ValueView::new_unchecked(#buffer, #offset) } }
+                Self { storage: unsafe { #runtime::ValueView::from_parts_unchecked(#buffer, #offset) } }
             }
 
             /// Borrows this value without copying its representation.
@@ -149,9 +179,13 @@ pub fn declaration(
             #[inline]
             pub fn as_bytes(&self) -> &[::core::primitive::u8] { self.storage.as_bytes() }
 
-            /// Consumes the view and returns ownership of its backing storage.
+            /// Consumes an owning view and returns its backing storage without copying.
+            /// Borrowed views release their storage borrow when dropped instead.
             #[must_use]
-            pub fn into_buffer(self) -> #buffer_type { self.storage.into_buffer() }
+            pub fn into_buffer(self) -> #buffer_type
+            where #buffer_type: #runtime::OwnedBytes {
+                self.storage.into_buffer()
+            }
 
             #getters
         }

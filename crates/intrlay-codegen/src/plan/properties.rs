@@ -102,6 +102,13 @@ fn classify(id: Id, nodes: &[Node], cache: &mut [Option<Properties>]) -> Propert
                     .iter()
                     .any(|field| classify(field.ty, nodes, cache).has_payload)
             }),
+            // Payload-free enums occupy a u32 tag, independent of their native
+            // representation. Projection exposes that tag and any padding.
+            homogeneous: if nodes[id].is_value_enum() {
+                Homogeneous::Numeric(Scalar::U32)
+            } else {
+                Homogeneous::Mixed
+            },
             ..Properties::default()
         },
     };
@@ -169,7 +176,7 @@ mod tests {
                 }
                 schema.exports.insert("Root".into(), child);
                 let plan = plan(&schema)?;
-                let projected = crate::plan::ViewPlan::new(&plan);
+                let projected = crate::plan::ViewPlan::new(&plan)?;
                 for plan in [&plan, &projected.types] {
                     let root = plan.exports["Root"];
                     assert_eq!(plan.has_payload(root), dynamic);
@@ -220,7 +227,7 @@ mod tests {
         registry.export::<Vec<[String; 0]>>("Sequence");
         registry.export::<Box<[String; 0]>>("Boxed");
         let plan = plan(&registry.finish())?;
-        let projected = crate::plan::ViewPlan::new(&plan);
+        let projected = crate::plan::ViewPlan::new(&plan)?;
         for plan in [&plan, &projected.types] {
             for name in ["EmptyStrings", "NestedEmptySequences", "EmptyOuterArray"] {
                 let id = plan.exports[name];

@@ -21,6 +21,125 @@ struct NamingSample {
     untouched: Option<u32>,
 }
 
+#[derive(Intrlay)]
+struct PayloadRecord {
+    request_id: u32,
+}
+
+#[derive(Intrlay)]
+enum PayloadEvent {
+    Waiting,
+    TaskDone {
+        request_id: u32,
+        #[intrlay(generate_setters = false)]
+        saved_id: u32,
+    },
+    #[intrlay(
+        typescript(name = "Delivered"),
+        python(name = "Delivered"),
+        dart(name = "Delivered"),
+        cpp(name = "Delivered"),
+        csharp(name = "Delivered")
+    )]
+    Renamed {
+        #[intrlay(
+            typescript(name = "Ticket"),
+            python(name = "Ticket"),
+            dart(name = "Ticket"),
+            cpp(name = "Ticket"),
+            csharp(name = "Ticket")
+        )]
+        request_id: u32,
+    },
+    Flattened {
+        #[intrlay(project = "flatten")]
+        payload: PayloadRecord,
+    },
+    #[intrlay(generate_getters = false)]
+    SetOnly {
+        request_id: u32,
+    },
+}
+
+fn payload_property_names(fixtures: &mut Fixtures) -> Result<(), Box<dyn std::error::Error>> {
+    let mut registry = Registry::new();
+    registry.export::<PayloadEvent>("PayloadEvent");
+    let schema = registry.finish();
+    for (language, extension) in [
+        (Language::Cpp, "hpp"),
+        (Language::CSharp, "cs"),
+        (Language::TypeScript, "ts"),
+        (Language::Python, "py"),
+        (Language::Dart, "dart"),
+    ] {
+        let mut policy = NamingPolicy::for_language(language);
+        for (kind, prefix, readonly) in [
+            (SymbolKind::Field, "input_", None),
+            (SymbolKind::Variant, "Variant", None),
+            (SymbolKind::Property, "read_", None),
+            (SymbolKind::Property, "write_", Some(false)),
+        ] {
+            policy.rules.push(NamingRule {
+                selector: SymbolSelector {
+                    kind: Some(kind),
+                    visibility: Some(Visibility::Public),
+                    exclude: if readonly == Some(false) {
+                        vec![Modifier::Readonly]
+                    } else {
+                        vec![]
+                    },
+                    ..Default::default()
+                },
+                style: NameStyle {
+                    case: if kind == SymbolKind::Variant {
+                        NameCase::PascalCase
+                    } else {
+                        NameCase::SnakeCase
+                    },
+                    prefix: prefix.into(),
+                    suffix: String::new(),
+                },
+            });
+        }
+        let source = generate_with_options(
+            &schema,
+            language,
+            GenerateOptions {
+                module_name: Some("PayloadNames".into()),
+                naming: Some(policy),
+                ..Default::default()
+            },
+        )?;
+        let writable_property = matches!(language, Language::TypeScript | Language::Python);
+        let prefix = if writable_property { "write" } else { "read" };
+        assert!(
+            source.contains(&format!("{prefix}_task_done_request_id")),
+            "{language:?}"
+        );
+        assert!(source.contains("read_task_done_saved_id"), "{language:?}");
+        assert!(
+            source.contains(&format!("{prefix}_delivered_ticket")),
+            "{language:?}"
+        );
+        assert!(
+            !source.contains("task_done_input_request_id"),
+            "{language:?}"
+        );
+        assert!(
+            !source.contains("task_done_read_request_id"),
+            "{language:?}"
+        );
+        if !language.has_value_types() {
+            assert!(
+                source.contains(&format!("{prefix}_flattened_payload_request_id")),
+                "{language:?}"
+            );
+        }
+        fixtures.insert(format!("naming/enum_properties.{extension}"), source)?;
+    }
+    Ok(())
+}
+
 fn naming(language: Language) -> NamingPolicy {
     let mut policy = NamingPolicy::for_language(language);
     policy.rules.extend([
@@ -164,11 +283,17 @@ fn generated_members_keep_explicit_names_and_standard_library_members(
 
 pub(super) fn collect(fixtures: &mut Fixtures) -> Result<(), Box<dyn std::error::Error>> {
     generated_members_keep_explicit_names_and_standard_library_members(fixtures)?;
+    payload_property_names(fixtures)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod fixture_tests {
+    #[test]
+    fn payload_property_names() -> Result<(), Box<dyn std::error::Error>> {
+        super::payload_property_names(&mut super::Fixtures::default())
+    }
+
     #[test]
     fn generated_members_keep_explicit_names_and_standard_library_members()
     -> Result<(), Box<dyn std::error::Error>> {

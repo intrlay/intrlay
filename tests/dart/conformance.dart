@@ -29,9 +29,9 @@ void main(List<String> arguments) {
     variants: [NullableVariantEmptyInput(), NullableVariantValueInput(value: null), NullableVariantValueInput(value: 9)],
   );
   final nullableCreated = NullableCasesView.create(nullableValue);
-  check(nullableCreated.bytes.length == nullableBytes.length, 'nullable length');
+  check(nullableCreated.storage.bytes.length == nullableBytes.length, 'nullable length');
   for (var i = 0; i < nullableBytes.length; ++i) {
-    check(nullableCreated.bytes[i] == nullableBytes[i], 'nullable byte $i');
+    check(nullableCreated.storage.bytes[i] == nullableBytes[i], 'nullable byte $i');
   }
   final bytes = File('$directory/rust.bin').readAsBytesSync();
   final view = MessageView(bytes);
@@ -46,21 +46,21 @@ void main(List<String> arguments) {
   const value = MessageInput(
     sequence: 0x123456789abcdef0,
     title: 'fixture 🦀 한글',
-    points: intrlay.SequenceInput.from([PointInput(x: 1, y: 2, z: 3), PointInput(x: 4, y: 5, z: 6)]),
+    points: intrlay.SequenceInput.from([1, 2, 3, 0, 4, 5, 6, 0]),
     commands: [DrawingCommandClearInput(), DrawingCommandDrawPointInput(position: PointInput(x: 7, y: 8, z: 9), size: 0.75, label: 'example')],
     tree: LinkInput(id: 7, next: LinkInput(id: 8, next: null)),
     optional: 0,
     fixed: intrlay.FixedArrayInput.from([10, 20, 30]),
   );
   final created = MessageView.create(value);
-  check(created.bytes.length == bytes.length, 'length');
-  for (var i = 0; i < bytes.length; ++i) { check(created.bytes[i] == bytes[i], 'byte $i'); }
+  check(created.storage.bytes.length == bytes.length, 'length');
+  for (var i = 0; i < bytes.length; ++i) { check(created.storage.bytes[i] == bytes[i], 'byte $i'); }
   final owner = Uint8List(bytes.length + 32)..fillRange(0, bytes.length + 32, 0xcc);
   final borrowed = MessageView.createInPlace(Uint8List.sublistView(owner, 16), value);
   borrowed.sequence = 42;
   borrowed.points[6] = 99;
-  check(borrowed.sequence == 42 && MessageView(borrowed.bytes).points[6] == 99, 'mutation');
+  check(borrowed.sequence == 42 && MessageView(borrowed.storage.bytes).points[6] == 99, 'mutation');
   check(owner[15] == 0xcc && owner.last == 0xcc, 'external capacity');
-  File('$directory/dart.bin').writeAsBytesSync(created.bytes);
+  File('$directory/dart.bin').writeAsBytesSync(created.storage.bytes);
   print('Dart: exact bytes, recursive views, numeric projection mutation, external subviews passed');
 }

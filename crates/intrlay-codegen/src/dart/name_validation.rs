@@ -18,6 +18,9 @@ pub fn validate(generation: &GenerationPlan) -> Result<(), GenerateError> {
     let plan = &generation.encoding.types;
     let mut declarations = Scope::module(plan);
     for (id, node) in plan.nodes.iter().enumerate() {
+        if node.is_enum_input_context() {
+            continue;
+        }
         let input = node.input_name();
         if matches!(node.kind, Kind::Record(_) | Kind::Enum(_)) {
             declarations.schema(node)?;
@@ -31,12 +34,16 @@ pub fn validate(generation: &GenerationPlan) -> Result<(), GenerateError> {
         }
         if let Kind::Record(fields) = &node.kind
             && plan.folded_node(node).is_none()
+            && node.numeric_input.is_none()
         {
             native_fields(plan, &input, fields)?;
         }
         if let Kind::Enum(variants) = &node.kind {
             let mut members = Scope::new(plan);
             if node.is_value_enum() {
+                let mut locals = Scope::new(plan);
+                locals.reserve("tag", "enum tag conversion parameter");
+                locals.declaration(&input, "referenced enum")?;
                 members.reserve_all(
                     &[
                         "values",
@@ -51,6 +58,7 @@ pub fn validate(generation: &GenerationPlan) -> Result<(), GenerateError> {
                     "native enum infrastructure",
                 );
                 members.runtime_member("tag", "enum discriminant")?;
+                members.member(&super::names::enum_from_tag(plan), "enum tag conversion")?;
             }
             for variant in variants {
                 members.declaration(&variant.name, "enum variant")?;
@@ -102,7 +110,7 @@ fn view_members(plan: &TypeGraph, id: Id) -> Result<(), GenerateError> {
             members.member(&reference, "referenced type or codec")?;
         }
     }
-    if node.options.generation.setters && !plan.has_payload(id) {
+    if node.options.generation.setters && node.options.values() && !plan.has_payload(id) {
         members.runtime_member("replace", "in-place value replacement")?;
     }
     if matches!(node.kind, Kind::Enum(_)) && node.options.generation.getters {
@@ -126,7 +134,7 @@ fn infrastructure(plan: &TypeGraph, id: Id) -> Result<Scope<'_>, GenerateError> 
     let node = &plan.nodes[id];
     let mut members = inherited_members(plan);
     members.reserve(&node.view_name, "enclosing view type");
-    for key in ["byte_size", "alignment", "storage", "bytes"] {
+    for key in ["byte_size", "alignment", "storage"] {
         members.runtime_member(key, "view infrastructure")?;
     }
     if node.options.generation.create {

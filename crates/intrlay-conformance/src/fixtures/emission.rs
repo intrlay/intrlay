@@ -293,6 +293,12 @@ struct UnitField {
 }
 
 #[derive(Intrlay)]
+struct UnitFields {
+    #[intrlay(project = "indexed")]
+    values: Vec<UnitField>,
+}
+
+#[derive(Intrlay)]
 #[intrlay(create = false, generate_setters = false)]
 struct ZeroPayload {
     label: String,
@@ -394,8 +400,8 @@ fn input_declarations_follow_writers_and_preserve_enum_constants()
             "ReadOnlyView",
             "ZReadOnlyView",
             "ReadOnlyEventView",
-            "ReadOnlyStateInput",
-            "ZReadOnlyStateInput",
+            "ReadOnlyState",
+            "ZReadOnlyState",
             "WriteLeafInput",
             "WriteParentInput",
             "WriteEventInput",
@@ -411,6 +417,69 @@ fn input_declarations_follow_writers_and_preserve_enum_constants()
             assert!(has_identifier(&source, "ReadOnlyEventKind"));
             assert!(has_identifier(&source, "ZReadOnlyEventKind"));
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn value_enum_views_require_explicit_exports() -> Result<(), Box<dyn std::error::Error>> {
+    let mut registry = Registry::new();
+    registry.export::<ReadOnly>("ReadOnly");
+    let nested = registry.finish();
+    let mut registry = Registry::new();
+    registry.export::<ReadOnly>("ReadOnly");
+    registry.export::<ReadOnlyState>("ReadOnlyState");
+    registry.export::<ReadOnlyState>("StateAlias");
+    let standalone = registry.finish();
+
+    for language in [
+        Language::Cpp,
+        Language::CSharp,
+        Language::TypeScript,
+        Language::Python,
+        Language::Dart,
+    ] {
+        let source = generate(&nested, language)?;
+        assert!(has_identifier(&source, "ReadOnlyState"), "{language:?}");
+        assert!(!source.contains("ReadOnlyStateView"), "{language:?}");
+        assert!(
+            !has_identifier(&source, "ReadOnlyStateInput"),
+            "{language:?}"
+        );
+
+        let source = generate(&standalone, language)?;
+        assert!(source.contains("ReadOnlyStateView"), "{language:?}");
+        assert!(source.contains("StateAliasView"), "{language:?}");
+    }
+    // Rust target output is ordinary source code. Derive supplies the same local
+    // value/input/view API whether or not that type is a cross-language root.
+    let source = generate(&nested, Language::Rust)?;
+    assert!(source.contains("pub enum ReadOnlyState"));
+    Ok(())
+}
+
+#[test]
+fn value_enums_preserve_names_that_already_end_in_kind() -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Intrlay)]
+    enum DeviceKind {
+        Sensor,
+        Controller,
+    }
+
+    let mut registry = Registry::new();
+    registry.export::<DeviceKind>("DeviceKind");
+    let schema = registry.finish();
+    for language in [
+        Language::Cpp,
+        Language::CSharp,
+        Language::TypeScript,
+        Language::Python,
+        Language::Dart,
+    ] {
+        let source = generate(&schema, language)?;
+        assert!(has_identifier(&source, "DeviceKind"), "{language:?}");
+        assert!(!has_identifier(&source, "DeviceKindKind"), "{language:?}");
+        assert!(!has_identifier(&source, "DeviceKindInput"), "{language:?}");
     }
     Ok(())
 }
@@ -553,7 +622,7 @@ fn python_access_modes_and_explicit_exports_are_typed(
     registry.export::<Vec<Option<Box<Point>>>>("OptionalPoints");
     registry.export::<NumericValues>("NumericValues");
     registry.export::<CreateOnly>("CreateOnly");
-    registry.export::<Vec<UnitField>>("UnitFields");
+    registry.export::<UnitFields>("UnitFields");
     let source = generate(&registry.finish(), Language::Python)?;
     let directory = std::path::PathBuf::from("python-types");
 

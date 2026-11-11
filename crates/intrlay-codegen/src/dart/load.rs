@@ -8,7 +8,7 @@ pub(super) struct Read<'a> {
     pub id: Id,
     pub offset: &'a str,
     pub exposure: Exposure,
-    pub tag: Option<u32>,
+    pub tag: Option<(u32, &'a str)>,
 }
 
 /// Unit values and empty numeric regions do not consult the collection index.
@@ -28,9 +28,9 @@ pub(super) fn index_parameter(plan: &TypeGraph, id: Id, exposure: Exposure) -> &
 
 pub(super) fn value(plan: &TypeGraph, read: &Read<'_>) -> Option<String> {
     let value = expression(plan, read.id, read.offset, read.exposure)?;
-    Some(if let Some(tag) = read.tag {
+    Some(if let Some((tag, offset)) = read.tag {
         let value = wrapped(&value, usize::from(plan.nullable_value(read.id)));
-        format!("$[storage].u32($[offset]) == {tag} ? {value} : null")
+        format!("this.$[storage].u32({offset}) == {tag} ? {value} : null")
     } else {
         value
     })
@@ -47,20 +47,18 @@ pub(super) fn cached_body(plan: &TypeGraph, read: &Read<'_>, cache: Option<&View
         return finish(&value, cache, read.id);
     }
     let mut lines = Vec::new();
-    if let Some(tag) = read.tag {
+    if let Some((tag, offset)) = read.tag {
         lines.push(format!(
-            "if ($[storage].u32($[offset]) != {tag}) return null;"
+            "if (this.$[storage].u32({offset}) != {tag}) return null;"
         ));
     }
-    lines.push(format!("var position = {};", read.offset));
-    follow(
-        plan,
-        read.id,
-        read.exposure,
-        usize::from(read.tag.is_some() && plan.nullable_value(read.id)),
-        cache,
-        &mut lines,
-    );
+    let wrappers = usize::from(read.tag.is_some() && plan.nullable_value(read.id));
+    if let Some(value) = expression(plan, read.id, read.offset, read.exposure) {
+        lines.push(finish(&wrapped(&value, wrappers), cache, read.id));
+    } else {
+        lines.push(format!("var position = {};", read.offset));
+        follow(plan, read.id, read.exposure, wrappers, cache, &mut lines);
+    }
     lines.join("\n")
 }
 
@@ -93,9 +91,9 @@ fn follow(
         let Kind::Sequence(element) = plan.nodes[id].kind else {
             unreachable!("fixed numeric regions are expressions")
         };
-        lines.push("final payloadOffset = position + $[storage].u32(position);".into());
+        lines.push("final payloadOffset = position + this.$[storage].u32(position);".into());
         lines.push(format!(
-            "final length = $[storage].u32(position + 4) * {};",
+            "final length = this.$[storage].u32(position + 4) * {};",
             plan.nodes[element].layout.size() / scalar.layout().size()
         ));
         lines.push(finish(
@@ -107,7 +105,7 @@ fn follow(
     }
     match plan.nodes[id].kind {
         Kind::Boxed(value) => {
-            lines.push("position += $[storage].u32(position);".into());
+            lines.push("position += this.$[storage].u32(position);".into());
             follow(
                 plan,
                 value,
@@ -120,7 +118,7 @@ fn follow(
         Kind::Optional { value, offset } => {
             let absent = finish(&wrapped("null", wrappers), cache, id).replace('\n', "\n  ");
             lines.push(format!(
-                "if ($[storage].bytes[position] == 0) {{\n  {absent}\n}}"
+                "if (this.$[storage].bytes[position] == 0) {{\n  {absent}\n}}"
             ));
             lines.push(format!("position += {offset};"));
             follow(
@@ -174,24 +172,29 @@ pub(super) fn expression(
     }
     Some(match node.kind {
         Kind::Scalar(kind) => scalar(kind, offset),
+        Kind::Enum(_) if node.is_value_enum() => format!(
+            "{}.{}(this.$[storage].u32({offset}))",
+            node.tag_type_name(),
+            super::names::enum_from_tag(plan)
+        ),
         Kind::Unit => "null".into(),
-        Kind::String => format!("$[storage].stringAt({offset})"),
+        Kind::String => format!("this.$[storage].stringAt({offset})"),
         Kind::Optional { .. } | Kind::Boxed(_) => return None,
-        _ => format!("{}._($[storage], {offset})", plan.view_name(id)),
+        _ => format!("{}._(this.$[storage], {offset})", plan.view_name(id)),
     })
 }
 
 pub(super) fn scalar(kind: Scalar, offset: &str) -> String {
     match kind {
-        Scalar::Bool => format!("($[storage].bytes[{offset}] != 0)"),
-        Scalar::U8 => format!("$[storage].bytes[{offset}]"),
-        Scalar::I8 => format!("$[storage].data.getInt8({offset})"),
+        Scalar::Bool => format!("(this.$[storage].bytes[{offset}] != 0)"),
+        Scalar::U8 => format!("this.$[storage].bytes[{offset}]"),
+        Scalar::I8 => format!("this.$[storage].data.getInt8({offset})"),
         Scalar::I64 | Scalar::U64 => format!(
-            "intrlay.read{}($[storage].data, {offset})",
+            "intrlay.read{}(this.$[storage].data, {offset})",
             super::method(kind)
         ),
         _ => format!(
-            "$[storage].data.get{}({offset}, typed.Endian.little)",
+            "this.$[storage].data.get{}({offset}, typed.Endian.little)",
             super::method(kind)
         ),
     }
@@ -203,9 +206,9 @@ fn numeric(scalar: Scalar, offset: &str, length: &str) -> String {
     let offset = if length == "0" {
         "0".into()
     } else if length == "length" {
-        format!("length == 0 ? 0 : $[storage].bytes.offsetInBytes + ({offset})")
+        format!("length == 0 ? 0 : this.$[storage].bytes.offsetInBytes + ({offset})")
     } else {
-        format!("$[storage].bytes.offsetInBytes + ({offset})")
+        format!("this.$[storage].bytes.offsetInBytes + ({offset})")
     };
     if matches!(scalar, Scalar::I64 | Scalar::U64) {
         let helper = if scalar == Scalar::I64 {
@@ -213,10 +216,10 @@ fn numeric(scalar: Scalar, offset: &str, length: &str) -> String {
         } else {
             "uint64View"
         };
-        return format!("intrlay.{helper}($[storage].bytes.buffer, {offset}, {length})");
+        return format!("intrlay.{helper}(this.$[storage].bytes.buffer, {offset}, {length})");
     }
     format!(
-        "$[storage].bytes.buffer.as{}(\n  {offset},\n  {length},\n)",
+        "this.$[storage].bytes.buffer.as{}(\n  {offset},\n  {length},\n)",
         super::numeric_type(scalar).trim_start_matches("typed.")
     )
 }

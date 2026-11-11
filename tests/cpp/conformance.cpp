@@ -4,6 +4,9 @@
 
 using namespace intrlay_generated::conformance;
 
+template<class X, class Y, class Z>
+concept PointSources = requires { typename PointInput<X, Y, Z>; };
+
 void check(bool condition, const char* label) {
     if (!condition) throw std::runtime_error(label);
 }
@@ -16,7 +19,7 @@ int main(int argc, char** argv) {
     nullable_file.seekg(0);
     std::vector<std::byte> nullable_bytes(nullable_length);
     nullable_file.read(reinterpret_cast<char*>(nullable_bytes.data()), static_cast<std::streamsize>(nullable_length));
-    NullableCasesView nullable(nullable_bytes);
+    auto nullable = NullableCasesView::from_bytes(nullable_bytes).value();
     check(!nullable.absent() && nullable.zero() == 0u, "nullable scalar");
     check(nullable.text() == "" && !nullable.missing_text(), "nullable string");
     check(!nullable.absent_unit() && nullable.present_unit().has_value(), "nullable unit");
@@ -34,12 +37,16 @@ int main(int argc, char** argv) {
         {{NullableVariantEmptyInput<>{}}, {NullableVariantValueInput<>{std::nullopt}}, {NullableVariantValueInput<>{9}}}
     };
     check(std::ranges::equal(NullableCasesView::create(nullable_value).bytes(), nullable_bytes), "nullable exact Rust bytes");
+    intrlay::OwnedView<NullableCasesView> nullable_storage(nullable_length, NullableCasesView::alignment);
+    std::ranges::fill(nullable_storage.bytes(), std::byte{0xcc});
+    NullableCasesView::create_in_place(nullable_storage.bytes(), nullable_value);
+    check(std::ranges::equal(nullable_storage.bytes(), nullable_bytes), "nullable initialization over dirty storage");
     std::ifstream file(directory + "/rust.bin", std::ios::binary | std::ios::ate);
     const auto length = static_cast<std::size_t>(file.tellg());
     file.seekg(0);
     std::vector<std::byte> bytes(length);
     file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(length));
-    MessageView view(bytes);
+    auto view = MessageView::from_bytes(bytes).value();
     check(view.sequence() == UINT64_C(0x123456789abcdef0), "u64");
     check(view.title() == "fixture 🦀 한글", "UTF-8");
     check(view.points().get(1).z() == 6, "point");
@@ -63,12 +70,13 @@ int main(int argc, char** argv) {
     };
     static_assert(intrlay::EncodeSourceFor<decltype(input), MessageView::Metadata>);
     static_assert(!intrlay::EncodeSourceFor<int, MessageView::Metadata>);
-    auto invalid = PointInput{std::string_view("not a coordinate"), 2.0f, 3.0f};
-    static_assert(!intrlay::EncodeSourceFor<decltype(invalid), PointView::Metadata>);
+    static_assert(!PointSources<std::string_view, float, float>);
+    static_assert(PointSources<float, float, float>);
     check(std::ranges::equal(MessageView::create(input).bytes(), bytes), "borrowed field sources");
     intrlay::OwnedView<MessageView> storage(length + 32, MessageView::alignment);
     std::ranges::fill(storage.bytes(), std::byte{0xcc});
     auto borrowed = MessageView::create_in_place(storage.bytes().subspan(16), value);
+    check(std::ranges::equal(storage.bytes().subspan(16, length), bytes), "recursive encoding over dirty storage");
     borrowed.set_sequence(std::uint64_t{42});
     borrowed.points().get(1).set_z(99.0f);
     check(borrowed.sequence() == 42 && borrowed.points().get(1).z() == 99, "mutation");

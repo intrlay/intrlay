@@ -3,6 +3,8 @@
 #endif
 #include "bindings.hpp"
 #include "custom.hpp"
+#include "enum_getters.hpp"
+#include "../../target/naming/enum_properties.hpp"
 #include "peer.hpp"
 #include <cassert>
 #include <filesystem>
@@ -98,8 +100,8 @@ static_assert(!CanVisitFields<NamesMetadata, FirstFieldVisitor>);
 static_assert(!CanMeasureSource<NamesMetadata, int>);
 static_assert(!intrlay::SetSourceFor<std::string, NamesMetadata::Field<2>>);
 static_assert(!intrlay::SetSourceFor<int, cpp_metadata::ChildView::Metadata>);
-static_assert(!intrlay::SetSourceFor<int, intrlay::Optional<intrlay::Scalar<std::uint32_t>, 4>>);
-static_assert(intrlay::SetSourceFor<std::optional<std::uint32_t>, intrlay::Optional<intrlay::Scalar<std::uint32_t>, 4>>);
+static_assert(!intrlay::SetSourceFor<int, intrlay::Optional<intrlay::Scalar<std::uint32_t>, 4, 8>>);
+static_assert(intrlay::SetSourceFor<std::optional<std::uint32_t>, intrlay::Optional<intrlay::Scalar<std::uint32_t>, 4, 8>>);
 
 using OrdinaryMetadata = cpp_metadata::OrdinaryChoiceView::Metadata;
 static_assert(OrdinaryMetadata::variant_count == 2);
@@ -128,17 +130,20 @@ static_assert(!intrlay::EncodeSourceFor<native::AdlSizedWords,
     intrlay::ArrayCodec<intrlay::Scalar<std::uint32_t>, 4, 2>>);
 static_assert(std::is_same_v<cpp_metadata::TextAliasInput<>, cpp_metadata::TextInput<>>);
 static_assert(std::is_same_v<cpp_metadata::ChildAliasInput<>, cpp_metadata::ChildInput<>>);
-static_assert(std::is_same_v<decltype(cpp_metadata::ChildAliasInput{}), cpp_metadata::ChildInput<>>);
 static_assert(std::is_same_v<cpp_metadata::OrdinaryChoiceAliasInput<>, cpp_metadata::OrdinaryChoiceInput<>>);
-static_assert(std::is_same_v<cpp_metadata::ModeAliasInput, cpp_metadata::ModeInput>);
+static_assert(std::is_same_v<cpp_metadata::ModeAlias, cpp_metadata::Mode>);
 template<class... Fields>
 concept CanDeduceChildInput = requires(Fields... fields) { cpp_metadata::ChildInput{fields...}; };
 template<class... Fields>
 concept CanDeduceChildAliasInput = requires(Fields... fields) { cpp_metadata::ChildAliasInput{fields...}; };
-static_assert(CanDeduceChildInput<> && CanDeduceChildInput<int, int>);
+static_assert(CanDeduceChildInput<> && CanDeduceChildInput<std::uint32_t, std::uint32_t> && !CanDeduceChildInput<int, int>);
 static_assert(!CanDeduceChildInput<int> && !CanDeduceChildInput<int, int, int>);
-static_assert(CanDeduceChildAliasInput<> && CanDeduceChildAliasInput<int, int>);
+static_assert(CanDeduceChildAliasInput<> && CanDeduceChildAliasInput<std::uint32_t, std::uint32_t> && !CanDeduceChildAliasInput<int, int>);
 static_assert(!CanDeduceChildAliasInput<int> && !CanDeduceChildAliasInput<int, int, int>);
+static_assert(!CanDeduceChildAliasInput<std::uint16_t, std::uint16_t>);
+// MSVC 19.42 crashes if alias CTAD precedes these deduction requires-expressions.
+// Keep both checks, instantiating the constrained probes before the direct use.
+static_assert(std::is_same_v<decltype(cpp_metadata::ChildAliasInput{}), cpp_metadata::ChildInput<>>);
 static_assert(intrlay::detail::native_layout<cpp_metadata::ChildView::Metadata, native::Child>);
 static_assert(intrlay::detail::native_layout<cpp_metadata::ChildView::Metadata, cpp_metadata::ChildInput<>>);
 static_assert(!intrlay::detail::native_layout<cpp_metadata::ChildView::Metadata, int>);
@@ -259,16 +264,34 @@ template<class T>
 concept CanSetFactory = requires(T view) { view.set_Factory(1u); };
 
 int main(int argc, char** argv) {
+    namespace payload_names = intrlay_generated::payload_names;
+    auto named_payload = payload_names::PayloadEventView::create(payload_names::PayloadEventInput<>{
+        payload_names::PayloadEventVariantTaskDoneInput<>{7, 11}});
+    auto payload_view = named_payload.view_unchecked();
+    assert(payload_view.read_task_done_request_id() == 7u);
+    assert(payload_view.read_task_done_saved_id() == 11u);
+    payload_view.set_read_task_done_request_id(std::uint32_t{19});
+    assert(payload_view.read_task_done_request_id() == 19u);
+    payload_view.replace(payload_names::PayloadEventInput<>{payload_names::PayloadEventDeliveredInput<>{23}});
+    payload_view.set_read_delivered_ticket(std::uint32_t{29});
+    assert(payload_view.read_delivered_ticket() == 29u);
+    assert(!payload_view.read_task_done_request_id());
+
     namespace generated = cpp_metadata;
     const std::filesystem::path directory = argc > 1 ? argv[1] : "target/cpp-metadata";
 
+    namespace getter_names = cpp_metadata::getter_names;
+    auto named_whole = getter_names::WholeChoiceView::create(native::WholeChoice{native::Child{31, 37}});
+    assert(named_whole.view_unchecked().read_as_value()->read_value() == 31);
+    auto named_ordinary = getter_names::OrdinaryChoiceView::create(native::OrdinaryChoice{native::Value{23, 29}});
+    assert(named_ordinary.view_unchecked().read_value_value().value().value() == 23);
+
     auto peer = generated::PeerView::create(generated::PeerInput<>{173, 179});
-    assert(peer.view().value() == 173 && peer.view().marker() == 179);
+    assert(peer.view_unchecked().value() == 173 && peer.view_unchecked().marker() == 179);
     const auto alias_child = generated::ChildAliasInput{std::uint32_t{3}, std::uint32_t{5}};
     static_assert(std::is_same_v<decltype(alias_child), const generated::ChildInput<std::uint32_t, std::uint32_t>>);
-    static_assert(!intrlay::EncodeSourceFor<generated::ChildAliasInput<std::uint16_t, std::uint16_t>, generated::ChildView::Metadata>);
     auto aliased_child = generated::ChildAliasView::create(alias_child);
-    assert(aliased_child.view().value() == 3 && aliased_child.view().marker() == 5);
+    assert(aliased_child.view_unchecked().value() == 3 && aliased_child.view_unchecked().marker() == 5);
 
 #ifdef INTRLAY_CHECK_LINKAGE
     // The CMake consumer includes the same generated metadata in another TU.
@@ -279,31 +302,31 @@ int main(int argc, char** argv) {
 
     volatile native::Child volatile_root{41, 43};
     auto root = generated::ChildView::create(volatile_root);
-    assert(root.view().value() == 41 && root.view().marker() == 43);
+    assert(root.view_unchecked().value() == 41 && root.view_unchecked().marker() == 43);
     auto member = generated::ChildView::create(VolatileChild{47, 53});
-    assert(member.view().value() == 47);
+    assert(member.view_unchecked().value() == 47);
     auto polymorphic = generated::ChildView::create(PolymorphicChild{});
-    assert(polymorphic.view().value() == 61 && polymorphic.view().marker() == 67);
+    assert(polymorphic.view_unchecked().value() == 61 && polymorphic.view_unchecked().marker() == 67);
     auto static_child = generated::ChildView::create(StaticChild{89});
-    assert(static_child.view().value() == 71 && static_child.view().marker() == 89);
-    static_child.view().replace(AllStaticChild{});
-    assert(static_child.view().value() == 73 && static_child.view().marker() == 79);
-    static_child.view().replace(StaticPaddedChild{107, 0xffffffffu});
-    assert(static_child.view().value() == 83 && static_child.view().marker() == 107);
+    assert(static_child.view_unchecked().value() == 71 && static_child.view_unchecked().marker() == 89);
+    static_child.view_unchecked().replace(AllStaticChild{});
+    assert(static_child.view_unchecked().value() == 73 && static_child.view_unchecked().marker() == 79);
+    static_child.view_unchecked().replace(StaticPaddedChild{107, 0xffffffffu});
+    assert(static_child.view_unchecked().value() == 83 && static_child.view_unchecked().marker() == 107);
     auto static_names = generated::NamesView::create(StaticNames{{109, 113}, 127, 131, {137}});
-    assert(static_names.view().Child().value() == 109 && static_names.view().Child().marker() == 113);
-    assert(static_names.view().second().value() == 97 && static_names.view().second().marker() == 101);
+    assert(static_names.view_unchecked().Child().value() == 109 && static_names.view_unchecked().Child().marker() == 113);
+    assert(static_names.view_unchecked().second().value() == 97 && static_names.view_unchecked().second().marker() == 101);
     const std::array<StaticChild, 2> static_children{{{139}, {149}}};
     using StaticChildren = intrlay::SequenceCodec<generated::ChildView::Metadata, 8, 4>;
     std::array<std::byte, 24> static_bytes{};
     intrlay::detail::Cursor static_cursor{8};
     StaticChildren::write(static_bytes, 0, static_children, static_cursor);
-    const generated::ChildView static_first(static_bytes, 8);
-    const generated::ChildView static_second(static_bytes, 16);
+    const auto static_first = generated::ChildView::from_parts(static_bytes, 8).value();
+    const auto static_second = generated::ChildView::from_parts(static_bytes, 16).value();
     assert(static_first.value() == 71 && static_first.marker() == 139);
     assert(static_second.value() == 71 && static_second.marker() == 149);
     auto volatile_nested = generated::NamesView::create(VolatileNames{{3, 5}, {7, 11}, 13, 17, {19}});
-    assert(volatile_nested.view().Child().value() == 3);
+    assert(volatile_nested.view_unchecked().Child().value() == 3);
     std::array<volatile float, 4> volatile_array{1, 2, 3, 4};
     std::array<std::byte, 24> encoded{};
     intrlay::detail::Cursor fixed_cursor{16};
@@ -318,13 +341,13 @@ int main(int argc, char** argv) {
     const generated::NamesInput<> generated_names{{3, 5}, {7, 11}, 13, 17, {19}};
     auto names = generated::NamesView::create(native_names);
     auto reordered = generated::ChildView::create(ReorderedChild{17, 13});
-    assert(reordered.view().value() == 13 && reordered.view().marker() == 17);
+    assert(reordered.view_unchecked().value() == 13 && reordered.view_unchecked().marker() == 17);
     auto padded_child = generated::ChildView::create(PaddedChild{19, 0xff, 23});
-    assert(padded_child.view().value() == 19 && padded_child.view().marker() == 23);
+    assert(padded_child.view_unchecked().value() == 19 && padded_child.view_unchecked().marker() == 23);
     auto names_copy = generated::NamesView::create(generated_names);
     assert(std::ranges::equal(names.bytes(), names_copy.bytes()));
     assert(std::ranges::equal(names.bytes(), read_bytes(directory / "names.bin")));
-    auto view = names.view();
+    auto view = names.view_unchecked();
     assert(view.Child().value() == 3 && view.second().value() == 7);
     assert(view.Factory() == 13 && view.ElementAccess() == 17);
     assert(view.source().renamed() == 19);
@@ -332,29 +355,29 @@ int main(int argc, char** argv) {
     NamesMetadata::Field<2>::set(names.bytes(), 0, 14u);
     assert(view.Factory() == 14);
     auto renamed = generated::VView::create(native::V{43});
-    assert(renamed.view().renamed() == 43);
+    assert(renamed.view_unchecked().renamed() == 43);
     auto keyword = generated::KeywordView::create(generated::KeywordInput<>{131, 139});
-    assert(keyword.view().restricted() == 139);
-    keyword.view().set_restricted(149u);
-    assert(generated::KeywordViewReadOnly(keyword.bytes()).restricted() == 149);
-    assert(keyword.view().kind() == 131);
-    keyword.view().set_kind(137u);
-    assert(generated::KeywordViewReadOnly(keyword.bytes()).kind() == 137);
+    assert(keyword.view_unchecked().restricted() == 139);
+    keyword.view_unchecked().set_restricted(149u);
+    assert(generated::KeywordViewReadOnly::from_bytes(keyword.bytes()).value().restricted() == 149);
+    assert(keyword.view_unchecked().kind() == 131);
+    keyword.view_unchecked().set_kind(137u);
+    assert(generated::KeywordViewReadOnly::from_bytes(keyword.bytes()).value().kind() == 137);
     view.Child().set_value(47u);
     view.second().set_marker(53u);
     view.set_Factory(59u);
     view.set_ElementAccess(61u);
     view.source().set_renamed(67u);
-    generated::NamesViewReadOnly readonly(names.bytes());
+    auto readonly = generated::NamesViewReadOnly::from_bytes(names.bytes()).value();
     static_assert(CanSetFactory<generated::NamesView>);
     static_assert(!CanSetFactory<generated::NamesViewReadOnly>);
     assert(readonly.Child().value() == 47 && readonly.second().marker() == 53);
     assert(readonly.Factory() == 59 && readonly.ElementAccess() == 61);
     assert(readonly.source().renamed() == 67);
 
-    assert(generated::ModeView::create(native::Mode::On).view().tag() == 7);
-    assert(generated::ModeView::create(native::SignedMode::Off).view().tag() == 9);
-    assert(generated::ModeAliasView::create(generated::ModeAliasInput::On).view().tag() == 7);
+    assert(generated::ModeView::create(native::Mode::On).view_unchecked().tag() == generated::Mode::On);
+    assert(generated::ModeView::create(native::SignedMode::Off).view_unchecked().tag() == generated::Mode::Off);
+    assert(generated::ModeAliasView::create(generated::ModeAlias::On).view_unchecked().tag() == generated::Mode::On);
     generated::ModeFieldsInput<> default_modes;
     assert(static_cast<std::uint32_t>(default_modes.mode) == 0);
     assert(std::ranges::all_of(default_modes.modes,
@@ -388,18 +411,18 @@ int main(int argc, char** argv) {
     assert(std::ranges::equal(ordinary.bytes(), alias_copy.bytes()));
     assert(std::ranges::equal(ordinary.bytes(), ordinary_copy.bytes()));
     assert(std::ranges::equal(ordinary.bytes(), read_bytes(directory / "ordinary.bin")));
-    assert(ordinary.view().value_value().value().value() == 23);
-    assert(ordinary.view().value_renamed_extra() == 29u);
-    ordinary.view().set_value_value(71u);
-    ordinary.view().set_value_renamed_extra(73u);
-    assert(ordinary.view().value_value().value().value() == 71);
-    assert(ordinary.view().value_renamed_extra() == 73u);
+    assert(ordinary.view_unchecked().value_value().value().value() == 23);
+    assert(ordinary.view_unchecked().value_renamed_extra() == 29u);
+    ordinary.view_unchecked().set_value_value(71u);
+    ordinary.view_unchecked().set_value_renamed_extra(73u);
+    assert(ordinary.view_unchecked().value_value().value().value() == 71);
+    assert(ordinary.view_unchecked().value_renamed_extra() == 73u);
     auto absent = generated::OrdinaryChoiceView::create(native::OrdinaryChoice{native::Value{std::nullopt, 79}});
-    assert(absent.view().value_value().has_value() && !absent.view().value_value().value());
-    absent.view().set_value_value(83u);
-    assert(absent.view().value_value().value() == 83u);
+    assert(absent.view_unchecked().value_value().has_value() && !absent.view_unchecked().value_value().value());
+    absent.view_unchecked().set_value_value(83u);
+    assert(absent.view_unchecked().value_value().value() == 83u);
     auto empty = generated::OrdinaryChoiceView::create(native::OrdinaryChoice{std::monostate{}});
-    assert(!empty.view().value_value() && !empty.view().value_renamed_extra());
+    assert(!empty.view_unchecked().value_value() && !empty.view_unchecked().value_renamed_extra());
 
     std::variant<native::ThrowingValue, std::monostate> valueless{std::in_place_index<1>};
     try { valueless.emplace<0>(0); } catch (const std::runtime_error&) {}
@@ -423,23 +446,23 @@ int main(int argc, char** argv) {
         generated::WholeChoiceInput<>{generated::ChildInput<>{31, 37}});
     assert(std::ranges::equal(whole.bytes(), whole_copy.bytes()));
     assert(std::ranges::equal(whole.bytes(), read_bytes(directory / "whole.bin")));
-    assert(whole.view().as_value()->value() == 31);
-    whole.view().as_value()->set_marker(89u);
-    assert(generated::WholeChoiceViewReadOnly(whole.bytes()).as_value()->marker() == 89);
+    assert(whole.view_unchecked().as_value()->value() == 31);
+    whole.view_unchecked().as_value()->set_marker(89u);
+    assert(generated::WholeChoiceViewReadOnly::from_bytes(whole.bytes()).value().as_value()->marker() == 89);
     auto nested = generated::WholeChoiceView::create(
         native::WholeChoice{std::array<std::optional<std::uint32_t>, 2>{41, std::nullopt}});
     auto nested_copy = generated::WholeChoiceView::create(
         generated::WholeChoiceInput<>{std::array<std::optional<std::uint32_t>, 2>{41, std::nullopt}});
     assert(std::ranges::equal(nested.bytes(), nested_copy.bytes()));
     assert(std::ranges::equal(nested.bytes(), read_bytes(directory / "nested.bin")));
-    auto payload = nested.view().as_nested().value();
+    auto payload = nested.view_unchecked().as_nested().value();
     static_assert(decltype(payload)::extent == 2);
     payload.set(0, std::optional<std::uint32_t>{97});
     payload.set(1, std::optional<std::uint32_t>{101});
     assert(payload.get(0) == 97u && payload.get(1) == 101u);
     auto unit = generated::WholeChoiceView::create(native::WholeChoice{std::monostate{}});
-    assert(unit.view().as_empty().has_value());
-    assert(!unit.view().as_value() && !unit.view().as_nested());
+    assert(unit.view_unchecked().as_empty().has_value());
+    assert(!unit.view_unchecked().as_value() && !unit.view_unchecked().as_nested());
 
     namespace custom = cpp_metadata::custom;
     constexpr custom::ApiChildInput<> custom_input{103, 107};
@@ -448,9 +471,9 @@ int main(int argc, char** argv) {
     auto custom_native = custom::ApiChildView::BuildCreate(native::Child{103, 107});
     assert(std::ranges::equal(custom_owned.bytes(), custom_native.bytes()));
     assert(custom::ApiChildView::BuildComputeByteLength(custom_input) == 8);
-    assert(custom_owned.view().ReadValue() == 103 && custom_owned.view().ReadMarker() == 107);
-    custom_owned.view().set_ReadValue(109u);
-    custom::ApiChildViewReadOnly custom_readonly(custom_owned.bytes());
+    assert(custom_owned.view_unchecked().ReadValue() == 103 && custom_owned.view_unchecked().ReadMarker() == 107);
+    custom_owned.view_unchecked().set_ReadValue(109u);
+    auto custom_readonly = custom::ApiChildViewReadOnly::BuildFromBytes(custom_owned.bytes()).value();
     assert(custom_readonly.ReadValue() == 109 && custom_readonly.ReadBytes().size() == 8);
     alignas(4) std::array<std::byte, 8> in_place{};
     auto custom_in_place = custom::ApiChildView::BuildCreateInPlace(in_place, native::Child{113, 127});
@@ -466,7 +489,7 @@ int main(int argc, char** argv) {
         const native::Text source{std::basic_string<char, native::CharacterTraits>{text.data(), text.size()}};
         auto encoded_text = generated::TextView::create(source);
         assert(std::ranges::equal(encoded_text.bytes(), expected.bytes()));
-        assert(encoded_text.view().value() == text);
+        assert(encoded_text.view_unchecked().value() == text);
         const auto borrowed = generated::TextView::create(native::Text{
             std::basic_string_view<char, native::CharacterTraits>{text.data(), text.size()}});
         assert(std::ranges::equal(borrowed.bytes(), expected.bytes()));
@@ -485,6 +508,6 @@ int main(int argc, char** argv) {
         assert(std::ranges::all_of(std::span(storage).subspan(expected.bytes().size()),
             [](auto byte) { return byte == std::byte{0xa5}; }));
     }
-    assert(generated::TextView::create(native::Text{"literal"}).view().value() == "literal");
+    assert(generated::TextView::create(native::Text{"literal"}).view_unchecked().value() == "literal");
     std::cout << "C++ metadata regressions passed\n";
 }

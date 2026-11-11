@@ -150,6 +150,26 @@ pub struct OwnedBuffer {
     allocation: BufferAllocation,
 }
 
+/// Byte storage that can be recovered by consuming its owning view.
+///
+/// Implemented for `OwnedBuffer`, `Vec<u8>`, `Box<[u8]>`, byte arrays, and shared
+/// `Arc<[u8]>`/`Rc<[u8]>` owners. This trait is sealed: borrowed storage must not
+/// expose mutable bytes while a parent view still relies on their validity.
+pub trait OwnedBytes: AsRef<[u8]> + owned_bytes::Sealed {}
+
+impl<T: AsRef<[u8]> + owned_bytes::Sealed> OwnedBytes for T {}
+
+mod owned_bytes {
+    pub trait Sealed {}
+
+    impl Sealed for super::OwnedBuffer {}
+    impl Sealed for Vec<u8> {}
+    impl Sealed for Box<[u8]> {}
+    impl<const N: usize> Sealed for [u8; N] {}
+    impl Sealed for std::sync::Arc<[u8]> {}
+    impl Sealed for std::rc::Rc<[u8]> {}
+}
+
 /// Owns storage while construction has not yet established byte initialization.
 /// Its destructor only deallocates, including on a failed or panicking codec.
 pub(crate) struct BufferAllocation {
@@ -299,6 +319,22 @@ impl<'a> Writer<'a> {
         Ok(start)
     }
 
+    /// Borrows one fixed header for direct writes of native-compatible fields.
+    ///
+    /// Field offsets are relative to this header. This writer cannot reserve
+    /// payloads or call codecs; custom codecs retain the original writer and
+    /// absolute offsets. The fixed slice lets inlining eliminate field checks.
+    ///
+    /// # Panics
+    /// Panics if the requested header is outside this writer's storage.
+    #[doc(hidden)]
+    #[inline]
+    pub fn fixed_header(&mut self, offset: usize, layout: Layout) -> FixedHeader<'_> {
+        FixedHeader {
+            bytes: &mut self.bytes[offset..][..layout.size()],
+        }
+    }
+
     /// Copies initialized bytes into a fixed location.
     ///
     /// # Panics
@@ -350,5 +386,39 @@ impl<'a> Writer<'a> {
                 .to_le_bytes(),
         );
         Ok(())
+    }
+}
+
+/// A reserved header that accepts only native-compatible field copies.
+///
+/// Generated writers use this to retain a constant-sized destination without
+/// changing the absolute offsets passed to field codecs.
+#[doc(hidden)]
+pub struct FixedHeader<'a> {
+    bytes: &'a mut [MaybeUninit<u8>],
+}
+
+impl FixedHeader<'_> {
+    /// Copies one initialized native field into this header.
+    ///
+    /// # Safety
+    /// Every byte of `value` must be initialized, and its native representation
+    /// must match the field's encoded layout. The source must be disjoint from
+    /// the destination. Derives establish this through `NATIVE_LAYOUT`.
+    ///
+    /// # Panics
+    /// Panics if the field would exceed this header.
+    #[inline]
+    pub unsafe fn write_native<T>(&mut self, value: &T, offset: usize) {
+        let destination = &mut self.bytes[offset..][..size_of::<T>()];
+        // SAFETY: The destination range has exactly the source's size. The
+        // caller guarantees initialized source bytes and disjoint storage.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                std::ptr::from_ref(value).cast::<u8>(),
+                destination.as_mut_ptr().cast(),
+                size_of::<T>(),
+            );
+        }
     }
 }

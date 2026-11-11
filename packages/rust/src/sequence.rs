@@ -18,6 +18,17 @@ impl<C: Intrlay> Clone for SequenceView<'_, C> {
 }
 
 impl<'a, C: Intrlay> SequenceView<'a, C> {
+    /// Validates and borrows contiguous element headers and their descendants.
+    /// `offset` identifies the first element, not a sequence reference header.
+    ///
+    /// # Errors
+    /// Rejects overflowing extents, invalid elements, or overlapping payloads.
+    pub fn new(bytes: &'a [u8], offset: usize, length: usize) -> Result<Self, crate::DecodeError> {
+        crate::Validator::new(bytes).validate_sequence::<C>(offset, length)?;
+        // SAFETY: The entire sequence and its referenced regions are valid.
+        Ok(unsafe { Self::new_unchecked(bytes, offset, length) })
+    }
+
     /// Borrows a region of valid element headers without validating their payloads.
     ///
     /// # Safety
@@ -52,7 +63,7 @@ impl<'a, C: Intrlay> SequenceView<'a, C> {
             return None;
         }
         // SAFETY: Construction guarantees every header and its descendants are valid.
-        Some(unsafe { C::view(self.bytes, self.offset + index * C::LAYOUT.size()) })
+        Some(unsafe { C::view_unchecked(self.bytes, self.offset + index * C::LAYOUT.size()) })
     }
 
     /// Iterates borrowed elements in source order.
@@ -63,8 +74,47 @@ impl<'a, C: Intrlay> SequenceView<'a, C> {
         let offset = self.offset;
         (0..self.length).map(move |index| {
             // SAFETY: Every index belongs to the region guaranteed by construction.
-            unsafe { C::view(bytes, offset + index * C::LAYOUT.size()) }
+            unsafe { C::view_unchecked(bytes, offset + index * C::LAYOUT.size()) }
         })
+    }
+
+    /// Copies decoded elements into an existing native slice.
+    ///
+    /// Native-compatible codecs copy the contiguous bytes directly, including
+    /// from unaligned input. Other codecs decode each element into its slot.
+    /// `C::Value: Copy` prevents overwriting values that own resources.
+    ///
+    /// # Panics
+    /// Panics before writing if the destination length differs from [`Self::len`].
+    #[inline]
+    pub fn copy_to(&self, destination: &mut [C::Value])
+    where
+        C::Value: Copy,
+    {
+        assert_eq!(destination.len(), self.length, "sequence length mismatch");
+        if C::NATIVE_LAYOUT {
+            // SAFETY: Construction guarantees valid native representations for
+            // every source element. MaybeUninit has the same layout as Value;
+            // the exclusive destination is disjoint from the shared source.
+            // Copy values need no drop, and the infallible copy initializes every
+            // slot before this reborrow ends, including zero-sized elements.
+            unsafe {
+                let slots = std::slice::from_raw_parts_mut(
+                    destination
+                        .as_mut_ptr()
+                        .cast::<std::mem::MaybeUninit<C::Value>>(),
+                    destination.len(),
+                );
+                crate::decode::copy_native_elements_unchecked::<C>(self.bytes, self.offset, slots);
+            }
+        } else {
+            for (index, slot) in destination.iter_mut().enumerate() {
+                // SAFETY: The lengths match and construction validated all elements.
+                *slot = unsafe {
+                    C::decode_unchecked(self.bytes, self.offset + index * C::LAYOUT.size())
+                };
+            }
+        }
     }
 }
 
@@ -77,6 +127,21 @@ pub struct SequenceMut<'a, C: Intrlay> {
 }
 
 impl<'a, C: Intrlay> SequenceMut<'a, C> {
+    /// Validates and exclusively borrows element headers and their descendants.
+    /// `offset` identifies the first element, not a sequence reference header.
+    ///
+    /// # Errors
+    /// Rejects overflowing extents, invalid elements, or overlapping payloads.
+    pub fn new(
+        bytes: &'a mut [u8],
+        offset: usize,
+        length: usize,
+    ) -> Result<Self, crate::DecodeError> {
+        crate::Validator::new(bytes).validate_sequence::<C>(offset, length)?;
+        // SAFETY: Validation establishes validity and disjointness for the exclusive borrow.
+        Ok(unsafe { Self::new_unchecked(bytes, offset, length) })
+    }
+
     /// Exclusively borrows a valid sequence without inspecting its elements.
     ///
     /// # Safety
@@ -119,7 +184,7 @@ impl<'a, C: Intrlay> SequenceMut<'a, C> {
             return None;
         }
         // SAFETY: The reborrow is exclusive and the element belongs to the valid region.
-        Some(unsafe { C::view_mut(self.bytes, self.offset + index * C::LAYOUT.size()) })
+        Some(unsafe { C::view_mut_unchecked(self.bytes, self.offset + index * C::LAYOUT.size()) })
     }
 
     /// Replaces one fixed-size element, preserving the sequence's length.

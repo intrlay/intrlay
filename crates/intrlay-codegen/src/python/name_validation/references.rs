@@ -1,5 +1,5 @@
-//! Python annotations see class members; method bodies resolve codec functions
-//! at module scope. Only annotation and cached-slot references are reserved here.
+//! Python annotations see class members; enum constructors in read bodies also
+//! need to remain visible past method parameters and pointer-traversal locals.
 
 use std::collections::BTreeSet;
 
@@ -7,7 +7,8 @@ use intrlay_schema::Exposure;
 
 use crate::{
     GenerateError,
-    api::{Accessor, IndexedAccessors},
+    api::{Accessor, CollectionAccessors, IndexedAccessors},
+    name_validation::Scope,
     plan::{Field, Id, Kind, TypeGraph, Variant},
 };
 
@@ -17,39 +18,45 @@ pub(super) fn view(plan: &TypeGraph, id: Id) -> Result<BTreeSet<String>, Generat
         names: BTreeSet::new(),
     };
     let node = &plan.nodes[id];
-    if node.options.generation.create || (node.options.generation.setters && !plan.has_payload(id))
+    if node.options.generation.create
+        || (node.options.generation.setters && node.options.values() && !plan.has_payload(id))
     {
         references.input(id);
     }
     match &node.kind {
         Kind::Record(fields) => {
             for field in fields {
-                references.field(id, field, None);
+                references.field(id, field, None)?;
             }
         }
         Kind::Enum(variants) => {
             for variant in variants {
                 for field in &variant.fields {
-                    references.field(id, field, Some(variant));
+                    references.field(id, field, Some(variant))?;
                 }
             }
         }
         Kind::Sequence(element) | Kind::Array { element, .. } => {
-            if node.options.generation.getters
-                || (node.options.generation.setters && plan.borrows_content(*element))
-            {
+            let api = CollectionAccessors::new(plan, node, *element);
+            if api.getter {
                 references.output(*element);
+                references.load(*element, plan.nodes[*element].options.exposure, true, false)?;
             }
-            if node.options.generation.setters && plan.nodes[*element].options.generation.setters {
+            if api.setter.is_some() {
                 references.mutation(*element);
             }
-            if plan.folded_field(*element).is_none()
-                && let Kind::Record(fields) = &plan.nodes[*element].kind
-            {
-                for field in fields {
-                    let api = IndexedAccessors::new(plan, node, &plan.nodes[*element], field);
+            if plan.folded_field(*element).is_none() {
+                for (field, variant) in plan.nodes[*element].fields() {
+                    let api =
+                        IndexedAccessors::new(plan, node, &plan.nodes[*element], field, variant);
                     if api.getter.is_some() {
                         references.output(field.ty);
+                        references.load(
+                            field.ty,
+                            field.options.exposure,
+                            true,
+                            variant.is_some(),
+                        )?;
                     }
                     if api.setter.is_some() {
                         references.mutation(field.ty);
@@ -61,6 +68,7 @@ pub(super) fn view(plan: &TypeGraph, id: Id) -> Result<BTreeSet<String>, Generat
             let api = Accessor::root(plan, id)?;
             if api.getter {
                 references.output(id);
+                references.load(id, node.options.exposure, false, false)?;
             }
             if api.setter.is_some() {
                 references.mutation(id);
@@ -82,6 +90,9 @@ impl References<'_> {
 
     /// Native aliases remain named in input signatures, even when folded.
     fn input(&mut self, id: Id) {
+        if self.plan.nodes[id].numeric_input.is_some() {
+            return;
+        }
         match self.plan.nodes[id].kind {
             Kind::Record(_) | Kind::Enum(_) => self.insert(&self.plan.input_name(id)),
             Kind::Sequence(value)
@@ -103,6 +114,7 @@ impl References<'_> {
         }
         match node.kind {
             Kind::Optional { value, .. } | Kind::Boxed(value) => self.output(value),
+            Kind::Enum(_) if node.is_value_enum() => self.insert(&node.tag_type_name()),
             Kind::Scalar(_) | Kind::String | Kind::Unit => {}
             _ => self.insert(&self.plan.view_name(id)),
         }
@@ -116,7 +128,11 @@ impl References<'_> {
             self.plan.nodes[id].options.exposure,
             Exposure::TypedArray(_)
         ) {
-            self.insert(&self.plan.view_name(id));
+            self.insert(&if self.plan.nodes[id].is_value_enum() {
+                self.plan.nodes[id].tag_type_name()
+            } else {
+                self.plan.view_name(id)
+            });
         } else {
             self.output(id);
         }
@@ -128,10 +144,60 @@ impl References<'_> {
         }
     }
 
-    fn field(&mut self, owner: Id, field: &Field, variant: Option<&Variant>) {
+    /// Enum constructors are value references, so accessor locals can shadow
+    /// them even when the same names remain valid in type annotations.
+    fn load(
+        &self,
+        id: Id,
+        exposure: Exposure,
+        indexed: bool,
+        position: bool,
+    ) -> Result<(), GenerateError> {
+        if matches!(exposure, Exposure::TypedArray(_)) {
+            return Ok(());
+        }
+        if let Some(field) = self.plan.folded_field(id) {
+            return self.load(field.ty, field.options.exposure, indexed, position);
+        }
+        let node = &self.plan.nodes[id];
+        match node.kind {
+            Kind::Optional { value, .. } | Kind::Boxed(value) => {
+                self.load(
+                    value,
+                    self.plan.nodes[value].options.exposure,
+                    indexed,
+                    true,
+                )?;
+            }
+            Kind::Enum(_) if node.is_value_enum() => {
+                let mut locals = Scope::new(self.plan);
+                locals.reserve("self", "enum reader parameter");
+                if indexed {
+                    locals.reserve("index", "enum reader parameter");
+                }
+                if position {
+                    locals.reserve("position", "enum reader local");
+                }
+                locals.declaration(
+                    &super::super::names::reference(&node.tag_type_name()),
+                    "referenced enum",
+                )?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn field(
+        &mut self,
+        owner: Id,
+        field: &Field,
+        variant: Option<&Variant>,
+    ) -> Result<(), GenerateError> {
         let api = Accessor::field(self.plan, &self.plan.nodes[owner], field, variant);
         if api.getter {
             self.projected(field.ty, field.options.exposure);
+            self.load(field.ty, field.options.exposure, false, false)?;
         }
         // Cached slots carry annotations even if only a mutator is emitted.
         if api.cache.is_some() {
@@ -144,5 +210,6 @@ impl References<'_> {
         if api.setter.is_some() {
             self.mutation(field.ty);
         }
+        Ok(())
     }
 }

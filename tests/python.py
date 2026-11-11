@@ -2,6 +2,7 @@
 import importlib.util
 from pathlib import Path
 import sys
+from array import array
 
 directory = Path(sys.argv[1]).resolve()
 spec = importlib.util.spec_from_file_location("bindings", directory / "bindings.py")
@@ -28,7 +29,7 @@ nullable_value = dict(
     boxed_none=some(None), triple=some(some(None)),
     variants=[dict(kind=bindings.NullableVariantKind.Empty), dict(kind=bindings.NullableVariantKind.Value, value=None), dict(kind=bindings.NullableVariantKind.Value, value=9)],
 )
-assert bytes(bindings.NullableCasesView.create(nullable_value).buffer) == nullable_bytes
+assert bytes(bindings.NullableCasesView.create(nullable_value).storage.bytes) == nullable_bytes
 rust_bytes = (directory / "rust.bin").read_bytes()
 view = bindings.MessageView(rust_bytes)
 assert view.sequence == 0x123456789abcdef0
@@ -43,17 +44,17 @@ assert view.optional == 0
 value = dict(
     sequence=0x123456789abcdef0,
     title="fixture 🦀 한글",
-    points=[dict(x=1, y=2, z=3), dict(x=4, y=5, z=6)],
+    points=memoryview(array("f", [1, 2, 3, 0, 4, 5, 6, 0])),
     commands=[dict(kind=bindings.DrawingCommandKind.Clear), dict(kind=bindings.DrawingCommandKind.DrawPoint, position=dict(x=7, y=8, z=9), size=0.75, label="example")],
     tree=dict(id=7, next=dict(id=8, next=None)),
     optional=0,
     fixed=[10, 20, 30],
 )
 created = bindings.MessageView.create(value)
-assert bytes(created.buffer) == rust_bytes
+assert bytes(created.storage.bytes) == rust_bytes
 created.points[6] = 99
-assert bindings.MessageView(created.buffer).points[6] == 99
+assert bindings.MessageView(created.storage.bytes).points[6] == 99
 created.sequence = 42
 assert created.sequence == 42
-(directory / "python.bin").write_bytes(bindings.MessageView.create(value).buffer)
+(directory / "python.bin").write_bytes(bindings.MessageView.create(value).storage.bytes)
 print("Python: exact bytes, recursive views, optional zero, numeric projection mutation passed")

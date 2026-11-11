@@ -64,7 +64,8 @@ pub fn generate(schema: &Schema, language: Language) -> Result<String, GenerateE
 
 /// Generates bindings using one module-wide naming policy.
 ///
-/// Explicit names in source annotations take precedence and are emitted verbatim.
+/// Explicit names are emitted verbatim for direct declarations. Synthesized enum
+/// and flattened accessors apply the naming policy to the combined name segments.
 ///
 /// # Errors
 /// Reports schema, projection, or generated identifier conflicts.

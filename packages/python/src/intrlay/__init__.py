@@ -217,10 +217,6 @@ class BufferView:
     def __init__(self, buffer: Buffer | Storage, offset: int = 0) -> None:  # noqa: ARG002 - Preserve the view constructor's offset keyword.
         self._storage = buffer if isinstance(buffer, Storage) else Storage(buffer)
 
-    @property
-    def buffer(self) -> IntView:
-        return self._storage.bytes
-
 
 class View(BufferView):
     """Backing storage and record offset for generated accessors."""

@@ -13,11 +13,19 @@ description = "Typed views and direct construction for trusted byte-oriented obj
 [features]
 default = ["derive"]
 derive = ["dep:intrlay-derive"]
+glam-0-33 = ["dep:glam_0_33", "derive"]
+glam-0-34 = ["dep:glam_0_34", "derive"]
+smol_str = ["dep:smol_str"]
+smallvec = ["dep:smallvec"]
 
 [dependencies]
 intrlay-layout.workspace = true
 intrlay-schema.workspace = true
 intrlay-derive = { workspace = true, optional = true }
+glam_0_33 = { package = "glam", version = "0.33.12", optional = true }
+glam_0_34 = { package = "glam", version = "0.34.3", optional = true }
+smol_str = { version = "0.3", optional = true }
+smallvec = { version = "1.16", features = ["const_generics"], optional = true }
 
 [lints]
 workspace = true

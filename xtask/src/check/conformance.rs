@@ -39,9 +39,23 @@ impl Case {
 
 const CASES: &[Case] = &[
     Case {
-        typescript_sources: &["alternatives.ts"],
-        python_sources: &["alternatives.py"],
-        dart_sources: &["alternatives.dart"],
+        dart_web: true,
+        ..Case::new("field-helpers")
+    },
+    Case {
+        typecheck_python_consumer: true,
+        dart_web: true,
+        compiled_consumers: &[
+            Consumer::Csharp("LibraryAdapters"),
+            Consumer::Cpp,
+            Consumer::Rust,
+        ],
+        ..Case::new("library-adapters")
+    },
+    Case {
+        typescript_sources: &["alternatives.ts", "enum_getters.ts"],
+        python_sources: &["alternatives.py", "enum_getters.py"],
+        dart_sources: &["alternatives.dart", "enum_getters.dart"],
         typecheck_python_consumer: true,
         dart_web: true,
         compiled_consumers: &[Consumer::Csharp("CppMetadata")],

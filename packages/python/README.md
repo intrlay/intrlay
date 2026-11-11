@@ -22,11 +22,11 @@ from generated.point import PointView
 point = PointView.create({"x": 1.0, "y": 2.0, "z": 3.0})
 point.x = 4.0
 
-received = PointView(point.buffer)
+received = PointView(point.storage.bytes)
 assert received.x == 4.0
 ```
 
-`point.buffer` is a memoryview. Borrowed views keep the backing buffer accessible;
+`point.storage.bytes` is a memoryview. Borrowed views keep the backing buffer accessible;
 mutating through them requires writable storage.
 
 ## Documentation

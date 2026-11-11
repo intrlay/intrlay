@@ -29,7 +29,9 @@ pub(super) fn body(
             }
         }
     }
-    if let Kind::Scalar(scalar) = plan.nodes[mutation.value].kind {
+    if let Kind::Scalar(scalar) = plan.nodes[mutation.value].kind
+        && plan.nodes[mutation.value].numeric_input.is_none()
+    {
         let _ = write!(
             code,
             "{} = value",

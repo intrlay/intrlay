@@ -17,7 +17,7 @@ pub fn validate(generation: &GenerationPlan) -> Result<(), GenerateError> {
     let plan = &generation.encoding.types;
     let mut declarations = Scope::module(plan);
     for (id, node) in plan.nodes.iter().enumerate() {
-        if matches!(node.kind, Kind::Record(_) | Kind::Enum(_)) {
+        if matches!(node.kind, Kind::Record(_) | Kind::Enum(_)) && !node.is_enum_input_context() {
             declarations.schema(node)?;
             if generation.encoding.needs_input(id) {
                 declarations.declaration(&node.input_name(), "input value")?;
@@ -25,6 +25,29 @@ pub fn validate(generation: &GenerationPlan) -> Result<(), GenerateError> {
             }
         }
         if let Kind::Enum(variants) = &node.kind {
+            if node.is_value_enum()
+                && node.numeric_input.is_none()
+                && generation.encoding.writers.contains(&id)
+            {
+                let parameters = plan.writer_parameters(id);
+                let mut locals = Scope::new(plan);
+                locals.reserve_all(
+                    &[
+                        parameters.storage,
+                        parameters.offset,
+                        parameters.value,
+                        parameters.cursor,
+                    ],
+                    "enum writer parameter",
+                );
+                locals.declaration(
+                    &super::names::reference(&node.input_name()),
+                    "referenced enum",
+                )?;
+            }
+            if node.is_enum_input_context() {
+                continue;
+            }
             let kind = if node.is_value_enum() {
                 node.input_name()
             } else {
@@ -141,7 +164,6 @@ fn view_members(plan: &TypeGraph, id: Id) -> Result<(), GenerateError> {
             "__init__",
             "__slots__",
             "_storage",
-            "buffer",
             "_intrlay",
             "_builtins",
             "_typing",
@@ -161,7 +183,7 @@ fn view_members(plan: &TypeGraph, id: Id) -> Result<(), GenerateError> {
     }
     // Inherited storage names are literal; only these generated declarations
     // follow the naming policy. Check them against each other and the base API.
-    for key in ["byte_size", "alignment"] {
+    for key in ["byte_size", "alignment", "storage"] {
         members.runtime_member(key, "view infrastructure")?;
     }
     if node.options.generation.create {
@@ -172,7 +194,7 @@ fn view_members(plan: &TypeGraph, id: Id) -> Result<(), GenerateError> {
     for reference in references::view(plan, id)? {
         members.member(&reference, "referenced type or codec")?;
     }
-    if node.options.generation.setters && !plan.has_payload(id) {
+    if node.options.generation.setters && node.options.values() && !plan.has_payload(id) {
         members.runtime_member("replace", "in-place value replacement")?;
     }
     if matches!(node.kind, Kind::Enum(_)) && node.options.generation.getters {

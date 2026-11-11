@@ -310,5 +310,48 @@ pub(super) fn collect(fixtures: &mut Fixtures) -> Result<(), Box<dyn std::error:
     generate_cpp_metadata_regressions(fixtures)?;
     generate_cpp_metadata_peer(fixtures)?;
     generate_cpp_custom_metadata_names(fixtures)?;
+    generate_enum_getter_names(fixtures)?;
+    Ok(())
+}
+
+fn generate_enum_getter_names(fixtures: &mut Fixtures) -> Result<(), Box<dyn Error>> {
+    let mut schema = metadata_schema()?;
+    schema
+        .exports
+        .retain(|name, _| matches!(name.as_str(), "WholeChoice" | "OrdinaryChoice"));
+    for (language, extension) in [
+        (Language::Cpp, "hpp"),
+        (Language::TypeScript, "ts"),
+        (Language::Python, "py"),
+        (Language::Dart, "dart"),
+    ] {
+        let mut naming = NamingPolicy::for_language(language);
+        naming.rules.push(NamingRule {
+            selector: SymbolSelector {
+                kind: Some(SymbolKind::Property),
+                visibility: Some(Visibility::Public),
+                ..Default::default()
+            },
+            style: NameStyle {
+                case: NameCase::SnakeCase,
+                prefix: "read_".into(),
+                suffix: String::new(),
+            },
+        });
+        fixtures.insert(
+            format!("cpp-metadata/enum_getters.{extension}"),
+            generate_with_options(
+                &schema,
+                language,
+                GenerateOptions {
+                    naming: Some(naming),
+                    cpp: intrlay_codegen::CppOptions {
+                        namespace: Some("cpp_metadata::getter_names".into()),
+                    },
+                    ..Default::default()
+                },
+            )?,
+        )?;
+    }
     Ok(())
 }

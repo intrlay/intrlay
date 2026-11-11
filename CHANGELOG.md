@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.1.4]
+
+### Buffer validation
+
+- Rust and C++ provide checked `from_bytes`, `from_parts`, and codec-level view
+  entry points, with explicit `_unchecked` counterparts for trusted encodings.
+  Checked constructors validate bounds, tags, UTF-8, and referenced payloads
+  before returning a view.
+- Rust `decode` returns `Result<NativeValue, DecodeError>`; `decode_unchecked`
+  reconstructs trusted values. Safe view construction requires `StableBytes`,
+  and `into_buffer` is available only for owned storage implementing `OwnedBytes`.
+- C++ checked entry points return `Expected<View, ViewError>`. Owned buffers
+  provide both checked `view()` and trusted `view_unchecked()` access.
+
+### Adapters
+
+- C++ `Adapter<T>` specializations and `INTRLAY_ADAPT_STRUCT` map external types
+  to schemas and encoding inputs, including nested containers.
+- Optional Rust features provide glam 0.33/0.34, smol_str, and smallvec adapters.
+  C++ headers provide GLM vector, matrix, quaternion, and dual-quaternion adapters.
+- Rust remote adapters support native-layout copying when their layout is proven
+  compatible; custom adapters can supply an explicit `unsafe(native_layout)` proof.
+
+### Generated APIs
+
+- TypeScript, Python, and Dart numeric projections apply to both inputs and
+  views, including nested fixed arrays and payload-free enum tags.
+- In those targets, `project = "flatten"` exposes inline leaf fields directly.
+  `indexed` and `indexed_only` support payload-enum collections and share
+  compatible collection views. Projected APIs retain source documentation.
+- The `generate_component_accessors`, `generate_byte_range_accessors`, and
+  `generate_value_accessors` options select field-access APIs in those targets.
+  Array byte ranges identify the first element and its contiguous region.
+- TypeScript, Python, and Dart views expose `storage` for access to their backing
+  bytes and numeric storage.
+- Payload-free enums retain their schema names in C++, C#, TypeScript, Python,
+  and Dart. These targets generate standalone enum views only for explicitly
+  exported enums.
+- C++ collection views support range iteration and native-compatible `copy_to`.
+  Rust `SequenceView::copy_to` decodes into an existing native slice.
+- Correct accessor naming under custom policies, preserve navigation through
+  transparent indexed collections, and reject generated-name collisions.
+
+### Compatibility
+
+Regenerate bindings and use matching runtime packages. Handle the result returned
+by Rust and C++ checked constructors, or select the explicit unchecked API when
+its contract is satisfied. In TypeScript, Python, and Dart, access backing bytes
+through `view.storage.bytes`. Numeric projections use packed inputs, and numeric
+component helpers require `generate_component_accessors = true`. Export C++
+out-of-line definitions and explicit specializations through concrete aliases.
+Existing schema wire layouts are unchanged.
+
 ## [0.1.3]
 
 ### Encoding inputs
