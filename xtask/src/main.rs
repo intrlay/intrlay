@@ -4,7 +4,6 @@ mod check;
 mod package;
 mod process;
 mod publish;
-mod publishing_auth;
 mod release;
 
 use anyhow::Result;
@@ -29,8 +28,6 @@ enum Task {
     Release(release::Task),
     /// Publish verified artifacts, skipping versions already in the registry.
     Publish(publish::Options),
-    /// Check registry OIDC authentication inside GitHub Actions without uploading.
-    CheckPublishingAuth(publishing_auth::Options),
 }
 
 fn main() -> Result<()> {
@@ -41,6 +38,5 @@ fn main() -> Result<()> {
         Task::Package(options) => package::run(&workspace, &options),
         Task::Release(task) => release::run(&workspace, task),
         Task::Publish(options) => publish::run(&workspace, &options),
-        Task::CheckPublishingAuth(options) => publishing_auth::run(&options),
     }
 }
